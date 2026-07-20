@@ -1,0 +1,21 @@
+{
+  "name": "estate-quote-app",
+  "version": "1.0.0",
+  "description": "Estate Landscapers — quote builder, trackable client quote links, and structural checklist sign-off.",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "nodemailer": "^9.0.3",
+    "pdfkit": "^0.19.1"
+  }
+}
