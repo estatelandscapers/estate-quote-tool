@@ -5,6 +5,7 @@ const { newId } = require('../utils/ids');
 const { TIERS, resolveItem, lineTotal, surchargeAmount } = require('../utils/pricing');
 const { sendMail } = require('../utils/email');
 const { buildSignedPdf } = require('../utils/signedPdf');
+const { createPOFromQuote } = require('./purchaseOrders');
 
 const router = express.Router();
 const getPI = id => id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(id) : null;
@@ -46,7 +47,7 @@ function clientView(q) {
     scope1, scope2, tierTotals, scope2Total: s2,
     company: {
       name: settingGet('company_name'), abn: settingGet('company_abn'), lic: settingGet('company_lic'),
-      email: settingGet('company_email'), phone: settingGet('company_phone'),
+      email: settingGet('company_email'), phone: settingGet('company_phone'), address: settingGet('company_address'),
       association: settingGet('association_line'), tagline: settingGet('tagline'),
     },
     pkgDesc: { Basic: settingGet('pkg_desc_basic'), Standard: settingGet('pkg_desc_standard'), Premium: settingGet('pkg_desc_premium') },
@@ -119,6 +120,9 @@ router.post('/:token/sign', async (req, res) => {
   const clientEmail = email || fresh.client_email;
   try { if (clientEmail) results.client = await sendMail({ to: clientEmail, subject: `Your signed contract — Quote ${fresh.quote_number}`, html, attachments }); } catch (e) { console.error('client email failed', e.message); }
   try { results.office = await sendMail({ to: settingGet('company_email'), subject: `SIGNED: Quote ${fresh.quote_number} — ${fresh.client_name} (${tier})`, html, attachments }); } catch (e) { console.error('office email failed', e.message); }
+
+  // On acceptance, auto-create the Purchase Order for the site team (PO number = quote number, revision ignored).
+  try { createPOFromQuote(fresh.id); } catch (e) { console.error('PO creation failed', e.message); }
 
   res.json({ ok: true, emailed: { client: !!(results.client && !results.client.skipped), office: !!(results.office && !results.office.skipped) } });
 });

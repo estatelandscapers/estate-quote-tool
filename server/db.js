@@ -80,6 +80,44 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 `);
 
+// ---------------- NON-DESTRUCTIVE MIGRATION ----------------
+// Adds new columns/tables to an EXISTING database without deleting data.
+// Safe to run on every boot: duplicate-column errors are ignored.
+function addColumn(table, col, def) {
+  try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch (e) { /* already exists */ }
+}
+// Rate-lock: each quote item snapshots the tier specs+rates at add-time so
+// later pricing-sheet edits never change a quote that's already been built.
+addColumn('quote_items', 'locked_basic_spec', 'TEXT');
+addColumn('quote_items', 'locked_basic_sell', 'REAL');
+addColumn('quote_items', 'locked_standard_spec', 'TEXT');
+addColumn('quote_items', 'locked_standard_sell', 'REAL');
+addColumn('quote_items', 'locked_premium_spec', 'TEXT');
+addColumn('quote_items', 'locked_premium_sell', 'REAL');
+addColumn('quote_items', 'locked_behaviour', 'TEXT');
+// Quote-level: N/A choices (compulsory surcharge & siteplan), completeness
+addColumn('quotes', 'siteplan_na', 'INTEGER DEFAULT 0');
+addColumn('quotes', 'surcharges_na', 'INTEGER DEFAULT 0');
+addColumn('quotes', 'is_complete', 'INTEGER DEFAULT 0');
+
+// Purchase Orders
+db.exec(`
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id TEXT PRIMARY KEY, quote_id TEXT REFERENCES quotes(id) ON DELETE CASCADE,
+  po_number TEXT, client_name TEXT, address TEXT,
+  siteplan_data TEXT, siteplan_mime TEXT, site_challenges TEXT DEFAULT '[]',
+  status TEXT DEFAULT 'open', created_at TEXT DEFAULT (datetime('now')), closed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS po_items (
+  id TEXT PRIMARY KEY, po_id TEXT REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  code TEXT, name TEXT, spec TEXT, qty REAL, unit TEXT, removed INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS po_prints (
+  id TEXT PRIMARY KEY, po_id TEXT REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  printed_by TEXT, printed_at TEXT DEFAULT (datetime('now'))
+);
+`);
+
 function settingGet(key, fb = null) {
   const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
   return r ? r.value : fb;
@@ -96,6 +134,7 @@ if (!settingGet('seeded_v2')) {
   settingSet('company_abn', 'ABN 94 636 443 108');
   settingSet('company_lic', 'LIC 487076C');
   settingSet('company_address', '33/275 Annangrove Road, Rouse Hill NSW 2155');
+  settingSet('company_location', '33/275 Annangrove Road, Rouse Hill NSW 2155');
   settingSet('company_email', 'info@estatelandscapers.com.au');
   settingSet('company_phone', '+61 414 147 008');
   settingSet('association_line', 'Member — Landscape Association NSW & ACT');

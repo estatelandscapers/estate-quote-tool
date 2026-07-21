@@ -1,7 +1,7 @@
 const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId, newToken } = require('../utils/ids');
-const { TIERS, resolveItem, lineTotal, surchargeAmount } = require('../utils/pricing');
+const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount } = require('../utils/pricing');
 
 const router = express.Router();
 const getPI = id => id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(id) : null;
@@ -60,9 +60,20 @@ router.get('/', (req, res) => {
   res.json(rows.map(q => {
     const views = db.prepare("SELECT COUNT(*) c FROM quote_events WHERE quote_id=? AND event_type='view'").get(q.id).c;
     const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
+    // completeness: has at least one item, a surcharge decision, a siteplan decision, and no unchecked CRITICAL checklist items
+    const itemCount = db.prepare('SELECT COUNT(*) c FROM quote_items WHERE quote_id=?').get(q.id).c;
+    const uncheckedCritical = db.prepare("SELECT COUNT(*) c FROM quote_checklist WHERE quote_id=? AND critical=1 AND checked=0").get(q.id).c;
+    const applied = JSON.parse(q.applied_surcharges || '[]');
+    const surchargeDecided = (applied.length > 0) || !!q.surcharges_na;
+    const siteplanDecided = !!q.siteplan_data || !!q.siteplan_na;
+    const complete = itemCount > 0 && surchargeDecided && siteplanDecided && uncheckedCritical === 0;
+    const fq = fullQuote(q);
+    let status = laterRev > 0 ? 'superseded' : q.status;
+    if (status !== 'accepted' && status !== 'superseded' && !complete) status = 'incomplete';
     return { id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number,
       client: q.client_name, projectTitle: q.project_title,
-      status: laterRev > 0 ? 'superseded' : q.status, acceptedPackage: q.accepted_package,
+      status, acceptedPackage: q.accepted_package,
+      value: Math.round(fq.grandIncGst), complete, uncheckedCritical,
       views, updatedAt: q.updated_at };
   }));
 });
@@ -101,8 +112,10 @@ router.post('/:id/revision', (req, res) => {
     new Date().toISOString().slice(0, 10), src.validity_days, src.default_package, src.payment_schedule,
     src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime, src.applied_surcharges);
   db.prepare('SELECT * FROM quote_items WHERE quote_id=?').all(src.id).forEach(it => {
-    db.prepare(`INSERT INTO quote_items (id,quote_id,scope,price_item_id,custom_code,custom_name,custom_unit,custom_rate,qty,tier_override,behaviour_override,shared_enabled,shared_pct,sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(newId(), id, it.scope, it.price_item_id, it.custom_code, it.custom_name, it.custom_unit, it.custom_rate, it.qty, it.tier_override, it.behaviour_override, it.shared_enabled, it.shared_pct, it.sort_order);
+    db.prepare(`INSERT INTO quote_items (id,quote_id,scope,price_item_id,custom_code,custom_name,custom_unit,custom_rate,qty,tier_override,behaviour_override,shared_enabled,shared_pct,sort_order,
+      locked_basic_spec,locked_basic_sell,locked_standard_spec,locked_standard_sell,locked_premium_spec,locked_premium_sell,locked_behaviour)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(newId(), id, it.scope, it.price_item_id, it.custom_code, it.custom_name, it.custom_unit, it.custom_rate, it.qty, it.tier_override, it.behaviour_override, it.shared_enabled, it.shared_pct, it.sort_order,
+      it.locked_basic_spec, it.locked_basic_sell, it.locked_standard_spec, it.locked_standard_sell, it.locked_premium_spec, it.locked_premium_sell, it.locked_behaviour);
   });
   res.status(201).json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(id)));
 });
@@ -111,12 +124,14 @@ router.put('/:id', (req, res) => {
   const e = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!e) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
-  db.prepare(`UPDATE quotes SET project_title=?,client_name=?,client_email=?,address=?,quote_date=?,validity_days=?,default_package=?,payment_schedule=?,site_notes=?,special_clauses=?,applied_surcharges=?,updated_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE quotes SET project_title=?,client_name=?,client_email=?,address=?,quote_date=?,validity_days=?,default_package=?,payment_schedule=?,site_notes=?,special_clauses=?,applied_surcharges=?,siteplan_na=?,surcharges_na=?,updated_at=datetime('now') WHERE id=?`)
     .run(b.projectTitle ?? e.project_title, b.client ?? e.client_name, b.clientEmail ?? e.client_email,
       b.address ?? e.address, b.date ?? e.quote_date, b.validityDays ?? e.validity_days,
       b.defaultPackage ?? e.default_package, b.paymentSchedule ?? e.payment_schedule,
       b.siteNotes ?? e.site_notes, b.specialClauses ?? e.special_clauses,
       b.appliedSurcharges !== undefined ? JSON.stringify(b.appliedSurcharges) : e.applied_surcharges,
+      b.siteplanNa !== undefined ? (b.siteplanNa ? 1 : 0) : e.siteplan_na,
+      b.surchargesNa !== undefined ? (b.surchargesNa ? 1 : 0) : e.surcharges_na,
       req.params.id);
   res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id)));
 });
@@ -133,10 +148,15 @@ router.post('/:id/siteplan', (req, res) => {
 router.post('/:id/items', (req, res) => {
   const b = req.body || {};
   const id = newId();
-  db.prepare(`INSERT INTO quote_items (id,quote_id,scope,price_item_id,custom_code,custom_name,custom_unit,custom_rate,qty,tier_override,shared_enabled,shared_pct)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, req.params.id, b.scope || 1, b.priceItemId || null,
+  const pi = b.priceItemId ? db.prepare('SELECT * FROM price_items WHERE id=?').get(b.priceItemId) : null;
+  const snap = snapshotFromPriceItem(pi); // lock current rates onto this quote line
+  db.prepare(`INSERT INTO quote_items (id,quote_id,scope,price_item_id,custom_code,custom_name,custom_unit,custom_rate,qty,tier_override,shared_enabled,shared_pct,
+    locked_basic_spec,locked_basic_sell,locked_standard_spec,locked_standard_sell,locked_premium_spec,locked_premium_sell,locked_behaviour)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, req.params.id, b.scope || 1, b.priceItemId || null,
     b.customCode || null, b.customName || null, b.customUnit || null, b.customRate ?? null,
-    b.qty ?? 1, b.tierOverride || null, b.sharedEnabled ? 1 : 0, b.sharedPct ?? 50);
+    b.qty ?? 1, b.tierOverride || null, b.sharedEnabled ? 1 : 0, b.sharedPct ?? 50,
+    snap.locked_basic_spec ?? null, snap.locked_basic_sell ?? null, snap.locked_standard_spec ?? null,
+    snap.locked_standard_sell ?? null, snap.locked_premium_spec ?? null, snap.locked_premium_sell ?? null, snap.locked_behaviour ?? null);
   res.status(201).json({ id });
 });
 router.put('/:id/items/:itemId', (req, res) => {

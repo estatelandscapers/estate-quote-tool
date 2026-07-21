@@ -13,7 +13,13 @@ body{margin:0;font-family:"Montserrat",Arial,sans-serif;background:var(--bg);col
 
 .hero{text-align:center;margin-bottom:16px;}
 .hero svg{margin-bottom:8px;}
-.eyebrow{color:var(--blue);font-size:11px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;}
+.logo-full{width:230px;max-width:70%;height:auto;display:block;margin:0 auto 8px;}
+.eyebrow{color:var(--blue);font-size:13px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;line-height:1.35;display:block;}
+.hero .who{font-size:14px;font-weight:700;margin-top:6px;}
+.hero .company-addr{font-size:11px;color:var(--grey);margin-top:8px;}
+.split-area{display:grid;grid-template-columns:1fr;gap:12px;}
+@media(min-width:760px){.split-area{grid-template-columns:1fr 1fr;align-items:start;}}
+.siteplan-wrap img{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
 .hero h1{font-size:23px;font-weight:800;text-transform:uppercase;margin:3px 0;letter-spacing:.5px;}
 .addr{color:var(--grey);font-size:12.5px;}
 .badges{margin-top:10px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap;}
