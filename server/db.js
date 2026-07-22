@@ -118,6 +118,68 @@ CREATE TABLE IF NOT EXISTS po_prints (
 );
 `);
 
+const uid2=()=>crypto.randomUUID();
+function settingGet2(key){const r=db.prepare("SELECT value FROM settings WHERE key=?").get(key);return r?r.value:null;}
+function settingSet2(key,value){db.prepare("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key,value);}
+// ---------------- v7-v10 MIGRATIONS (non-destructive) ----------------
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY, name TEXT, username TEXT UNIQUE, pass_hash TEXT,
+  role TEXT DEFAULT 'estimator', created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  remember INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS vendors (
+  id TEXT PRIMARY KEY, name TEXT, is_supplier INTEGER DEFAULT 1, is_subcontractor INTEGER DEFAULT 0,
+  contact TEXT, phone TEXT, email TEXT, area TEXT, address TEXT, abn TEXT, terms TEXT,
+  licence TEXT, insurance_expiry TEXT, swms INTEGER DEFAULT 0, notes TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS vendor_materials (
+  id TEXT PRIMARY KEY, vendor_id TEXT REFERENCES vendors(id) ON DELETE CASCADE,
+  name TEXT, unit TEXT, cost REAL DEFAULT 0, delivery_rule TEXT, review_by TEXT
+);
+CREATE TABLE IF NOT EXISTS recipes (
+  id TEXT PRIMARY KEY, price_item_id TEXT UNIQUE REFERENCES price_items(id) ON DELETE CASCADE,
+  method_default TEXT DEFAULT 'in',
+  hrs_basic REAL DEFAULT 0, hrs_standard REAL DEFAULT 0, hrs_premium REAL DEFAULT 0,
+  delivery_cost REAL DEFAULT 0, plant_cost REAL DEFAULT 0, plant_note TEXT,
+  sub_basic REAL DEFAULT 0, sub_standard REAL DEFAULT 0, sub_premium REAL DEFAULT 0, sub_vendor TEXT
+);
+CREATE TABLE IF NOT EXISTS recipe_materials (
+  id TEXT PRIMARY KEY, recipe_id TEXT REFERENCES recipes(id) ON DELETE CASCADE,
+  name TEXT, unit TEXT, ratio REAL DEFAULT 0, wastage_pct REAL DEFAULT 5,
+  kind TEXT DEFAULT 'common',
+  vendor_name TEXT,
+  cost_basic REAL DEFAULT 0, cost_standard REAL DEFAULT 0, cost_premium REAL DEFAULT 0,
+  spec_basic TEXT, spec_standard TEXT, spec_premium TEXT, sort_order INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS po_vendors (
+  id TEXT PRIMARY KEY, po_id TEXT REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  vendor_name TEXT, suffix TEXT, status TEXT DEFAULT 'ordered'
+);
+CREATE TABLE IF NOT EXISTS fy_close (
+  id TEXT PRIMARY KEY, fy TEXT UNIQUE, overheads TEXT DEFAULT '{}',
+  closed INTEGER DEFAULT 0, closed_at TEXT
+);
+`);
+addColumn('quotes','customer_tier',"TEXT DEFAULT 'Silver'");
+addColumn('quotes','crew_size','INTEGER DEFAULT 2');
+addColumn('quotes','quoted_cost','REAL');
+addColumn('quotes','quoted_sell','REAL');
+addColumn('quotes','accepted_mixed','TEXT');
+addColumn('quote_items','method','TEXT');
+addColumn('quote_items','wastage_override','REAL');
+addColumn('po_items','vendor_name','TEXT');
+addColumn('po_items','kind',"TEXT DEFAULT 'site'");
+addColumn('po_items','unit_cost','REAL DEFAULT 0');
+addColumn('purchase_orders','site_hours','REAL DEFAULT 0');
+addColumn('purchase_orders','crew_size','INTEGER DEFAULT 2');
+
+
+
 function settingGet(key, fb = null) {
   const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
   return r ? r.value : fb;
@@ -214,6 +276,43 @@ if (!settingGet('seeded_v2')) {
   ].forEach((r,i)=>C.run(uid(),i,r[0],r[1],r[2]));
 
   settingSet('seeded_v2','1');
+}
+
+// seeds for v7-v10 (run once each)
+if (!settingGet2('seed_v7')) {
+  const sha=(s)=>crypto.createHash('sha256').update(s).digest('hex');
+  const iu=db.prepare('INSERT INTO users (id,name,username,pass_hash,role) VALUES (?,?,?,?,?)');
+  iu.run(uid2(),'Smit','admin',sha('Smit@1234'),'admin');
+  iu.run(uid2(),'Estimator 1','est1',sha('Est1@1234'),'estimator');
+  iu.run(uid2(),'Estimator 2','est2',sha('Est2@1234'),'estimator');
+  [['tier_bronze','15'],['tier_silver','25'],['tier_gold','35'],
+   ['age_flag','7'],['age_chase','14'],['age_dead','30'],
+   ['crew_day_rate','1150'],['crew_people','2'],['extra_person_rate','420'],['hours_per_day','8']
+  ].forEach(([k,v])=>settingSet2(k,v));
+  const iv=db.prepare('INSERT INTO vendors (id,name,is_supplier,is_subcontractor,contact,phone,area,terms) VALUES (?,?,?,?,?,?,?,?)');
+  const vHT=uid2(); iv.run(vHT,'Hunter Turf',1,0,'Dave','0412 000 111','Kellyville - 12 km','30 days');
+  const vBS=uid2(); iv.run(vBS,'Benedict Sands',1,0,'Sales','02 9000 0000','Chipping Norton','Account');
+  const vFD=uid2(); iv.run(vFD,'Fencing Direct',1,0,'Sam','0414 555 666','Blacktown - 18 km','COD');
+  const vAB=uid2(); iv.run(vAB,'ABC Concreting',1,1,'Tony','0413 222 333','Rouse Hill - 4 km','14 days');
+  db.prepare('UPDATE vendors SET licence=?, insurance_expiry=? WHERE id=?').run('LIC 123456C','2026-12-31',vAB);
+  // placeholder recipes for GT, RW, FC (editable - user replaces with real numbers)
+  const gt=db.prepare("SELECT id FROM price_items WHERE code='GT'").get();
+  const rw=db.prepare("SELECT id FROM price_items WHERE code='RW'").get();
+  const fc=db.prepare("SELECT id FROM price_items WHERE code='FC'").get();
+  const cp=db.prepare("SELECT id FROM price_items WHERE code='CP'").get();
+  const ir=db.prepare('INSERT INTO recipes (id,price_item_id,method_default,hrs_basic,hrs_standard,hrs_premium,delivery_cost,plant_cost,plant_note,sub_basic,sub_standard,sub_premium,sub_vendor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  const im=db.prepare('INSERT INTO recipe_materials (id,recipe_id,name,unit,ratio,wastage_pct,kind,vendor_name,cost_basic,cost_standard,cost_premium,spec_basic,spec_standard,spec_premium,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  if (gt){const r=uid2(); ir.run(r,gt.id,'in',0.150,0.150,0.170,180,85,'Turf cutter',28,32,46,null);
+    im.run(uid2(),r,'Turf variety','m2',1.00,5,'tiered','Hunter Turf',8.50,13.50,22.00,'Kikuyu','Sir Walter','Sir Grange',0);
+    im.run(uid2(),r,'Turf underlay sand','m3',0.030,10,'common','Benedict Sands',68,68,68,null,null,null,1);
+    im.run(uid2(),r,'Starter fertiliser','kg',0.020,5,'common','Nuturf',4.20,4.20,4.20,null,null,null,2);}
+  if (rw){const r=uid2(); ir.run(r,rw.id,'in',2.50,2.80,5.00,220,180,'Excavator',300,390,600,null);
+    im.run(uid2(),r,'Wall units','m',1.00,8,'tiered','Adbri Masonry',114.00,200.50,226.00,'Treated sleepers','Concrete sleepers','Besser block + render',0);
+    im.run(uid2(),r,'Drainage + backfill','m',1.00,0,'common','Benedict Sands',26.20,26.20,26.20,null,null,null,1);}
+  if (fc){const r=uid2(); ir.run(r,fc.id,'in',0.35,0.35,0.35,140,0,'',88,88,88,null);
+    im.run(uid2(),r,'Colorbond kit (sheet, posts, rails, concrete)','m',1.00,7,'common','Fencing Direct',49.90,49.90,49.90,null,null,null,0);}
+  if (cp){const r=uid2(); ir.run(r,cp.id,'sub',0,0,0,0,0,'',128,155,280,'ABC Concreting');}
+  settingSet2('seed_v7','1');
 }
 
 module.exports = { db, settingGet, settingSet };

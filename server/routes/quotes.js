@@ -2,6 +2,7 @@ const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId, newToken } = require('../utils/ids');
 const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount } = require('../utils/pricing');
+const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
 const getPI = id => id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(id) : null;
@@ -68,12 +69,20 @@ router.get('/', (req, res) => {
     const siteplanDecided = !!q.siteplan_data || !!q.siteplan_na;
     const complete = itemCount > 0 && surchargeDecided && siteplanDecided && uncheckedCritical === 0;
     const fq = fullQuote(q);
+    const baseDate = new Date((q.quote_date ? q.quote_date + 'T00:00:00' : q.created_at) + 'Z');
+    const ageDays = Math.max(0, Math.floor((Date.now() - baseDate.getTime()) / 864e5));
+    const th = { flag: parseFloat(settingGet('age_flag') || '7'), chase: parseFloat(settingGet('age_chase') || '14'), dead: parseFloat(settingGet('age_dead') || '30') };
+    let ageBand = 'fresh';
+    if (q.status === 'accepted') ageBand = 'fresh';
+    else if (ageDays >= th.dead) ageBand = 'dead';
+    else if (ageDays >= th.chase) ageBand = 'chase';
+    else if (ageDays >= th.flag) ageBand = 'flag';
     let status = laterRev > 0 ? 'superseded' : q.status;
     if (status !== 'accepted' && status !== 'superseded' && !complete) status = 'incomplete';
     return { id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number,
       client: q.client_name, projectTitle: q.project_title,
       status, acceptedPackage: q.accepted_package,
-      value: Math.round(fq.grandIncGst), complete, uncheckedCritical,
+      value: Math.round(fq.grandIncGst), complete, uncheckedCritical, ageDays, ageBand, customerTier: q.customer_tier || 'Silver',
       views, updatedAt: q.updated_at };
   }));
 });
@@ -124,7 +133,7 @@ router.put('/:id', (req, res) => {
   const e = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!e) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
-  db.prepare(`UPDATE quotes SET project_title=?,client_name=?,client_email=?,address=?,quote_date=?,validity_days=?,default_package=?,payment_schedule=?,site_notes=?,special_clauses=?,applied_surcharges=?,siteplan_na=?,surcharges_na=?,updated_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE quotes SET project_title=?,client_name=?,client_email=?,address=?,quote_date=?,validity_days=?,default_package=?,payment_schedule=?,site_notes=?,special_clauses=?,applied_surcharges=?,siteplan_na=?,surcharges_na=?,customer_tier=?,crew_size=?,updated_at=datetime('now') WHERE id=?`)
     .run(b.projectTitle ?? e.project_title, b.client ?? e.client_name, b.clientEmail ?? e.client_email,
       b.address ?? e.address, b.date ?? e.quote_date, b.validityDays ?? e.validity_days,
       b.defaultPackage ?? e.default_package, b.paymentSchedule ?? e.payment_schedule,
@@ -132,6 +141,7 @@ router.put('/:id', (req, res) => {
       b.appliedSurcharges !== undefined ? JSON.stringify(b.appliedSurcharges) : e.applied_surcharges,
       b.siteplanNa !== undefined ? (b.siteplanNa ? 1 : 0) : e.siteplan_na,
       b.surchargesNa !== undefined ? (b.surchargesNa ? 1 : 0) : e.surcharges_na,
+      b.customerTier ?? e.customer_tier, b.crewSize ?? e.crew_size,
       req.params.id);
   res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id)));
 });
@@ -163,11 +173,12 @@ router.put('/:id/items/:itemId', (req, res) => {
   const e = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
   if (!e) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
-  db.prepare(`UPDATE quote_items SET qty=?,tier_override=?,shared_enabled=?,shared_pct=?,custom_name=?,custom_rate=?,scope=? WHERE id=?`)
+  db.prepare(`UPDATE quote_items SET qty=?,tier_override=?,shared_enabled=?,shared_pct=?,custom_name=?,custom_rate=?,scope=?,method=?,wastage_override=? WHERE id=?`)
     .run(b.qty ?? e.qty, b.tierOverride !== undefined ? b.tierOverride : e.tier_override,
       b.sharedEnabled !== undefined ? (b.sharedEnabled ? 1 : 0) : e.shared_enabled,
       b.sharedPct ?? e.shared_pct, b.customName ?? e.custom_name, b.customRate ?? e.custom_rate,
-      b.scope ?? e.scope, req.params.itemId);
+      b.scope ?? e.scope, b.method !== undefined ? b.method : e.method,
+      b.wastageOverride !== undefined ? b.wastageOverride : e.wastage_override, req.params.itemId);
   res.json({ ok: true });
 });
 router.delete('/:id/items/:itemId', (req, res) => { db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
@@ -177,6 +188,40 @@ router.get('/:id/analytics', (req, res) => {
   const secs = ev.filter(e => e.event_type === 'heartbeat').reduce((s, e) => { try { return s + (JSON.parse(e.payload).seconds || 0); } catch { return s; } }, 0);
   const pkg = {}; ev.filter(e => e.event_type === 'package_select').forEach(e => { try { const t = JSON.parse(e.payload).tier; pkg[t] = (pkg[t] || 0) + 1; } catch {} });
   res.json({ views: ev.filter(e => e.event_type === 'view').length, activeSeconds: Math.round(secs), packageClicks: pkg });
+});
+
+// Full tier costing for a quote (recipes). Estimators get cost totals + site time but no margin.
+router.get('/:id/costing', (req, res) => {
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  const c = costQuote(q);
+  if (req.user && req.user.role !== 'admin') {
+    // strip commercially sensitive figures for estimators
+    const { grossMargin, grossMarginPct, target, belowTarget, guidePrice, tierTotals, ...rest } = c;
+    rest.perLine = rest.perLine.map(l => { const t = {}; Object.keys(l.tiers).forEach(k => { const { cost, ...tv } = l.tiers[k]; t[k] = tv; }); return { ...l, tiers: t }; });
+    const { matCost, labCost, subCost, delivery, plant, ...selRest } = rest.selected;
+    rest.selected = selRest; rest.takeoff = [];
+    return res.json(rest);
+  }
+  res.json(c);
+});
+
+// Signed-contract PREVIEW (admin): see exactly the PDF a client would receive, before any send.
+router.get('/:id/signed-preview', async (req, res) => {
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  const { buildSignedPdf } = require('../utils/signedPdf');
+  const fq = fullQuote(q);
+  const totals = { grandExGst: Math.round(fq.grandExGst), grandIncGst: Math.round(fq.grandIncGst) };
+  const settings = {};
+  ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
+  const preview = { ...q, accepted_package: q.accepted_package || q.default_package, signed_name: q.signed_name || '(preview — not yet signed)', accepted_at: q.accepted_at || new Date().toISOString() };
+  try {
+    const pdf = await buildSignedPdf({ quote: preview, totals, settings });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="preview-${q.quote_number}.pdf"`);
+    res.send(pdf);
+  } catch (e) { res.status(500).json({ error: 'preview failed: ' + e.message }); }
 });
 
 module.exports = router;

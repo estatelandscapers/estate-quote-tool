@@ -1,10 +1,13 @@
+// Purchase orders: one job PO on acceptance. Cost lines grouped by vendor (split view = PO 1410-A/-B...).
+// Lines are EDITABLE after creation so the PO can match real site conditions —
+// the edited (final) PO is the source of ACTUAL cost for the jobs register.
 const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId } = require('../utils/ids');
-const { resolveItem } = require('../utils/pricing');
+const { costQuote, crewHourRate } = require('../utils/costing');
 const router = express.Router();
+const isAdmin = req => req.user && req.user.role === 'admin';
 
-// Build a PO from an accepted quote. PO number = parent quote number (revision ignored).
 function createPOFromQuote(quoteId) {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(quoteId);
   if (!q) return null;
@@ -13,91 +16,185 @@ function createPOFromQuote(quoteId) {
   const poId = newId();
   const applied = JSON.parse(q.applied_surcharges || '[]');
   const challenges = q.surcharges_na ? [] : applied.map(s => s.name);
-  db.prepare(`INSERT INTO purchase_orders (id,quote_id,po_number,client_name,address,siteplan_data,siteplan_mime,site_challenges,status)
-    VALUES (?,?,?,?,?,?,?,?, 'open')`).run(poId, quoteId, q.parent_number, q.client_name, q.address,
-    q.siteplan_data, q.siteplan_mime, JSON.stringify(challenges));
-  const tier = q.accepted_package || q.default_package || 'Standard';
-  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order').all(quoteId);
-  items.forEach((it, i) => {
-    const pi = it.price_item_id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(it.price_item_id) : null;
-    const r = resolveItem(it, pi, it.tier_override || tier);
-    db.prepare('INSERT INTO po_items (id,po_id,code,name,spec,qty,unit,sort_order) VALUES (?,?,?,?,?,?,?,?)')
-      .run(newId(), poId, r.code, r.name, r.spec, it.qty, r.unit, i);
+  const c = costQuote(q);
+  db.prepare(`INSERT INTO purchase_orders (id,quote_id,po_number,client_name,address,siteplan_data,siteplan_mime,site_challenges,status,site_hours,crew_size)
+    VALUES (?,?,?,?,?,?,?,?, 'open', ?, ?)`).run(poId, quoteId, q.parent_number, q.client_name, q.address,
+    q.siteplan_data, q.siteplan_mime, JSON.stringify(challenges), c.hours, c.crew);
+  const ins = db.prepare('INSERT INTO po_items (id,po_id,code,name,spec,qty,unit,sort_order,vendor_name,kind,unit_cost) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+  // site copy lines (no prices): deliverable + qty + allocated hrs in spec
+  c.perLine.forEach((l, i) => {
+    const t = l.tiers[l.selected];
+    const hrsNote = t.hrs > 0 ? ` — ${Math.round(t.hrs * 10) / 10} person-hrs` : (l.method === 'sub' ? ' — subcontract' : '');
+    ins.run(newId(), poId, l.code, l.name, (t.spec || '') + hrsNote, l.qty, l.unit, i, null, 'site', 0);
   });
+  // cost lines (vendor take-off, incl wastage) — these become the ACTUALS when edited
+  let n = 100;
+  c.takeoff.forEach(L => {
+    ins.run(newId(), poId, L.itemCode, L.name, null, Math.round(L.qty * 100) / 100, L.unit, n++, L.vendor, L.kind, Math.round(L.unitCost * 100) / 100);
+  });
+  if (c.selected.labCost > 0) {
+    ins.run(newId(), poId, 'LAB', `Own crew labour — ${c.hours} person-hrs @ crew rate`, null, c.hours, 'hrs', n++, 'Own crew', 'labour', Math.round(crewHourRate() * 100) / 100);
+  }
+  // vendor sub-PO registry with suffixes A, B, C...
+  const vendors = [...new Set(c.takeoff.map(L => L.vendor).concat(c.selected.labCost > 0 ? ['Own crew'] : []))];
+  vendors.forEach((v, i) => db.prepare('INSERT INTO po_vendors (id,po_id,vendor_name,suffix,status) VALUES (?,?,?,?,?)')
+    .run(newId(), poId, v, String.fromCharCode(65 + i), 'ordered'));
   return poId;
 }
 
-function poView(po) {
+function poView(po, admin) {
   const items = db.prepare('SELECT * FROM po_items WHERE po_id=? ORDER BY sort_order').all(po.id);
   const prints = db.prepare('SELECT * FROM po_prints WHERE po_id=? ORDER BY printed_at DESC').all(po.id);
-  return { id: po.id, poNumber: po.po_number, client: po.client_name, address: po.address,
+  const vendors = db.prepare('SELECT * FROM po_vendors WHERE po_id=? ORDER BY suffix').all(po.id);
+  const siteItems = items.filter(i => i.kind === 'site' && !i.removed);
+  const costItems = items.filter(i => i.kind !== 'site' && !i.removed);
+  const actualCost = costItems.reduce((a, i) => a + i.qty * (i.unit_cost || 0), 0);
+  const view = { id: po.id, poNumber: po.po_number, client: po.client_name, address: po.address,
     status: po.status, hasSiteplan: !!po.siteplan_data, siteChallenges: JSON.parse(po.site_challenges || '[]'),
-    items: items.map(i => ({ id: i.id, code: i.code, name: i.name, spec: i.spec, qty: i.qty, unit: i.unit, removed: !!i.removed })),
+    siteHours: po.site_hours, crewSize: po.crew_size,
+    siteDays: Math.round(po.site_hours / Math.max(1, po.crew_size) / parseFloat(settingGet('hours_per_day') || '8') * 10) / 10,
+    siteItems: siteItems.map(i => ({ id: i.id, code: i.code, name: i.name, spec: i.spec, qty: i.qty, unit: i.unit })),
     prints: prints.map(p => ({ by: p.printed_by, at: p.printed_at })), createdAt: po.created_at, closedAt: po.closed_at };
+  if (admin) {
+    view.vendors = vendors.map(v => ({ id: v.id, name: v.vendor_name, suffix: v.suffix, status: v.status,
+      total: costItems.filter(i => i.vendor_name === v.vendor_name).reduce((a, i) => a + i.qty * (i.unit_cost || 0), 0) }));
+    view.costItems = costItems.map(i => ({ id: i.id, code: i.code, name: i.name, qty: i.qty, unit: i.unit,
+      unitCost: i.unit_cost, total: Math.round(i.qty * (i.unit_cost || 0) * 100) / 100, vendor: i.vendor_name, kind: i.kind }));
+    view.actualCost = Math.round(actualCost * 100) / 100;
+    const q = db.prepare('SELECT quoted_sell, quoted_cost FROM quotes WHERE id=?').get(po.quote_id);
+    if (q) { view.sellExGst = q.quoted_sell; view.quotedCost = q.quoted_cost;
+      view.actualGM = q.quoted_sell != null ? Math.round((q.quoted_sell - actualCost) * 100) / 100 : null;
+      view.actualGMPct = q.quoted_sell > 0 ? Math.round((q.quoted_sell - actualCost) / q.quoted_sell * 1000) / 10 : null; }
+  }
+  return view;
 }
 
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM purchase_orders ORDER BY created_at DESC').all();
   res.json(rows.map(po => {
     const n = db.prepare('SELECT COUNT(*) c FROM po_prints WHERE po_id=?').get(po.id).c;
-    return { id: po.id, poNumber: po.po_number, client: po.client_name, address: po.address, status: po.status, prints: n };
+    const out = { id: po.id, poNumber: po.po_number, client: po.client_name, address: po.address, status: po.status, prints: n };
+    if (isAdmin(req)) {
+      out.actualCost = db.prepare("SELECT SUM(qty*unit_cost) s FROM po_items WHERE po_id=? AND removed=0 AND kind!='site'").get(po.id).s || 0;
+      out.vendorStatuses = db.prepare('SELECT status, COUNT(*) c FROM po_vendors WHERE po_id=? GROUP BY status').all(po.id);
+    }
+    return out;
   }));
 });
 router.get('/:id', (req, res) => {
   const po = db.prepare('SELECT * FROM purchase_orders WHERE id=?').get(req.params.id);
-  if (!po) return res.status(404).json({ error: 'Not found' });
-  res.json(poView(po));
+  if (!po) return res.status(404).json({ error: 'not found' });
+  res.json(poView(po, isAdmin(req)));
 });
 router.get('/:id/siteplan', (req, res) => {
-  const po = db.prepare('SELECT * FROM purchase_orders WHERE id=?').get(req.params.id);
+  const po = db.prepare('SELECT siteplan_data, siteplan_mime FROM purchase_orders WHERE id=?').get(req.params.id);
   if (!po || !po.siteplan_data) return res.status(404).end();
   res.setHeader('Content-Type', po.siteplan_mime || 'image/png');
   res.send(Buffer.from(po.siteplan_data, 'base64'));
 });
-// owner edits (PIN-checked client-side; server trusts admin origin)
+// edits (admin) — the edited PO becomes the ACTUAL cost record
+router.post('/:id/items', (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  const b = req.body || {}; const id = newId();
+  const max = db.prepare('SELECT MAX(sort_order) m FROM po_items WHERE po_id=?').get(req.params.id);
+  db.prepare('INSERT INTO po_items (id,po_id,code,name,qty,unit,sort_order,vendor_name,kind,unit_cost) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, req.params.id, b.code || '', b.name || 'New line', b.qty ?? 1, b.unit || 'ea', (max.m ?? 0) + 1,
+      b.vendor || 'Supplier', b.kind || 'material', b.unitCost ?? 0);
+  res.status(201).json({ id });
+});
 router.put('/:id/items/:itemId', (req, res) => {
-  const b = req.body || {};
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
   const e = db.prepare('SELECT * FROM po_items WHERE id=?').get(req.params.itemId);
-  if (!e) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE po_items SET name=?,spec=?,qty=?,unit=?,removed=? WHERE id=?')
-    .run(b.name ?? e.name, b.spec ?? e.spec, b.qty ?? e.qty, b.unit ?? e.unit, b.removed !== undefined ? (b.removed ? 1 : 0) : e.removed, req.params.itemId);
+  if (!e) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  db.prepare('UPDATE po_items SET name=?,qty=?,unit=?,unit_cost=?,vendor_name=?,removed=? WHERE id=?')
+    .run(b.name ?? e.name, b.qty ?? e.qty, b.unit ?? e.unit, b.unitCost ?? e.unit_cost,
+      b.vendor ?? e.vendor_name, b.removed !== undefined ? (b.removed ? 1 : 0) : e.removed, e.id);
   res.json({ ok: true });
 });
-router.post('/:id/items', (req, res) => {
-  const b = req.body || {};
-  const max = db.prepare('SELECT MAX(sort_order) m FROM po_items WHERE po_id=?').get(req.params.id).m || 0;
-  db.prepare('INSERT INTO po_items (id,po_id,code,name,spec,qty,unit,sort_order) VALUES (?,?,?,?,?,?,?,?)')
-    .run(newId(), req.params.id, b.code || 'XX', b.name || 'Line', b.spec || '', b.qty || 0, b.unit || 'ea', max + 1);
-  res.status(201).json({ ok: true });
+router.delete('/:id/items/:itemId', (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  db.prepare('UPDATE po_items SET removed=1 WHERE id=?').run(req.params.itemId); res.status(204).end();
 });
-router.delete('/:id/items/:itemId', (req, res) => { db.prepare('DELETE FROM po_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
 router.post('/:id/reset', (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
   const po = db.prepare('SELECT * FROM purchase_orders WHERE id=?').get(req.params.id);
-  if (!po) return res.status(404).json({ error: 'Not found' });
+  if (!po) return res.status(404).json({ error: 'not found' });
   db.prepare('DELETE FROM po_items WHERE po_id=?').run(po.id);
-  // rebuild from quote
-  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(po.quote_id);
-  const tier = q.accepted_package || q.default_package || 'Standard';
-  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order').all(po.quote_id);
-  items.forEach((it, i) => {
-    const pi = it.price_item_id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(it.price_item_id) : null;
-    const r = resolveItem(it, pi, it.tier_override || tier);
-    db.prepare('INSERT INTO po_items (id,po_id,code,name,spec,qty,unit,sort_order) VALUES (?,?,?,?,?,?,?,?)')
-      .run(newId(), po.id, r.code, r.name, r.spec, it.qty, r.unit, i);
-  });
+  db.prepare('DELETE FROM po_vendors WHERE po_id=?').run(po.id);
+  db.prepare('DELETE FROM purchase_orders WHERE id=?').run(po.id);
+  const newIdPo = createPOFromQuote(po.quote_id);
+  res.json({ ok: true, id: newIdPo });
+});
+router.put('/:id/vendor-status/:vid', (req, res) => {
+  const v = db.prepare('SELECT * FROM po_vendors WHERE id=?').get(req.params.vid);
+  if (!v) return res.status(404).json({ error: 'not found' });
+  const s = (req.body || {}).status;
+  if (!['ordered', 'delivered', 'invoiced'].includes(s)) return res.status(400).json({ error: 'bad status' });
+  db.prepare('UPDATE po_vendors SET status=? WHERE id=?').run(s, v.id);
   res.json({ ok: true });
 });
 router.post('/:id/print', (req, res) => {
-  db.prepare('INSERT INTO po_prints (id,po_id,printed_by) VALUES (?,?,?)').run(newId(), req.params.id, (req.body && req.body.by) || 'Owner');
+  db.prepare('INSERT INTO po_prints (id,po_id,printed_by) VALUES (?,?,?)').run(newId(), req.params.id, (req.body || {}).by || (req.user ? req.user.name : 'Team'));
   res.json({ ok: true });
 });
 router.post('/:id/close', (req, res) => {
-  db.prepare("UPDATE purchase_orders SET status='closed', closed_at=datetime('now') WHERE id=?").run(req.params.id);
-  res.json({ ok: true });
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  db.prepare("UPDATE purchase_orders SET status='closed', closed_at=datetime('now') WHERE id=?").run(req.params.id); res.json({ ok: true });
 });
 router.post('/:id/reopen', (req, res) => {
-  db.prepare("UPDATE purchase_orders SET status='open', closed_at=NULL WHERE id=?").run(req.params.id);
-  res.json({ ok: true });
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  db.prepare("UPDATE purchase_orders SET status='open', closed_at=NULL WHERE id=?").run(req.params.id); res.json({ ok: true });
 });
 
+// Printable documents. site copy = no prices; vendor doc = prices for that vendor only (admin).
+function printPage(title, bodyHtml) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+  <style>body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;max-width:760px;margin:24px auto;padding:0 16px;}
+  h1{font-size:18px;letter-spacing:2px;color:#143FB0;margin:0;}h2{font-size:14px;margin:18px 0 6px;text-transform:uppercase;}
+  .hd{border-bottom:3px solid #1E5BFF;padding-bottom:10px;margin-bottom:14px;}
+  .muted{color:#777;font-size:11px;}table{width:100%;border-collapse:collapse;margin-top:6px;}
+  th{font-size:10px;text-transform:uppercase;color:#777;text-align:left;border-bottom:2px solid #ddd;padding:6px 5px;}
+  td{padding:6px 5px;border-bottom:1px solid #eee;}.r{text-align:right;}
+  .box{border:1.5px solid #1E5BFF;border-radius:8px;padding:10px;margin-top:10px;}
+  @media print{button{display:none;}}</style></head>
+  <body onload="window.print()"><button onclick="window.print()">Print</button>${bodyHtml}
+  <p class="muted" style="margin-top:26px;text-align:center;">Estate Landscapers — Integrity. Precision. Value.</p></body></html>`;
+}
+router.get('/:id/print/site', (req, res) => {
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE id=?').get(req.params.id);
+  if (!po) return res.status(404).send('not found');
+  const v = poView(po, false);
+  const company = `${settingGet('company_name')} · ${settingGet('company_abn')} · ${settingGet('company_lic')}`;
+  let html = `<div class="hd"><h1>ESTATE LANDSCAPERS</h1><div class="muted">${company}</div></div>
+  <h2>Site Instruction — PO ${v.poNumber}</h2>
+  <p><b>${v.client || ''}</b><br>${v.address || ''}</p>
+  <div class="box"><b>Allocated site time: ${v.siteDays} days</b> · crew of ${v.crewSize} · ${Math.round(v.siteHours * 10) / 10} person-hours total</div>
+  <table><thead><tr><th>Code</th><th>Deliverable / spec</th><th>Qty</th></tr></thead><tbody>
+  ${v.siteItems.map(i => `<tr><td><b>${i.code || ''}</b></td><td>${i.name}${i.spec ? `<br><span class="muted">${i.spec}</span>` : ''}</td><td>${i.qty} ${i.unit || ''}</td></tr>`).join('')}
+  </tbody></table>
+  ${v.siteChallenges.length ? `<h2>Site challenges</h2><p>${v.siteChallenges.join(' · ')}</p>` : ''}
+  <p class="muted">No pricing on this document. Refer to the approved drawing for layout.</p>`;
+  db.prepare('INSERT INTO po_prints (id,po_id,printed_by) VALUES (?,?,?)').run(newId(), po.id, (req.user ? req.user.name : 'Team') + ' (site copy)');
+  res.send(printPage(`PO ${v.poNumber} site copy`, html));
+});
+router.get('/:id/print/vendor/:vid', (req, res) => {
+  if (!isAdmin(req)) return res.status(403).send('admin only');
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE id=?').get(req.params.id);
+  const pv = db.prepare('SELECT * FROM po_vendors WHERE id=?').get(req.params.vid);
+  if (!po || !pv) return res.status(404).send('not found');
+  const items = db.prepare("SELECT * FROM po_items WHERE po_id=? AND removed=0 AND kind!='site' AND vendor_name=? ORDER BY sort_order").all(po.id, pv.vendor_name);
+  const total = items.reduce((a, i) => a + i.qty * (i.unit_cost || 0), 0);
+  const company = `${settingGet('company_name')} · ${settingGet('company_abn')} · ${settingGet('company_lic')} · ${settingGet('company_address') || ''}`;
+  let html = `<div class="hd"><h1>ESTATE LANDSCAPERS</h1><div class="muted">${company}</div></div>
+  <h2>Purchase Order ${po.po_number}-${pv.suffix} — ${pv.vendor_name}</h2>
+  <p><b>Deliver to:</b> ${po.address || ''}<br><b>Site contact:</b> ${settingGet('company_phone')}<br><b>Job ref:</b> ${po.client_name || ''} · PO ${po.po_number}</p>
+  <table><thead><tr><th>Item</th><th>Qty</th><th class="r">Unit rate</th><th class="r">Total</th></tr></thead><tbody>
+  ${items.map(i => `<tr><td>${i.name}</td><td>${i.qty} ${i.unit || ''}</td><td class="r">$${(i.unit_cost || 0).toFixed(2)}</td><td class="r">$${(i.qty * (i.unit_cost || 0)).toFixed(2)}</td></tr>`).join('')}
+  <tr><td colspan="3"><b>PO total (ex GST)</b></td><td class="r"><b>$${total.toFixed(2)}</b></td></tr>
+  </tbody></table>
+  <p class="muted">Please quote PO number ${po.po_number}-${pv.suffix} on your invoice. Payment terms as agreed.</p>`;
+  db.prepare('INSERT INTO po_prints (id,po_id,printed_by) VALUES (?,?,?)').run(newId(), po.id, (req.user ? req.user.name : 'Admin') + ` (vendor ${pv.suffix})`);
+  res.send(printPage(`PO ${po.po_number}-${pv.suffix}`, html));
+});
 module.exports = { router, createPOFromQuote };

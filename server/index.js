@@ -13,6 +13,13 @@ app.use((req, res, next) => {
   next();
 });
 
+// auth: sessions required for all admin APIs (public quote links + login + backup stay open)
+const { requireAuth } = require('./utils/auth');
+app.use(requireAuth);
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/vendors', require('./routes/vendors'));
+app.use('/api/recipes', require('./routes/recipes'));
+app.use('/api/jobs', require('./routes/jobs'));
 app.use('/api/price-list', require('./routes/priceList'));
 app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/checklist', require('./routes/checklist'));

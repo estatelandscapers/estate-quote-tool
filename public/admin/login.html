@@ -1,0 +1,41 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Estate Landscapers — Sign in</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:"Montserrat",Arial,sans-serif;background:#F5F5F5;display:flex;align-items:center;justify-content:center;min-height:100vh;}
+.card{background:#fff;border:1px solid #E2E2E2;border-radius:16px;padding:34px 30px;width:360px;max-width:92vw;text-align:center;}
+img{height:56px;margin-bottom:14px;}
+h1{font-size:12px;letter-spacing:1.4px;color:#888;text-transform:uppercase;font-weight:800;margin:0 0 20px;}
+label{display:block;text-align:left;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#888;margin:12px 0 4px;}
+input{width:100%;box-sizing:border-box;border:1px solid #E2E2E2;border-radius:8px;padding:11px;font-family:inherit;font-size:14px;}
+.rem{display:flex;align-items:center;gap:8px;font-size:12px;margin:14px 0;text-align:left;}
+.rem input{width:auto;}
+button{width:100%;background:#1E5BFF;color:#fff;border:none;border-radius:8px;padding:13px;font-family:inherit;font-weight:800;font-size:12px;letter-spacing:.5px;text-transform:uppercase;cursor:pointer;}
+.err{color:#C23B3B;font-size:12px;margin-top:10px;display:none;font-weight:600;}
+.tag{font-size:10px;color:#888;margin-top:16px;}
+</style></head><body>
+<div class="card">
+  <img src="/assets/logo-full.png" alt="Estate Landscapers">
+  <h1>Quote Tool — Sign in</h1>
+  <form id="f">
+    <label>Username</label><input id="u" autocomplete="username" autofocus>
+    <label>Password</label><input id="p" type="password" autocomplete="current-password">
+    <div class="rem"><input type="checkbox" id="r"> <span>Remember this device for 30 days</span></div>
+    <button type="submit">Sign in</button>
+    <div class="err" id="e"></div>
+  </form>
+  <div class="tag">Integrity. Precision. Value.</div>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit', async function(ev){
+  ev.preventDefault();
+  var e=document.getElementById('e'); e.style.display='none';
+  try{
+    var r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:document.getElementById('u').value,password:document.getElementById('p').value,remember:document.getElementById('r').checked})});
+    var j=await r.json();
+    if(j.ok){location.href='/admin';}
+    else{e.textContent=j.error||'Sign-in failed';e.style.display='block';}
+  }catch(err){e.textContent='Network error';e.style.display='block';}
+});
+</script></body></html>

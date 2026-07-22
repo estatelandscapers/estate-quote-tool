@@ -81,3 +81,36 @@ textarea{resize:vertical;line-height:1.5;}
 .legend{font-size:10.5px;color:var(--grey);margin-top:8px;line-height:1.6;}
 .legend b{color:var(--ink);}
 @media print{.top,.nav,.savebar,.btn,.pill{display:none !important;}.card{border:none;box-shadow:none;}}
+
+/* ---- v7 additions ---- */
+.tag-tier{background:var(--blue-soft);color:var(--blue-deep);}
+.age-fresh{background:#DEEBE2;color:#2E7D46;}
+.age-flag{background:#FFF3D6;color:#B5761E;}
+.age-chase{background:#FCE3C0;color:#9A5B12;}
+.age-dead{background:#F1DAD6;color:#C23B3B;}
+.t-up{background:#DEEBE2;color:#2E7D46;}
+.t-down{background:#E4EDFB;color:#143FB0;}
+.t-sup{background:#E4EDFB;color:#143FB0;}
+.t-subv{background:#EFE6F7;color:#6A3E9C;}
+.t-ordered{background:#E4EDFB;color:#143FB0;}
+.t-delivered{background:#DEEBE2;color:#2E7D46;}
+.t-invoiced{background:#F1E9D8;color:#B08D3E;}
+.tcell{border:2px solid transparent;border-radius:8px;padding:5px 7px;cursor:pointer;text-align:center;background:#FAFAFA;min-width:86px;}
+.tcell:hover{background:#F0F4FF;}
+.tcell .sp{font-size:9.5px;color:var(--grey);display:block;line-height:1.25;}
+.tcell .pr{font-weight:800;font-size:12px;}
+.tcell.sel{border-color:var(--blue);background:var(--blue-soft);}
+.tcell.sel .pr{color:var(--blue-deep);}
+.tcell.na{opacity:.5;cursor:default;}
+.center{text-align:center;}
+.changesbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#F7F9FF;border:1px solid #D9E3FF;border-radius:9px;padding:9px 12px;margin-top:10px;font-size:11.5px;}
+.delta-up{color:#2E7D46;}
+.delta-down{color:#143FB0;}
+.stat.time{background:linear-gradient(135deg,#6A3E9C,#4A2A70);color:#fff;border:none;}
+.stat.time .k{color:#e0d0f5;}
+.stat.goodbox{background:#F2F8F4;border-color:#CBE0D2;}
+.stat.warnbox{background:#FDF0EE;border-color:#E9C9C9;}
+.admin-only{background:#F9F4E8;border:1px dashed #B08D3E;border-radius:9px;padding:12px;}
+.admin-only .k{color:#B08D3E;font-size:9.5px;font-weight:800;text-transform:uppercase;margin-bottom:4px;}
+.recipe-box{border:1.5px solid var(--blue);border-radius:10px;padding:13px;margin-top:10px;background:#FCFDFF;}
+.recipe-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--blue-deep);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;}

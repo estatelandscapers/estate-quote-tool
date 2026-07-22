@@ -47,10 +47,14 @@
         <div class="company-addr">${esc(c.name || 'Estate Landscapers')} &middot; ${esc(c.address || '')}${c.abn ? ' &middot; ' + esc(c.abn) : ''}</div>
       </div>
       ${accepted ? `<div class="accepted-banner">&#10003; Accepted &mdash; ${esc(D.acceptedPackage)} package. Thank you! A signed copy has been emailed to you.</div>` : ''}
-      <div class="pkg-row" id="pkgRow">
+      ${D.mixed ? `<div class="mixed-box">
+        <div class="mb-t">Your selection</div>
+        <div class="mb-h">${esc(D.mixed.base)} package, with ${D.mixed.changes.length} change${D.mixed.changes.length > 1 ? 's' : ''}</div>
+        ${D.mixed.changes.map(c => `<div class="mb-line"><span>${c.up ? '&uarr;' : '&darr;'} ${esc(c.code)} ${esc(c.name)} &mdash; <b>${esc(c.to)}</b></span><span class="${c.up ? 'mb-up' : 'mb-down'}">${c.delta >= 0 ? '+' : '&minus;'}$${Math.abs(c.delta).toLocaleString('en-AU')}</span></div>`).join('')}
+      </div><div class="pkg-desc" id="pkgDesc" style="display:none;"></div>` : `<div class="pkg-row" id="pkgRow">
         ${TIERS.map(t => `<div class="pkg ${t === tier ? 'on' : ''}" data-t="${t}"><b>${t}</b><div class="eo">${t === 'Basic' ? 'Entry spec' : '+' + money(eoFor(t)) + ' vs Basic'}</div></div>`).join('')}
       </div>
-      <div class="pkg-desc" id="pkgDesc"></div>
+      <div class="pkg-desc" id="pkgDesc"></div>`}
       <div class="split-area">
         ${D.hasSiteplan ? `<div class="siteplan-wrap"><img id="siteplan" src="/api/public/quote/${token}/siteplan" alt="Site plan" draggable="false"><div class="siteplan-cap">Your site plan &mdash; tap to enlarge</div></div>` : ''}
         <div class="box deliv-box"><div class="box-title">Scope 1 &mdash; Landscaping Works Deliverables</div><div id="delivs"></div></div>
@@ -65,6 +69,7 @@
       <footer>${esc(c.tagline || 'Integrity. Precision. Value.')}</footer>
     </div>`;
 
+    if (D.mixed) tier = D.mixed.base; // price shown = base package with per-line overrides already applied server-side
     document.querySelectorAll('.pkg').forEach(p => {
       p.addEventListener('click', () => { tier = p.dataset.t; track('package_select', { tier }); renderDynamic(); });
       p.addEventListener('mouseenter', () => { document.getElementById('pkgDesc').innerHTML = descHtml(p.dataset.t); });
@@ -94,10 +99,11 @@
 
   function renderDynamic() {
     document.querySelectorAll('.pkg').forEach(p => p.classList.toggle('on', p.dataset.t === tier));
-    document.getElementById('pkgDesc').innerHTML = descHtml(tier);
+    if (!D.mixed) document.getElementById('pkgDesc').innerHTML = descHtml(tier);
     const at = document.getElementById('acceptTier'); if (at) at.textContent = tier;
     document.getElementById('delivs').innerHTML = D.scope1.map(d => {
-      const pt = d.perTier[tier];
+      const lineTier = (D.mixed && d.tierOverride) ? d.tierOverride : tier;
+      const pt = d.perTier[lineTier];
       const eo = pt.price - d.perTier.Basic.price;
       const isRem = d.behaviour === 'remeasurable';
       const shared = d.sharedEnabled ? ` &middot; shared ${d.sharedPct}% with neighbour` : '';
@@ -106,11 +112,11 @@
         ${isRem ? `<div class="rem-line">&#9878; ${esc(String(d.qty))} ${esc(d.unit)} @ ${money(pt.rate)}/${esc(d.unit)} &mdash; remeasurable: final quantity measured on site${shared}</div>` : ''}
         ${eo > 0 ? `<div class="eo-line">+${money(eo)} over the Basic spec for this item</div>` : ''}</div>`;
     }).join('');
-    const sub = D.tierTotals[tier];
+    const sub = D.mixed ? D.mixed.sellExGst : D.tierTotals[tier];
     const sur = D.surchargePerTier ? D.surchargePerTier[tier] : 0;
     const s2 = D.scope2Total || 0;
     const exGst = sub + sur + s2;
-    let rows = `<div class="r"><span>Scope 1 subtotal &mdash; ${tier}</span><span>${money(sub)}</span></div>`;
+    let rows = `<div class="r"><span>Scope 1 subtotal &mdash; ${D.mixed ? D.mixed.base + ' + changes' : tier}</span><span>${money(sub)}</span></div>`;
     if (sur > 0 && D.surcharges && D.surcharges.length) rows += `<div class="r"><span>Site conditions &mdash; ${D.surcharges.map(s => esc(s.name)).join(', ')}</span><span>${money(sur)}</span></div>`;
     if (s2 > 0) rows += `<div class="r"><span>Scope 2 disposal (est. &mdash; remeasurable)</span><span>${money(s2)}</span></div>`;
     rows += `<div class="r"><span>GST (10%)</span><span>${money(exGst * 0.1)}</span></div>`;

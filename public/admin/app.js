@@ -1,26 +1,42 @@
-// Estate Landscapers — admin SPA
+// Estate Landscapers — admin SPA (v7: logins, vendors, recipes, costing, jobs, FY close)
 const $ = (s, r = document) => r.querySelector(s);
-const api = (p, opts) => fetch('/api' + p, opts).then(async r => { const t = await r.text(); try { return t ? JSON.parse(t) : {}; } catch { return {}; } });
-const money = n => '$' + Math.round(n || 0).toLocaleString('en-AU');
+const api = (p, opts) => fetch('/api' + p, opts).then(async r => {
+  if (r.status === 401) { location.href = '/admin/login.html'; return {}; }
+  const t = await r.text(); try { return t ? JSON.parse(t) : {}; } catch { return {}; }
+});
+const money = n => (n < 0 ? '−$' : '$') + Math.abs(Math.round(n || 0)).toLocaleString('en-AU');
+const money2 = n => '$' + (n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
-let state = { tab: 'dash', quoteId: null, poId: null, mgmtUnlocked: false, showSuperseded: false, scrollY: 0 };
+let USER = null;
+let state = { tab: 'dash', quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
-function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2000); }
+function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
+const isAdmin = () => USER && USER.role === 'admin';
 
+async function boot() {
+  USER = await api('/auth/me');
+  if (!USER || !USER.role) return; // redirected
+  shell();
+}
 function shell() {
-  const tabs = [['dash', 'Dashboard'], ['quotes', 'Quotes'], ['po', 'Purchase Orders'], ['pricing', 'Pricing Sheet'], ['surcharges', 'Surcharges'], ['checklist', 'Checklist'], ['settings', 'Settings']];
+  const all = [['dash', 'Dashboard'], ['quotes', 'Quotes'], ['jobs', 'Jobs'], ['po', 'Purchase Orders'], ['vendors', 'Vendors'], ['recipes', 'Recipes'], ['pricing', 'Pricing'], ['surcharges', 'Surcharges'], ['checklist', 'Checklist'], ['settings', 'Settings']];
+  const adminOnlyTabs = ['jobs', 'vendors', 'recipes', 'surcharges', 'checklist', 'settings'];
+  const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
+  if (!tabs.find(t => t[0] === state.tab)) state.tab = 'dash';
   $('#app').innerHTML = `
     <div class="top">
       <div class="brand">${LOGO}<div><b>ESTATE LANDSCAPERS</b><span>Quote Tool</span></div></div>
       <div class="nav">${tabs.map(t => `<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}">${t[1]}</button>`).join('')}</div>
       <div class="spacer"></div>
-      <span class="tag ${state.mgmtUnlocked ? 'tag-accepted' : 'tag-draft'}">${state.mgmtUnlocked ? '\u{1F513} Management' : '\u{1F512} Team view'}</span>
+      <span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}</span>
+      <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
     </div>
     <div class="wrap" id="view"></div>`;
   document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; route(); }));
+  $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
   route();
 }
 function route() {
@@ -28,7 +44,10 @@ function route() {
   const v = $('#view');
   if (state.tab === 'dash') return dashboard(v);
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
+  if (state.tab === 'jobs') return jobsTab(v);
   if (state.tab === 'po') return state.poId ? poEditor(v) : poList(v);
+  if (state.tab === 'vendors') return vendorsTab(v);
+  if (state.tab === 'recipes') return recipesTab(v);
   if (state.tab === 'pricing') return pricingSheet(v);
   if (state.tab === 'surcharges') return surchargesTab(v);
   if (state.tab === 'checklist') return checklistTab(v);
@@ -37,12 +56,12 @@ function route() {
 
 // ---------------- DASHBOARD ----------------
 async function dashboard(v) {
-  v.innerHTML = `<div class="card"><h2>Dashboard</h2><div class="sub">Value secured = quotes accepted & signed. Year = Australian FY (1 Jul – 30 Jun).</div><div class="rule"></div><div id="dashcards">Loading…</div></div><div class="card"><h2>Recent activity</h2><div class="rule"></div><div id="dashrecent"></div></div>`;
+  v.innerHTML = `<div class="card"><h2>Dashboard</h2><div class="sub">Secured = accepted & signed. FY = 1 Jul – 30 Jun. All margins shown in this tool are GROSS margin.</div><div class="rule"></div><div id="dashcards">Loading…</div></div><div class="card"><h2>Recent activity</h2><div class="rule"></div><div id="dashrecent"></div></div>`;
   const d = await api('/dashboard');
   $('#dashcards').innerHTML = `
     <div class="grid4">
-      <div class="stat hero"><div class="k">Secured — this week</div><div class="v">${money(d.securedWeek)}</div></div>
-      <div class="stat hero"><div class="k">Secured — this month</div><div class="v">${money(d.securedMonth)}</div></div>
+      <div class="stat hero"><div class="k">Secured — week</div><div class="v">${money(d.securedWeek)}</div></div>
+      <div class="stat hero"><div class="k">Secured — month</div><div class="v">${money(d.securedMonth)}</div></div>
       <div class="stat hero"><div class="k">Secured — FY</div><div class="v">${money(d.securedFY)}</div></div>
       <div class="stat"><div class="k">Quotes built (30d)</div><div class="v">${d.builtMonth || 0}</div></div>
     </div>
@@ -57,34 +76,33 @@ async function dashboard(v) {
     </tbody></table>` : '<p class="muted">No activity yet.</p>';
 }
 
-// ---------------- QUOTES LIST ----------------
+// ---------------- QUOTES ----------------
+const AGE = { fresh: ['age-fresh', d => d + 'd'], flag: ['age-flag', d => d + 'd — follow up'], chase: ['age-chase', d => d + 'd — chase'], dead: ['age-dead', d => d + 'd — dead'] };
 async function quotesList(v) {
   v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-    <div><h2>Quotes</h2><div class="sub">Latest revision is the live link. Superseded revisions hidden by default.</div></div>
+    <div><h2>Quotes</h2><div class="sub">Colour = quote age (thresholds in Settings). Latest revision is the live link.</div></div>
     <div style="display:flex;gap:10px;align-items:center;"><label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showSup" ${state.showSuperseded ? 'checked' : ''} style="width:auto;"> Show superseded</label><button class="btn btn-blue" id="newQuote">+ New quote</button></div></div>
     <div class="rule"></div><div id="qtable">Loading…</div></div>`;
-  $('#newQuote').addEventListener('click', newQuote);
+  $('#newQuote').addEventListener('click', async () => { const q = await api('/quotes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: '', projectTitle: 'Landscape Works' }) }); state.quoteId = q.id; state.scrollY = 0; route(); });
   $('#showSup').addEventListener('change', e => { state.showSuperseded = e.target.checked; quotesList(v); });
   let list = await api('/quotes');
   if (!state.showSuperseded) list = list.filter(q => q.status !== 'superseded');
-  $('#qtable').innerHTML = list.length ? `<table><thead><tr><th>Quote</th><th>Client</th><th>Project</th><th>Value</th><th>Status</th><th>Views</th><th></th></tr></thead><tbody>
-    ${list.map(q => `<tr><td><b>${esc(q.quoteNumber)}</b></td><td>${esc(q.client || '—')}</td><td>${esc(q.projectTitle || '')}</td><td>${q.value ? money(q.value) : '—'}</td>
-      <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span></td><td>${q.views}</td>
-      <td class="right"><button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button> <button class="btn btn-danger btn-sm" data-del="${q.id}" title="Delete">✕</button></td></tr>`).join('')}
+  $('#qtable').innerHTML = list.length ? `<table><thead><tr><th>Quote</th><th>Client</th><th>Tier</th><th>Value</th><th>Status</th><th>Age</th><th>Views</th><th></th></tr></thead><tbody>
+    ${list.map(q => { const a = AGE[q.ageBand] || AGE.fresh; return `<tr><td><b>${esc(q.quoteNumber)}</b></td><td>${esc(q.client || '—')}</td><td><span class="tag tag-tier">${esc(q.customerTier || 'Silver')}</span></td><td>${q.value ? money(q.value) : '—'}</td>
+      <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span></td>
+      <td>${q.status === 'accepted' ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td>${q.views}</td>
+      <td class="right"><button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button> <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button></td></tr>`; }).join('')}
     </tbody></table>` : '<p class="muted">No quotes yet.</p>';
   v.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => { state.quoteId = b.dataset.open; state.scrollY = 0; route(); }));
-  v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this quote? This cannot be undone.')) { await api('/quotes/' + b.dataset.del, { method: 'DELETE' }); toast('Quote deleted'); quotesList(v); } }));
-}
-async function newQuote() {
-  const q = await api('/quotes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: '', projectTitle: 'Landscape Works' }) });
-  state.quoteId = q.id; state.scrollY = 0; route();
+  v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this quote?')) { await api('/quotes/' + b.dataset.del, { method: 'DELETE' }); toast('Deleted'); quotesList(v); } }));
 }
 
-// ---------------- QUOTE EDITOR (reordered) ----------------
+// ---------------- QUOTE EDITOR ----------------
 async function quoteEditor(v) {
   v.innerHTML = `<p class="muted">Loading quote…</p>`;
-  const [q, priceItems, surcharges, checklist] = await Promise.all([
-    api('/quotes/' + state.quoteId), api('/price-list'), api('/price-list/surcharges/all'), api('/checklist/quote/' + state.quoteId)]);
+  const [q, priceItems, surcharges, checklist, costing] = await Promise.all([
+    api('/quotes/' + state.quoteId), api('/price-list'), api('/price-list/surcharges/all'),
+    api('/checklist/quote/' + state.quoteId), api('/quotes/' + state.quoteId + '/costing')]);
   const link = location.origin + '/q/' + q.token;
   const applied = q.appliedSurcharges || [];
   const isApplied = id => applied.some(s => s.id === id);
@@ -95,8 +113,8 @@ async function quoteEditor(v) {
   v.innerHTML = `
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>Quote ${esc(q.quoteNumber)}</h2><div class="sub" id="saveStatus">Auto-saves as you go. Client can only sign — upgrades create a new revision.</div></div>
-      <div style="display:flex;gap:6px;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${q.status}</span></div>
+      <div><h2>Quote ${esc(q.quoteNumber)}</h2><div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a><span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${q.status}</span></div>
     </div>
     <div class="rule"></div>
     <div class="linkbar"><span>🔗 Live link:</span><input id="linkInput" readonly value="${esc(link)}"><button class="btn btn-blue btn-sm" id="copyLink">Copy</button><a class="btn btn-ghost btn-sm" href="${esc(link)}" target="_blank">Preview</a></div>
@@ -111,44 +129,52 @@ async function quoteEditor(v) {
       <div class="field"><label>Site address</label><input id="f_address" value="${esc(q.address || '')}"></div>
     </div>
     <div class="grid3">
-      <div class="field"><label>Default package</label><div class="seg" id="segPkg">${TIERS.map(t => `<button data-v="${t}" class="${q.defaultPackage === t ? 'on' : ''}">${t}</button>`).join('')}</div></div>
+      <div class="field"><label>Base package</label><div class="seg" id="segPkg">${TIERS.map(t => `<button data-v="${t}" class="${q.defaultPackage === t ? 'on' : ''}">${t}</button>`).join('')}</div></div>
+      <div class="field"><label>Customer tier ${isAdmin() ? '(margin target)' : ''}</label><select id="f_ctier">${['Bronze', 'Silver', 'Gold'].map(t => `<option ${q.customerTier === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="field"><label>Crew size (site time)</label><input id="f_crew" type="number" min="1" max="10" value="${q.crewSize || 2}"></div>
+    </div>
+    <div class="grid3">
       <div class="field"><label>Payment schedule</label><div class="seg" id="segPay"><button data-v="standard" class="${q.paymentSchedule === 'standard' ? 'on' : ''}">10/20/30/30/10</button><button data-v="small" class="${q.paymentSchedule === 'small' ? 'on' : ''}">50/40/10</button></div></div>
       <div class="field"><label>Validity (days)</label><input id="f_validity" type="number" value="${q.validityDays || 14}"></div>
+      <div></div>
     </div>
     <div class="field"><label>Site-specific notes (shown to client)</label><textarea id="f_notes" rows="2">${esc(q.siteNotes || '')}</textarea></div>
   </div>
 
   <div class="card">
-    <h2>Add deliverables</h2><div class="sub">Tick common items, or pick from the full sheet. Adding keeps your place on the page.</div><div class="rule"></div>
+    <h2>Add deliverables</h2><div class="sub">Tick common items or pick from the full sheet. Keeps your place on the page.</div><div class="rule"></div>
     <div id="pickList">${commonCodes.map(code => { const pi = priceItems.find(p => p.code === code); if (!pi) return ''; const on = usedItemIds.has(pi.id); return `<span class="pickitem ${on ? 'on' : ''}" data-pick="${pi.id}">${on ? '✓ ' : ''}${esc(pi.code)} ${esc(pi.name.split(' ').slice(0, 2).join(' '))}</span>`; }).join('')}</div>
-    <div style="margin-top:8px;"><select id="addPick" style="max-width:360px;"><option value="">+ Add any deliverable from full pricing sheet…</option>${priceItems.map(p => `<option value="${p.id}">${esc(p.code)} — ${esc(p.name)}</option>`).join('')}</select> <button class="btn btn-ghost btn-sm" id="addCustom">+ Custom line</button></div>
+    <div style="margin-top:8px;"><select id="addPick" style="max-width:360px;"><option value="">+ Add any deliverable…</option>${priceItems.map(p => `<option value="${p.id}">${esc(p.code)} — ${esc(p.name)}</option>`).join('')}</select> <button class="btn btn-ghost btn-sm" id="addCustom">+ Custom line</button></div>
   </div>
 
   <div class="card">
-    <h2>Deliverables</h2><div class="rule"></div>
+    <h2>Deliverables — pick the tier per line</h2>
+    <div class="sub">Click a tier cell to upgrade/downgrade just that line (mix & match). ↑↓ badges show lines that differ from the base package.</div><div class="rule"></div>
     <div class="scope-box"><div class="scope-title">Scope 1 — Landscaping Works Deliverables</div><div id="scope1"></div></div>
     <div class="scope-box s2"><div class="scope-title">Scope 2 — Disposal / remeasurable (cost + 15%)</div><div id="scope2"></div></div>
+    <div id="changesBar"></div>
   </div>
 
+  <div class="card" id="costCard"></div>
+
   <div class="card">
-    <h2>Site surcharges <span class="reqbadge">Required</span></h2><div class="sub">Tick any that apply, or mark N/A.</div><div class="rule"></div>
+    <h2>Site surcharges <span class="reqbadge">Required</span></h2><div class="rule"></div>
     <div id="surChips">${surcharges.map(s => `<span class="chip ${isApplied(s.id) ? 'on' : ''}" data-sur="${s.id}">${esc(s.name)} ${s.kind === 'percent' ? '+' + s.rate + '%' : '+' + money(s.rate)}</span>`).join('')}
       <span class="chip ${q.surchargesNa ? 'on' : ''}" data-sur-na="1">N/A — no site surcharges</span></div>
   </div>
 
   <div class="card">
-    <h2>Structural checklist <span class="reqbadge">Blocks save if critical unticked</span></h2><div class="sub">Editable. Critical items must be ticked before saving/sending.</div><div class="rule"></div>
+    <h2>Structural checklist <span class="reqbadge">Blocks save if critical unticked</span></h2><div class="rule"></div>
     <div id="qchecklist"></div>
-    <div style="margin-top:8px;"><a href="#" id="editChecklist" style="font-size:11px;">Edit checklist items →</a></div>
   </div>
 
   <div class="card">
-    <h2>Site plan / drawing <span class="reqbadge">Required</span></h2><div class="sub">Upload the marked-up drawing (shown to client), or mark N/A.</div><div class="rule"></div>
+    <h2>Site plan / drawing <span class="reqbadge">Required</span></h2><div class="rule"></div>
     <div id="siteplanArea">${q.hasSiteplan ? `<img src="/api/public/quote/${q.token}/siteplan?t=${Date.now()}" style="max-width:100%;border:1px solid var(--line);border-radius:10px;margin-bottom:10px;">` : '<p class="muted">No drawing uploaded.</p>'}</div>
     <div class="row" style="gap:14px;flex-wrap:wrap;">
       <input type="file" id="planFile" accept="image/png,image/jpeg" style="max-width:300px;width:auto;">
       ${q.hasSiteplan ? '<button class="btn btn-ghost btn-sm" id="removePlan">Remove</button>' : ''}
-      <label style="font-size:11px;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="planNa" ${q.siteplanNa ? 'checked' : ''} style="width:auto;"> Mark N/A — no drawing for this job</label>
+      <label style="font-size:11px;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="planNa" ${q.siteplanNa ? 'checked' : ''} style="width:auto;"> Mark N/A</label>
     </div>
   </div>
 
@@ -157,41 +183,38 @@ async function quoteEditor(v) {
     <div style="display:flex;gap:8px;"><button class="btn btn-ghost" id="saveDraft">Save draft</button><button class="btn btn-blue" id="saveSend" ${uncheckedCritical > 0 ? 'disabled style="opacity:.55;cursor:not-allowed;"' : ''}>Save & get live link</button></div>
   </div>`;
 
-  renderItems(q);
+  renderItemsTiered(q, costing);
+  renderCostPanel(costing);
   renderChecklist(checklist);
   window.scrollTo(0, state.scrollY);
+  const reload = () => { state.scrollY = window.scrollY; quoteEditor(v); };
 
   const autosave = async () => {
-    const body = { client: $('#f_client').value, clientEmail: $('#f_email').value, projectTitle: $('#f_title').value, address: $('#f_address').value, validityDays: parseInt($('#f_validity').value) || 14, defaultPackage: $('#segPkg .on').dataset.v, paymentSchedule: $('#segPay .on').dataset.v, siteNotes: $('#f_notes').value };
+    const body = { client: $('#f_client').value, clientEmail: $('#f_email').value, projectTitle: $('#f_title').value, address: $('#f_address').value, validityDays: parseInt($('#f_validity').value) || 14, defaultPackage: $('#segPkg .on').dataset.v, paymentSchedule: $('#segPay .on').dataset.v, siteNotes: $('#f_notes').value, customerTier: $('#f_ctier').value, crewSize: parseInt($('#f_crew').value) || 2 };
     await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     $('#saveStatus').textContent = 'Auto-saved just now.';
   };
   ['f_client', 'f_email', 'f_title', 'f_address', 'f_validity', 'f_notes'].forEach(id => $('#' + id).addEventListener('change', autosave));
-  $('#segPkg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPkg').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave().then(() => reload()); }));
+  ['f_ctier', 'f_crew'].forEach(id => $('#' + id).addEventListener('change', () => autosave().then(reload)));
+  $('#segPkg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPkg').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave().then(reload); }));
   $('#segPay').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPay').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave(); }));
-
-  function reload() { state.scrollY = window.scrollY; quoteEditor(v); }
 
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
-  $('#newRev').addEventListener('click', async () => { const r = await api('/quotes/' + q.id + '/revision', { method: 'POST' }); state.quoteId = r.id; state.scrollY = 0; toast('Revision ' + r.quoteNumber + ' created'); route(); });
+  $('#newRev').addEventListener('click', async () => { const r = await api('/quotes/' + q.id + '/revision', { method: 'POST' }); state.quoteId = r.id; state.scrollY = 0; toast('Revision ' + r.quoteNumber + ' created — old link superseded'); route(); });
   $('#saveDraft').addEventListener('click', async () => { await autosave(); toast('Draft saved'); });
   $('#saveSend').addEventListener('click', async () => { await autosave(); toast('Saved — live link ready'); });
-  $('#editChecklist').addEventListener('click', e => { e.preventDefault(); state.tab = 'checklist'; state.quoteId = null; route(); });
 
-  // pick-list toggles (keep scroll)
   v.querySelectorAll('[data-pick]').forEach(chip => chip.addEventListener('click', async () => {
     state.scrollY = window.scrollY;
     const pid = chip.dataset.pick;
     const existing = [...q.items.scope1, ...q.items.scope2].find(i => i.priceItemId === pid);
-    if (existing) { await api(`/quotes/${q.id}/items/${existing.id}`, { method: 'DELETE' }); }
+    if (existing) await api(`/quotes/${q.id}/items/${existing.id}`, { method: 'DELETE' });
     else { const pi = priceItems.find(p => p.id === pid); await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: pi.code === 'SC2' ? 2 : 1, priceItemId: pid, qty: 1 }) }); }
     reload();
   }));
   $('#addPick').addEventListener('change', async e => { if (!e.target.value) return; state.scrollY = window.scrollY; const pi = priceItems.find(p => p.id === e.target.value); await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: pi.code === 'SC2' ? 2 : 1, priceItemId: pi.id, qty: 1 }) }); reload(); });
   $('#addCustom').addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: 1, customCode: 'XX', customName: 'Custom line', customUnit: 'ea', customRate: 0, qty: 1 }) }); reload(); });
-
-  // surcharges
   v.querySelectorAll('[data-sur]').forEach(c => c.addEventListener('click', async () => {
     state.scrollY = window.scrollY;
     const id = c.dataset.sur; const s = surcharges.find(x => x.id === id);
@@ -201,11 +224,88 @@ async function quoteEditor(v) {
     reload();
   }));
   const naChip = v.querySelector('[data-sur-na]'); if (naChip) naChip.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appliedSurcharges: [], surchargesNa: !q.surchargesNa }) }); reload(); });
-
-  // siteplan
-  $('#planFile').addEventListener('change', e => { const file = e.target.files[0]; if (!file) return; state.scrollY = window.scrollY; const rd = new FileReader(); rd.onload = async () => { const b64 = rd.result.split(',')[1]; await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: b64, mime: file.type }) }); toast('Drawing uploaded'); reload(); }; rd.readAsDataURL(file); });
-  const rmPlan = $('#removePlan'); if (rmPlan) rmPlan.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: null, mime: null }) }); toast('Drawing removed'); reload(); });
+  $('#planFile').addEventListener('change', e => { const file = e.target.files[0]; if (!file) return; state.scrollY = window.scrollY; const rd = new FileReader(); rd.onload = async () => { await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: rd.result.split(',')[1], mime: file.type }) }); toast('Drawing uploaded'); reload(); }; rd.readAsDataURL(file); });
+  const rmPlan = $('#removePlan'); if (rmPlan) rmPlan.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: null, mime: null }) }); reload(); });
   $('#planNa').addEventListener('change', async e => { await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteplanNa: e.target.checked }) }); });
+
+  function renderItemsTiered(q, c) {
+    const lineMap = {}; (c.perLine || []).forEach(l => lineMap[l.id] = l);
+    const row = it => {
+      const cl = lineMap[it.id];
+      const behav = BEHAV[it.behaviour] || '';
+      let tierCells = '';
+      if (cl) {
+        TIERS.forEach(t => {
+          const tv = cl.tiers[t];
+          const on = cl.selected === t;
+          tierCells += `<td class="center"><div class="tcell ${on ? 'sel' : ''} ${cl.tiered ? '' : 'na'}" data-tier-pick="${it.id}" data-t="${t}">
+            <span class="sp">${esc(tv.spec || '')}</span><span class="pr">${money(tv.sell)}</span></div></td>`;
+        });
+      } else tierCells = `<td class="center muted" colspan="3">—</td>`;
+      const diff = cl && cl.selected !== c.base;
+      const up = diff && TIERS.indexOf(cl.selected) > TIERS.indexOf(c.base);
+      return `<tr>
+        <td><b>${esc(it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
+        <td>${esc(it.name)}
+          ${behav ? `<br><span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${behav}</span>` : ''}
+          ${cl && cl.hasRecipe ? `<br><select data-method="${it.id}" style="width:100px;font-size:10.5px;margin-top:3px;"><option value="" ${!it.method ? 'selected' : ''}>Default</option><option value="in" ${it.method === 'in' ? 'selected' : ''}>In-house</option><option value="sub" ${it.method === 'sub' ? 'selected' : ''}>Subcontract</option></select>
+          <input data-waste="${it.id}" type="number" placeholder="waste %" value="${it.wastageOverride ?? ''}" style="width:64px;font-size:10.5px;margin-top:3px;" title="Wastage override %">` : ''}
+        </td>
+        <td><input type="number" step="0.01" value="${it.qty}" data-qty="${it.id}" style="width:70px;"> ${esc(it.unit)}</td>
+        ${tierCells}
+        <td class="right"><button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
+    };
+    const head = `<table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
+    $('#scope1').innerHTML = q.items.scope1.length ? head + q.items.scope1.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 1 items yet.</p>';
+    $('#scope2').innerHTML = q.items.scope2.length ? head + q.items.scope2.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 2 items yet.</p>';
+    if (c.mixed) {
+      const up = c.changes.filter(x => x.up).reduce((a, x) => a + x.delta, 0);
+      const dn = c.changes.filter(x => !x.up).reduce((a, x) => a + x.delta, 0);
+      $('#changesBar').innerHTML = `<div class="changesbar"><b>${c.changes.length} change(s) from ${c.base}:</b>
+        ${c.changes.map(x => `<span class="tag ${x.up ? 't-up' : 't-down'}">${x.up ? '↑' : '↓'} ${esc(x.code)} → ${esc(x.to)} ${x.delta >= 0 ? '+' : ''}${money(x.delta)}</span>`).join(' ')}
+        <span style="margin-left:auto;">Upgrades <b class="delta-up">+${money(up)}</b> · Downgrades <b class="delta-down">${money(dn)}</b></span></div>`;
+    } else $('#changesBar').innerHTML = '';
+    v.querySelectorAll('[data-tier-pick]').forEach(cell => cell.addEventListener('click', async () => {
+      const l = lineMap[cell.dataset.tierPick]; if (!l || !l.tiered) return;
+      state.scrollY = window.scrollY;
+      const t = cell.dataset.t;
+      await api(`/quotes/${q.id}/items/${cell.dataset.tierPick}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tierOverride: t === c.base ? null : t }) });
+      reload();
+    }));
+    v.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${i.dataset.qty}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qty: parseFloat(i.value) || 0 }) }); reload(); }));
+    v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
+    v.querySelectorAll('[data-method]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.method}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: s.value || null }) }); reload(); }));
+    v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); reload(); }));
+  }
+
+  function renderCostPanel(c) {
+    const s = c.selected || {};
+    if (isAdmin()) {
+      const ok = !c.belowTarget;
+      $('#costCard').innerHTML = `<h2>Cost, gross margin & site time ${c.mixed ? '<span class="tag t-up">Mixed selection</span>' : ''}</h2>
+        <div class="sub">Gross margin only — overheads come off at year-end (Jobs tab). Sell = pricing sheet; guide = cost + ${c.target}% (${esc($('#f_ctier') ? $('#f_ctier').value : '')} target). GST is added at the very end.</div><div class="rule"></div>
+        <div class="grid4">
+          <div class="stat"><div class="k">Materials + delivery + plant</div><div class="v">${money((s.matCost || 0) + (s.delivery || 0) + (s.plant || 0))}</div></div>
+          <div class="stat"><div class="k">Own labour</div><div class="v">${money(s.labCost)}</div></div>
+          <div class="stat"><div class="k">Subcontract</div><div class="v">${money(s.subCost)}</div></div>
+          <div class="stat hero"><div class="k">Total cost</div><div class="v">${money(s.cost)}</div></div>
+        </div>
+        <div class="grid4" style="margin-top:10px;">
+          <div class="stat"><div class="k">Sell (ex GST)</div><div class="v">${money(s.sell)}</div></div>
+          <div class="admin-only"><div class="k">🔒 Gross margin</div><div class="v" style="color:${ok ? 'var(--green)' : 'var(--red)'};">${money(c.grossMargin)} · ${c.grossMarginPct}%</div><div style="font-size:10px;color:${ok ? 'var(--green)' : 'var(--red)'};font-weight:700;">${ok ? 'Above' : 'BELOW'} ${c.target}% target</div></div>
+          <div class="stat"><div class="k">Cost-plus guide (${c.target}%)</div><div class="v">${money(c.guidePrice)}</div><div style="font-size:10px;color:var(--grey);">Guide only — sheet sets sell</div></div>
+          <div class="stat time"><div class="k">Site time</div><div class="v">${c.days} days</div><div style="font-size:10px;color:#e0d0f5;">${c.hours} person-hrs · crew ${c.crew}</div></div>
+        </div>
+        <div class="legend">GST on the final client total: sell ${money(s.sell)} + GST ${money(s.sell * 0.1)} = <b>${money(s.sell * 1.1)}</b> inc. GST (before surcharges/Scope 2).</div>`;
+    } else {
+      $('#costCard').innerHTML = `<h2>Costing</h2><div class="rule"></div>
+        <div class="grid3">
+          <div class="stat"><div class="k">Total cost</div><div class="v">${money(s.cost)}</div></div>
+          <div class="stat"><div class="k">Sell (ex GST)</div><div class="v">${money(s.sell)}</div></div>
+          <div class="stat time"><div class="k">Site time</div><div class="v">${c.days} days</div><div style="font-size:10px;color:#e0d0f5;">${c.hours} person-hrs · crew ${c.crew}</div></div>
+        </div>`;
+    }
+  }
 }
 
 function renderChecklist(checklist) {
@@ -215,98 +315,313 @@ function renderChecklist(checklist) {
     ${items.map(c => `<div class="check-row"><input type="checkbox" data-chk="${c.id}" ${c.checked ? 'checked' : ''}> ${esc(c.label)} ${c.critical ? '<span class="tag tag-rem">Critical</span>' : ''}</div>`).join('')}</div>`).join('');
   host.querySelectorAll('[data-chk]').forEach(cb => cb.addEventListener('change', async () => {
     state.scrollY = window.scrollY;
-    await api(`/checklist/quote/${state.quoteId}/item/${cb.dataset.chk}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checked: cb.checked, checkedBy: 'Estimator' }) });
+    await api(`/checklist/quote/${state.quoteId}/item/${cb.dataset.chk}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checked: cb.checked, checkedBy: USER ? USER.name : 'Estimator' }) });
     quoteEditor($('#view'));
   }));
 }
 
-function renderItems(q) {
-  const row = it => {
-    const behav = BEHAV[it.behaviour] || '';
-    return `<tr>
-      <td><b>${esc(it.code)}</b></td>
-      <td>${esc(it.name)}<br><span class="muted" style="font-size:11px;">${esc(it.effectiveSpec || '')}</span>
-        ${it.behaviour === 'remeasurable' ? `<label style="font-size:10.5px;display:inline-flex;align-items:center;gap:5px;margin-top:4px;"><input type="checkbox" style="width:auto;" ${it.sharedEnabled ? 'checked' : ''} data-shared="${it.id}"> shared</label>${it.sharedEnabled ? `<input style="width:56px;display:inline-block;margin-left:6px;" type="number" value="${it.sharedPct}" data-sharedpct="${it.id}"> %` : ''}` : ''}</td>
-      <td>${behav ? `<span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : it.behaviour === 'allowance' ? 'allow' : 'opt'}">${behav}</span>` : ''}</td>
-      <td><select data-tier="${it.id}" style="width:105px;"><option value="">Default</option>${TIERS.map(t => `<option value="${t}" ${it.tierOverride === t ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
-      <td><input type="number" step="0.01" value="${it.qty}" data-qty="${it.id}" style="width:74px;"></td>
-      <td>${esc(it.unit)}</td><td class="right">${money(it.effectiveRate)}</td><td class="right"><b>${money(it.effectiveTotal)}</b></td>
-      <td class="right"><button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
-  };
-  const head = `<table><thead><tr><th>Code</th><th>Deliverable</th><th>Flag</th><th>Tier</th><th>Qty</th><th>Unit</th><th class="right">Rate</th><th class="right">Total</th><th></th></tr></thead><tbody>`;
-  $('#scope1').innerHTML = q.items.scope1.length ? head + q.items.scope1.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 1 items yet.</p>';
-  $('#scope2').innerHTML = q.items.scope2.length ? head + q.items.scope2.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 2 items yet.</p>';
-  const v = $('#view');
-  const save = window.scrollY;
-  v.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${i.dataset.qty}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qty: parseFloat(i.value) || 0 }) }); quoteEditor(v); }));
-  v.querySelectorAll('[data-tier]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.tier}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tierOverride: s.value || null }) }); quoteEditor(v); }));
-  v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); quoteEditor(v); }));
-  v.querySelectorAll('[data-shared]').forEach(c => c.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${c.dataset.shared}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sharedEnabled: c.checked }) }); quoteEditor(v); }));
-  v.querySelectorAll('[data-sharedpct]').forEach(i => i.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${i.dataset.sharedpct}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sharedPct: parseFloat(i.value) || 50 }) }); quoteEditor(v); }));
+// ---------------- JOBS (won register + FY close) ----------------
+async function jobsTab(v) {
+  const data = await api('/jobs?fy=' + state.jobsFy);
+  const fys = data.fys || [];
+  v.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div><h2>Jobs won — register</h2><div class="sub">Quoted vs ACTUAL gross margin. Actuals come from the final (edited) PO for each job. Net margin is a year-end figure after overheads.</div></div>
+      <div class="field" style="margin:0;"><label>Financial year</label><select id="fySel"><option value="all">All years</option>${fys.map(f => `<option value="${f}" ${state.jobsFy === f ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
+    </div>
+    <div class="rule"></div>
+    <table><thead><tr><th>Quote</th><th>Client</th><th>FY</th><th>Package</th><th class="right">Sell ex GST</th><th class="right">Quoted cost</th><th class="right">Quoted GM</th><th class="right">Actual cost (final PO)</th><th class="right">Actual GM</th><th>Status</th><th></th></tr></thead><tbody>
+    ${(data.jobs || []).map(jb => {
+      const aC = jb.actualGMPct == null ? 'var(--grey)' : (jb.actualGMPct >= jb.quotedGMPct ? 'var(--green)' : 'var(--red)');
+      return `<tr><td><b>${esc(jb.quoteNumber)}</b></td><td>${esc(jb.client || '')}</td><td>${esc(jb.fy || '')}</td><td>${esc(jb.tier || '')}${jb.mixed ? ' <span class="tag t-up">mixed</span>' : ''}</td>
+      <td class="right">${money(jb.sellExGst)}</td><td class="right">${money(jb.quotedCost)}</td>
+      <td class="right"><b>${money(jb.quotedGM)} · ${jb.quotedGMPct}%</b></td>
+      <td class="right">${jb.actualCost != null ? money(jb.actualCost) : '—'}</td>
+      <td class="right"><b style="color:${aC};">${jb.actualGM != null ? money(jb.actualGM) + ' · ' + jb.actualGMPct + '%' : '—'}</b></td>
+      <td><span class="tag ${jb.jobStatus === 'complete' ? 'tag-closed' : 'tag-open'}">${jb.jobStatus}</span></td>
+      <td class="right">${jb.poId ? `<button class="btn btn-ghost btn-sm" data-po="${jb.poId}">PO</button>` : ''}</td></tr>`;
+    }).join('') || '<tr><td colspan="11" class="muted">No jobs won yet.</td></tr>'}</tbody></table>
+    <div class="legend">All figures here are <b>GROSS margin</b> (before overheads). Edit a job's PO to update its actual cost.</div>
+  </div>
+  <div class="card"><h2>Year-end close — net margin</h2><div class="sub">Enter the year's overheads (office, insurance, vehicles…) once actual costs are known, then close the year.</div><div class="rule"></div>
+    <div id="yearend">${fys.length ? '' : '<p class="muted">No completed financial years yet.</p>'}</div></div>`;
+  $('#fySel').addEventListener('change', e => { state.jobsFy = e.target.value; jobsTab(v); });
+  v.querySelectorAll('[data-po]').forEach(b => b.addEventListener('click', () => { state.tab = 'po'; state.poId = b.dataset.po; shell(); }));
+  if (fys.length) {
+    const fy = state.jobsFy !== 'all' ? state.jobsFy : fys[0];
+    const y = await api('/jobs/yearend/' + fy);
+    const oh = y.overheads || {};
+    $('#yearend').innerHTML = `
+      <div class="grid4">
+        <div class="stat"><div class="k">${fy} revenue (won jobs)</div><div class="v">${money(y.revenue)}</div></div>
+        <div class="stat"><div class="k">Actual cost</div><div class="v">${money(y.actualCost)}</div></div>
+        <div class="stat"><div class="k">Gross margin</div><div class="v">${money(y.grossMargin)} · ${y.grossMarginPct}%</div></div>
+        <div class="stat ${y.netMargin >= 0 ? 'goodbox' : 'warnbox'}"><div class="k">NET margin (after overheads)</div><div class="v" style="color:${y.netMargin >= 0 ? 'var(--green)' : 'var(--red)'};">${money(y.netMargin)} · ${y.netMarginPct}%</div></div>
+      </div>
+      <div class="grid4" style="margin-top:12px;">
+        ${['office', 'insurance', 'vehicles', 'other'].map(k => `<div class="field"><label>Overheads — ${k}</label><input data-oh="${k}" type="number" value="${oh[k] || ''}" ${y.closed ? 'disabled' : ''}></div>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        ${y.closed ? `<span class="tag tag-closed">Year closed ${y.closedAt ? new Date(y.closedAt + 'Z').toLocaleDateString('en-AU') : ''}</span><button class="btn btn-ghost btn-sm" id="reopenFy">Reopen</button>`
+        : `<button class="btn btn-ghost" id="saveOh">Save overheads</button><button class="btn btn-blue" id="closeFy">Close ${fy}</button>`}
+        <span class="muted" style="font-size:11px;">Overheads total: <b>${money(y.overheadsTotal)}</b> · ${y.jobs} job(s), ${y.jobsWithActuals} with PO actuals</span>
+      </div>`;
+    const saveOh = $('#saveOh'); if (saveOh) saveOh.addEventListener('click', async () => {
+      const body = {}; v.querySelectorAll('[data-oh]').forEach(i => body[i.dataset.oh] = parseFloat(i.value) || 0);
+      await api('/jobs/yearend/' + fy + '/overheads', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      toast('Overheads saved'); jobsTab(v);
+    });
+    const closeFy = $('#closeFy'); if (closeFy) closeFy.addEventListener('click', async () => {
+      const body = {}; v.querySelectorAll('[data-oh]').forEach(i => body[i.dataset.oh] = parseFloat(i.value) || 0);
+      await api('/jobs/yearend/' + fy + '/overheads', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (confirm('Close ' + fy + '? Overheads lock until reopened.')) { await api('/jobs/yearend/' + fy + '/close', { method: 'POST' }); toast(fy + ' closed'); jobsTab(v); }
+    });
+    const reopenFy = $('#reopenFy'); if (reopenFy) reopenFy.addEventListener('click', async () => { await api('/jobs/yearend/' + fy + '/reopen', { method: 'POST' }); jobsTab(v); });
+  }
 }
 
 // ---------------- PURCHASE ORDERS ----------------
 async function poList(v) {
-  v.innerHTML = `<div class="card"><h2>Purchase Orders</h2><div class="sub">Created when a client accepts. PO # = quote number (revision ignored). Site copy — no pricing.</div><div class="rule"></div><div id="potable">Loading…</div></div>`;
+  v.innerHTML = `<div class="card"><h2>Purchase Orders</h2><div class="sub">Created on acceptance. PO # = quote number. Edit lines to match the site — the final PO drives actual margin in Jobs.</div><div class="rule"></div><div id="potable">Loading…</div></div>`;
   const list = await api('/purchase-orders');
-  $('#potable').innerHTML = list.length ? `<table><thead><tr><th>PO #</th><th>Client / site</th><th>Status</th><th>Prints</th><th></th></tr></thead><tbody>
-    ${list.map(po => `<tr><td><b>PO ${esc(po.poNumber)}</b></td><td>${esc(po.client || '')} · ${esc(po.address || '')}</td><td><span class="tag tag-${po.status === 'open' ? 'open' : 'closed'}">${po.status}</span></td><td>${po.prints}</td><td class="right"><button class="btn btn-ghost btn-sm" data-po="${po.id}">Open</button></td></tr>`).join('')}
-    </tbody></table>` : '<p class="muted">No purchase orders yet. They appear here when a client accepts a quote.</p>';
+  $('#potable').innerHTML = list.length ? `<table><thead><tr><th>PO #</th><th>Client / site</th><th>Status</th>${isAdmin() ? '<th class="right">Actual cost</th>' : ''}<th>Prints</th><th></th></tr></thead><tbody>
+    ${list.map(po => `<tr><td><b>PO ${esc(po.poNumber)}</b></td><td>${esc(po.client || '')} · ${esc(po.address || '')}</td><td><span class="tag tag-${po.status === 'open' ? 'open' : 'closed'}">${po.status}</span></td>${isAdmin() ? `<td class="right">${money(po.actualCost)}</td>` : ''}<td>${po.prints}</td><td class="right"><button class="btn btn-ghost btn-sm" data-po="${po.id}">Open</button></td></tr>`).join('')}
+    </tbody></table>` : '<p class="muted">No purchase orders yet — they appear when a client accepts a quote.</p>';
   v.querySelectorAll('[data-po]').forEach(b => b.addEventListener('click', () => { state.poId = b.dataset.po; route(); }));
 }
 async function poEditor(v) {
   const po = await api('/purchase-orders/' + state.poId);
-  const canEdit = state.mgmtUnlocked;
+  const admin = isAdmin();
+  const VSTAT = { ordered: 't-ordered', delivered: 't-delivered', invoiced: 't-invoiced' };
   v.innerHTML = `
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>PO ${esc(po.poNumber)} — ${esc(po.client)}</h2><div class="sub">Site copy. Quantities & specs only — no pricing.</div></div>
-      <div style="display:flex;gap:6px;align-items:center;">
+      <div><h2>PO ${esc(po.poNumber)} — ${esc(po.client)}</h2><div class="sub">${esc(po.address || '')}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backPo">← All POs</button>
-        ${canEdit ? '' : '<a href="#" id="unlockPo" class="pill">🔒 Owner: unlock to edit</a>'}
-        <button class="btn btn-blue btn-sm" id="printPo">🖨 Print to PDF</button>
+        <a class="btn btn-blue btn-sm" href="/api/purchase-orders/${po.id}/print/site" target="_blank">🖨 Print SITE copy (no $)</a>
+        ${admin ? (po.status === 'open' ? '<button class="btn btn-danger btn-sm" id="closePo">Close PO (site complete)</button>' : '<button class="btn btn-ghost btn-sm" id="reopenPo">Reopen</button>') : ''}
+        ${admin ? '<button class="btn btn-ghost btn-sm" id="resetPo">↺ Reset to quote</button>' : ''}
       </div>
     </div>
     <div class="rule"></div>
-    <div class="split-po">
+    <div class="grid3">
+      <div class="stat time"><div class="k">Allocated site time</div><div class="v">${po.siteDays} days</div></div>
+      <div class="stat"><div class="k">Crew size</div><div class="v">${po.crewSize} people</div></div>
+      <div class="stat"><div class="k">Total person-hours</div><div class="v">${Math.round(po.siteHours * 10) / 10} hrs</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="grid2">
       <div>
-        <div class="scope-title">Approved deliverables & quantities</div>
-        <table><thead><tr><th>Code</th><th>Item / spec</th><th>Qty</th>${canEdit ? '<th></th>' : ''}</tr></thead><tbody>
-          ${po.items.filter(i => !i.removed).map(i => `<tr><td><b>${esc(i.code)}</b></td><td>${esc(i.name)}${i.spec ? '<br><span class="muted" style="font-size:11px;">' + esc(i.spec) + '</span>' : ''}</td><td>${esc(String(i.qty))} ${esc(i.unit)}</td>${canEdit ? `<td class="right"><button class="btn btn-danger btn-sm" data-rm="${i.id}">Remove</button></td>` : ''}</tr>`).join('')}
+        <div class="scope-title">Site copy — approved deliverables (no $)</div>
+        <table><thead><tr><th>Code</th><th>Item / spec + hrs</th><th>Qty</th></tr></thead><tbody>
+          ${po.siteItems.map(i => `<tr><td><b>${esc(i.code || '')}</b></td><td>${esc(i.name)}${i.spec ? `<br><span class="muted" style="font-size:11px;">${esc(i.spec)}</span>` : ''}</td><td>${i.qty} ${esc(i.unit || '')}</td></tr>`).join('')}
         </tbody></table>
-        ${canEdit ? `<div style="margin-top:8px;"><button class="btn btn-ghost btn-sm" id="resetPo">↺ Reset to default</button> ${po.status === 'open' ? '<button class="btn btn-danger btn-sm" id="closePo">Close PO (site complete)</button>' : '<button class="btn btn-ghost btn-sm" id="reopenPo">Reopen PO</button>'}</div>` : ''}
+        ${po.siteChallenges.length ? `<div style="margin-top:8px;">${po.siteChallenges.map(c => `<span class="chip on">${esc(c)}</span>`).join('')}</div>` : ''}
       </div>
       <div>
         <div class="scope-title">Approved drawing</div>
         ${po.hasSiteplan ? `<img src="/api/purchase-orders/${po.id}/siteplan" style="width:100%;border:1px solid var(--line);border-radius:9px;">` : '<p class="muted">No drawing.</p>'}
-        <div class="scope-title" style="margin-top:12px;">Site challenges (no $)</div>
-        ${(po.siteChallenges && po.siteChallenges.length) ? po.siteChallenges.map(c => `<span class="chip on">${esc(c)}</span>`).join('') : '<span class="muted">None recorded.</span>'}
       </div>
     </div>
-    <div class="legend" style="margin-top:10px;"><b>Print log:</b> ${po.prints.length ? po.prints.map(p => `${new Date(p.at + 'Z').toLocaleString('en-AU')} by ${esc(p.by || 'Owner')}`).join(' · ') : 'Not printed yet.'}</div>
-  </div>`;
+    <div class="legend"><b>Print log:</b> ${po.prints.length ? po.prints.slice(0, 6).map(p => `${new Date(p.at + 'Z').toLocaleString('en-AU')} — ${esc(p.by || '')}`).join(' · ') : 'Not printed yet.'}</div>
+  </div>
+
+  ${admin ? `<div class="card">
+    <h2>Vendor orders & ACTUAL cost <span class="tag t-up">drives Jobs register</span></h2>
+    <div class="sub">Edit quantities, rates and vendors to match what actually happens on site. Print a Vendor PO per supplier. Status: Ordered → Delivered → Invoiced.</div><div class="rule"></div>
+    ${(po.vendors || []).map(vd => {
+      const lines = (po.costItems || []).filter(i => i.vendor === vd.name);
+      return `<div class="recipe-box"><div class="recipe-title"><span>${esc(vd.name)} <span class="muted" style="font-weight:400;">— PO ${esc(po.poNumber)}-${esc(vd.suffix)}</span></span>
+        <span style="display:flex;gap:6px;align-items:center;">
+          <select data-vstat="${vd.id}" style="width:110px;font-size:10.5px;">${['ordered', 'delivered', 'invoiced'].map(s => `<option ${vd.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+          <a class="btn btn-ghost btn-sm" href="/api/purchase-orders/${po.id}/print/vendor/${vd.id}" target="_blank">🖨 Vendor PO</a>
+        </span></div>
+        <table><thead><tr><th>Item</th><th>Qty</th><th>Unit $</th><th class="right">Total</th><th></th></tr></thead><tbody>
+        ${lines.map(i => `<tr><td><input value="${esc(i.name)}" data-pn="${i.id}" style="min-width:160px;"></td>
+          <td><input type="number" step="0.01" value="${i.qty}" data-pq="${i.id}" style="width:78px;"> ${esc(i.unit || '')}</td>
+          <td><input type="number" step="0.01" value="${i.unitCost}" data-pc="${i.id}" style="width:86px;"></td>
+          <td class="right"><b>${money2(i.total)}</b></td>
+          <td class="right"><button class="btn btn-danger btn-sm" data-prm="${i.id}">✕</button></td></tr>`).join('')}
+        <tr><td colspan="3"><b>Vendor subtotal</b></td><td class="right"><b>${money2(vd.total)}</b></td><td></td></tr>
+        </tbody></table></div>`;
+    }).join('')}
+    <div style="margin-top:10px;"><button class="btn btn-ghost btn-sm" id="addPoLine">+ Add cost line</button></div>
+    <div class="grid4" style="margin-top:14px;">
+      <div class="stat"><div class="k">Sell ex GST</div><div class="v">${po.sellExGst != null ? money(po.sellExGst) : '—'}</div></div>
+      <div class="stat"><div class="k">Quoted cost</div><div class="v">${po.quotedCost != null ? money(po.quotedCost) : '—'}</div></div>
+      <div class="stat hero"><div class="k">ACTUAL cost (this PO)</div><div class="v">${money(po.actualCost)}</div></div>
+      <div class="admin-only"><div class="k">🔒 Actual gross margin</div><div class="v" style="color:${(po.actualGMPct || 0) >= 0 ? 'var(--green)' : 'var(--red)'};">${po.actualGM != null ? money(po.actualGM) + ' · ' + po.actualGMPct + '%' : '—'}</div></div>
+    </div>
+  </div>` : ''}`;
   $('#backPo').addEventListener('click', () => { state.poId = null; route(); });
-  const unlock = $('#unlockPo'); if (unlock) unlock.addEventListener('click', e => { e.preventDefault(); pinPrompt(() => poEditor(v)); });
-  $('#printPo').addEventListener('click', async () => { await api('/purchase-orders/' + po.id + '/print', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ by: state.mgmtUnlocked ? 'Owner' : 'Site' }) }); window.print(); poEditor(v); });
-  v.querySelectorAll('[data-rm]').forEach(b => b.addEventListener('click', async () => { await api(`/purchase-orders/${po.id}/items/${b.dataset.rm}`, { method: 'DELETE' }); toast('Item removed'); poEditor(v); }));
-  const reset = $('#resetPo'); if (reset) reset.addEventListener('click', async () => { if (confirm('Reset PO to the default from the accepted quote?')) { await api('/purchase-orders/' + po.id + '/reset', { method: 'POST' }); toast('PO reset'); poEditor(v); } });
-  const close = $('#closePo'); if (close) close.addEventListener('click', async () => { if (confirm('Close this PO?')) { await api('/purchase-orders/' + po.id + '/close', { method: 'POST' }); toast('PO closed'); poEditor(v); } });
-  const reopen = $('#reopenPo'); if (reopen) reopen.addEventListener('click', async () => { await api('/purchase-orders/' + po.id + '/reopen', { method: 'POST' }); toast('PO reopened'); poEditor(v); });
+  const closeBtn = $('#closePo'); if (closeBtn) closeBtn.addEventListener('click', async () => { if (confirm('Close this PO? Its final lines become the job\'s actual cost.')) { await api('/purchase-orders/' + po.id + '/close', { method: 'POST' }); toast('PO closed'); poEditor(v); } });
+  const reopenBtn = $('#reopenPo'); if (reopenBtn) reopenBtn.addEventListener('click', async () => { await api('/purchase-orders/' + po.id + '/reopen', { method: 'POST' }); poEditor(v); });
+  const resetBtn = $('#resetPo'); if (resetBtn) resetBtn.addEventListener('click', async () => { if (confirm('Reset this PO back to the accepted quote? All site edits are lost.')) { const r = await api('/purchase-orders/' + po.id + '/reset', { method: 'POST' }); state.poId = r.id; toast('PO reset'); poEditor(v); } });
+  const upd = (id, body) => api(`/purchase-orders/${po.id}/items/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(() => poEditor(v));
+  v.querySelectorAll('[data-pq]').forEach(i => i.addEventListener('change', () => upd(i.dataset.pq, { qty: parseFloat(i.value) || 0 })));
+  v.querySelectorAll('[data-pc]').forEach(i => i.addEventListener('change', () => upd(i.dataset.pc, { unitCost: parseFloat(i.value) || 0 })));
+  v.querySelectorAll('[data-pn]').forEach(i => i.addEventListener('change', () => upd(i.dataset.pn, { name: i.value })));
+  v.querySelectorAll('[data-prm]').forEach(b => b.addEventListener('click', async () => { await api(`/purchase-orders/${po.id}/items/${b.dataset.prm}`, { method: 'DELETE' }); poEditor(v); }));
+  v.querySelectorAll('[data-vstat]').forEach(s => s.addEventListener('change', async () => { await api(`/purchase-orders/${po.id}/vendor-status/${s.dataset.vstat}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: s.value }) }); toast('Status updated'); poEditor(v); }));
+  const addLine = $('#addPoLine'); if (addLine) addLine.addEventListener('click', async () => {
+    const vendor = prompt('Vendor name for this line?', (po.vendors[0] || {}).name || 'Supplier'); if (vendor == null) return;
+    await api(`/purchase-orders/${po.id}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New line', qty: 1, unit: 'ea', unitCost: 0, vendor, kind: 'material' }) });
+    poEditor(v);
+  });
+}
+
+// ---------------- VENDORS ----------------
+async function vendorsTab(v) {
+  const list = await api('/vendors');
+  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Vendors</h2><div class="sub">One combined list — tag each Supplier, Subcontractor or both. Compliance fields appear for subcontractors.</div></div><button class="btn btn-blue" id="addV">+ Add vendor</button></div><div class="rule"></div>
+  <table><thead><tr><th>Vendor</th><th>Type</th><th>Area</th><th>Contact</th><th>Terms</th><th>Compliance</th><th>Materials</th><th></th></tr></thead><tbody>
+  ${list.map(x => `<tr><td><b>${esc(x.name)}</b></td>
+    <td>${x.isSupplier ? '<span class="tag t-sup">Supplier</span>' : ''} ${x.isSubcontractor ? '<span class="tag t-subv">Subcontractor</span>' : ''}</td>
+    <td>${esc(x.area || '')}</td><td>${esc(x.contact || '')} ${esc(x.phone || '')}</td><td>${esc(x.terms || '')}</td>
+    <td>${x.isSubcontractor ? (x.insuranceExpiry && x.insuranceExpiry < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">Insurance expired</span>' : '<span class="tag tag-accepted">OK</span>') : '—'}</td>
+    <td>${(x.materials || []).length}</td>
+    <td class="right"><button class="btn btn-ghost btn-sm" data-ev="${x.id}">Open</button> <button class="btn btn-danger btn-sm" data-dv="${x.id}">✕</button></td></tr>`).join('')}
+  </tbody></table></div><div id="vDetail"></div>`;
+  $('#addV').addEventListener('click', async () => { const r = await api('/vendors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New vendor' }) }); vendorsTab(v).then(() => openVendor(r.id)); });
+  v.querySelectorAll('[data-ev]').forEach(b => b.addEventListener('click', () => openVendor(b.dataset.ev)));
+  v.querySelectorAll('[data-dv]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete vendor?')) { await api('/vendors/' + b.dataset.dv, { method: 'DELETE' }); vendorsTab(v); } }));
+  async function openVendor(id) {
+    const all = await api('/vendors'); const x = all.find(y => y.id === id); if (!x) return;
+    $('#vDetail').innerHTML = `<div class="card"><h2>${esc(x.name)}</h2><div class="rule"></div>
+      <div class="grid3">
+        <div class="field"><label>Name</label><input id="v_name" value="${esc(x.name)}"></div>
+        <div class="field"><label>Contact</label><input id="v_contact" value="${esc(x.contact || '')}"></div>
+        <div class="field"><label>Phone</label><input id="v_phone" value="${esc(x.phone || '')}"></div>
+        <div class="field"><label>Email</label><input id="v_email" value="${esc(x.email || '')}"></div>
+        <div class="field"><label>Area / proximity</label><input id="v_area" value="${esc(x.area || '')}"></div>
+        <div class="field"><label>Payment terms</label><input id="v_terms" value="${esc(x.terms || '')}"></div>
+      </div>
+      <div style="display:flex;gap:18px;margin:6px 0 10px;">
+        <label style="font-size:12px;display:flex;gap:7px;align-items:center;"><input type="checkbox" id="v_sup" ${x.isSupplier ? 'checked' : ''} style="width:auto;"> Supplier</label>
+        <label style="font-size:12px;display:flex;gap:7px;align-items:center;"><input type="checkbox" id="v_sub" ${x.isSubcontractor ? 'checked' : ''} style="width:auto;"> Subcontractor</label>
+      </div>
+      <div class="grid3" id="compliance" style="${x.isSubcontractor ? '' : 'display:none;'}">
+        <div class="field"><label>Licence no.</label><input id="v_lic" value="${esc(x.licence || '')}"></div>
+        <div class="field"><label>Insurance expiry</label><input id="v_ins" type="date" value="${esc(x.insuranceExpiry || '')}"></div>
+        <div class="field" style="display:flex;align-items:flex-end;"><label style="font-size:12px;display:flex;gap:7px;align-items:center;text-transform:none;"><input type="checkbox" id="v_swms" ${x.swms ? 'checked' : ''} style="width:auto;"> SWMS on file</label></div>
+      </div>
+      <button class="btn btn-blue" id="v_save">Save vendor</button>
+      <div class="rule" style="margin-top:16px;"></div>
+      <h2 style="font-size:12px;">Materials & rates</h2>
+      <table><thead><tr><th>Material</th><th>Unit</th><th>Cost $</th><th>Delivery rule</th><th>Review by</th><th></th></tr></thead><tbody>
+      ${(x.materials || []).map(m => `<tr>
+        <td><input value="${esc(m.name)}" data-mn="${m.id}"></td><td><input value="${esc(m.unit || '')}" data-mu="${m.id}" style="width:60px;"></td>
+        <td><input type="number" step="0.01" value="${m.cost}" data-mc="${m.id}" style="width:86px;"></td>
+        <td><input value="${esc(m.deliveryRule || '')}" data-md="${m.id}" placeholder="e.g. $180/load, free over $1k"></td>
+        <td><input type="date" value="${esc(m.reviewBy || '')}" data-mr="${m.id}" style="width:130px;"> ${m.reviewBy && m.reviewBy < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">Stale</span>' : ''}</td>
+        <td class="right"><button class="btn btn-danger btn-sm" data-mdel="${m.id}">✕</button></td></tr>`).join('')}
+      </tbody></table>
+      <button class="btn btn-ghost btn-sm" id="v_addm" style="margin-top:8px;">+ Add material</button></div>`;
+    $('#v_sub').addEventListener('change', e => { $('#compliance').style.display = e.target.checked ? '' : 'none'; });
+    $('#v_save').addEventListener('click', async () => {
+      await api('/vendors/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        name: $('#v_name').value, contact: $('#v_contact').value, phone: $('#v_phone').value, email: $('#v_email').value,
+        area: $('#v_area').value, terms: $('#v_terms').value, isSupplier: $('#v_sup').checked, isSubcontractor: $('#v_sub').checked,
+        licence: $('#v_lic') ? $('#v_lic').value : '', insuranceExpiry: $('#v_ins') ? $('#v_ins').value : '', swms: $('#v_swms') ? $('#v_swms').checked : false }) });
+      toast('Vendor saved'); vendorsTab(v);
+    });
+    $('#v_addm').addEventListener('click', async () => { await api(`/vendors/${id}/materials`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New material' }) }); openVendor(id); });
+    const mupd = (mid, body) => api(`/vendors/${id}/materials/${mid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    v.querySelectorAll('[data-mn]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mn, { name: i.value })));
+    v.querySelectorAll('[data-mu]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mu, { unit: i.value })));
+    v.querySelectorAll('[data-mc]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mc, { cost: parseFloat(i.value) || 0 })));
+    v.querySelectorAll('[data-md]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.md, { deliveryRule: i.value })));
+    v.querySelectorAll('[data-mr]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mr, { reviewBy: i.value })));
+    v.querySelectorAll('[data-mdel]').forEach(b => b.addEventListener('click', async () => { await api(`/vendors/${id}/materials/${b.dataset.mdel}`, { method: 'DELETE' }); openVendor(id); }));
+    $('#vDetail').scrollIntoView({ behavior: 'smooth' });
+  }
+}
+
+// ---------------- RECIPES ----------------
+async function recipesTab(v) {
+  const [recipes, priceItems] = await Promise.all([api('/recipes'), api('/price-list')]);
+  const noRecipe = priceItems.filter(p => !recipes.find(r => r.priceItemId === p.id));
+  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+    <div><h2>Cost recipes</h2><div class="sub">Materials + ratios + wastage + labour per deliverable. Everything editable — placeholder numbers marked until you replace them with your real rates.</div></div>
+    <div style="display:flex;gap:6px;"><select id="newRecipeFor" style="width:240px;"><option value="">+ Create recipe for…</option>${noRecipe.map(p => `<option value="${p.id}">${esc(p.code)} — ${esc(p.name)}</option>`).join('')}</select></div></div>
+    <div class="rule"></div><div id="recipeList"></div></div>`;
+  $('#newRecipeFor').addEventListener('change', async e => { if (!e.target.value) return; await api('/recipes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priceItemId: e.target.value }) }); recipesTab(v); });
+  $('#recipeList').innerHTML = recipes.map(r => `
+    <div class="recipe-box">
+      <div class="recipe-title"><span><b>${esc(r.code)}</b> ${esc(r.name)} <span class="muted" style="font-weight:400;">per ${esc(r.unit)}</span></span>
+        <span style="display:flex;gap:6px;align-items:center;">
+          <select data-rmeth="${r.id}" style="width:150px;font-size:10.5px;"><option value="in" ${r.methodDefault === 'in' ? 'selected' : ''}>Default: In-house</option><option value="sub" ${r.methodDefault === 'sub' ? 'selected' : ''}>Default: Subcontract</option></select>
+          <button class="btn btn-danger btn-sm" data-rdel="${r.id}">Delete recipe</button></span></div>
+      <table><thead><tr><th>Material</th><th>Vendor</th><th>Unit</th><th>Ratio / ${esc(r.unit)}</th><th>Waste %</th><th>Kind</th><th>Basic $</th><th>Standard $</th><th>Premium $</th><th></th></tr></thead><tbody>
+      ${r.materials.map(m => `<tr>
+        <td><input value="${esc(m.name)}" data-rn="${r.id}|${m.id}" style="min-width:120px;">${m.kind === 'tiered' ? `<br><input value="${esc(m.spec.Basic || '')}" placeholder="Basic spec" data-rsb="${r.id}|${m.id}" style="font-size:10px;margin-top:2px;"><input value="${esc(m.spec.Standard || '')}" placeholder="Standard spec" data-rss="${r.id}|${m.id}" style="font-size:10px;margin-top:2px;"><input value="${esc(m.spec.Premium || '')}" placeholder="Premium spec" data-rsp="${r.id}|${m.id}" style="font-size:10px;margin-top:2px;">` : ''}</td>
+        <td><input value="${esc(m.vendorName || '')}" data-rv="${r.id}|${m.id}" style="width:110px;"></td>
+        <td><input value="${esc(m.unit || '')}" data-ru="${r.id}|${m.id}" style="width:50px;"></td>
+        <td><input type="number" step="0.001" value="${m.ratio}" data-rr="${r.id}|${m.id}" style="width:70px;"></td>
+        <td><input type="number" step="0.5" value="${m.wastagePct}" data-rw="${r.id}|${m.id}" style="width:56px;"></td>
+        <td><select data-rk="${r.id}|${m.id}" style="width:92px;font-size:10.5px;"><option value="common" ${m.kind === 'common' ? 'selected' : ''}>Common</option><option value="tiered" ${m.kind === 'tiered' ? 'selected' : ''}>Tiered</option></select></td>
+        <td><input type="number" step="0.01" value="${m.cost.Basic}" data-rcb="${r.id}|${m.id}" style="width:72px;" ${m.kind === 'common' ? 'disabled' : ''}></td>
+        <td><input type="number" step="0.01" value="${m.cost.Standard}" data-rcs="${r.id}|${m.id}" style="width:72px;" title="${m.kind === 'common' ? 'Common cost (used for all tiers)' : ''}"></td>
+        <td><input type="number" step="0.01" value="${m.cost.Premium}" data-rcp="${r.id}|${m.id}" style="width:72px;" ${m.kind === 'common' ? 'disabled' : ''}></td>
+        <td class="right"><button class="btn btn-danger btn-sm" data-rmdel="${r.id}|${m.id}">✕</button></td></tr>`).join('')}
+      </tbody></table>
+      <button class="btn btn-ghost btn-sm" data-raddm="${r.id}" style="margin:8px 0;">+ Add material</button>
+      <div class="grid4">
+        <div class="field"><label>Labour hrs/${esc(r.unit)} — Basic / Std / Prem</label>
+          <div style="display:flex;gap:4px;"><input type="number" step="0.01" value="${r.hrs.Basic}" data-rhb="${r.id}" style="width:33%;"><input type="number" step="0.01" value="${r.hrs.Standard}" data-rhs="${r.id}" style="width:33%;"><input type="number" step="0.01" value="${r.hrs.Premium}" data-rhp="${r.id}" style="width:33%;"></div></div>
+        <div class="field"><label>Delivery $ per job</label><input type="number" value="${r.deliveryCost}" data-rdc="${r.id}"></div>
+        <div class="field"><label>Plant $ / note</label><div style="display:flex;gap:4px;"><input type="number" value="${r.plantCost}" data-rpc="${r.id}" style="width:45%;"><input value="${esc(r.plantNote || '')}" data-rpn="${r.id}" style="width:55%;"></div></div>
+        <div class="field"><label>Subcontract $/${esc(r.unit)} — B / S / P + vendor</label>
+          <div style="display:flex;gap:4px;"><input type="number" step="0.01" value="${r.sub.Basic}" data-rsub="${r.id}" style="width:25%;"><input type="number" step="0.01" value="${r.sub.Standard}" data-rsus="${r.id}" style="width:25%;"><input type="number" step="0.01" value="${r.sub.Premium}" data-rsup="${r.id}" style="width:25%;"><input value="${esc(r.subVendor || '')}" data-rsuv="${r.id}" placeholder="vendor" style="width:25%;"></div></div>
+      </div>
+    </div>`).join('') || '<p class="muted">No recipes yet.</p>';
+  const rupd = (rid, body) => api('/recipes/' + rid, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const mupd = (key, body) => { const [rid, mid] = key.split('|'); return api(`/recipes/${rid}/materials/${mid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); };
+  const bind = (sel, fn) => v.querySelectorAll(sel).forEach(i => i.addEventListener('change', () => fn(i)));
+  bind('[data-rmeth]', i => rupd(i.dataset.rmeth, { methodDefault: i.value }));
+  bind('[data-rhb]', i => rupd(i.dataset.rhb, { hrs: { Basic: parseFloat(i.value) || 0 } }));
+  bind('[data-rhs]', i => rupd(i.dataset.rhs, { hrs: { Standard: parseFloat(i.value) || 0 } }));
+  bind('[data-rhp]', i => rupd(i.dataset.rhp, { hrs: { Premium: parseFloat(i.value) || 0 } }));
+  bind('[data-rdc]', i => rupd(i.dataset.rdc, { deliveryCost: parseFloat(i.value) || 0 }));
+  bind('[data-rpc]', i => rupd(i.dataset.rpc, { plantCost: parseFloat(i.value) || 0 }));
+  bind('[data-rpn]', i => rupd(i.dataset.rpn, { plantNote: i.value }));
+  bind('[data-rsub]', i => rupd(i.dataset.rsub, { sub: { Basic: parseFloat(i.value) || 0 } }));
+  bind('[data-rsus]', i => rupd(i.dataset.rsus, { sub: { Standard: parseFloat(i.value) || 0 } }));
+  bind('[data-rsup]', i => rupd(i.dataset.rsup, { sub: { Premium: parseFloat(i.value) || 0 } }));
+  bind('[data-rsuv]', i => rupd(i.dataset.rsuv, { subVendor: i.value }));
+  bind('[data-rn]', i => mupd(i.dataset.rn, { name: i.value }));
+  bind('[data-rv]', i => mupd(i.dataset.rv, { vendorName: i.value }));
+  bind('[data-ru]', i => mupd(i.dataset.ru, { unit: i.value }));
+  bind('[data-rr]', i => mupd(i.dataset.rr, { ratio: parseFloat(i.value) || 0 }));
+  bind('[data-rw]', i => mupd(i.dataset.rw, { wastagePct: parseFloat(i.value) || 0 }));
+  bind('[data-rk]', i => mupd(i.dataset.rk, { kind: i.value }).then(() => recipesTab(v)));
+  bind('[data-rcb]', i => mupd(i.dataset.rcb, { cost: { Basic: parseFloat(i.value) || 0 } }));
+  bind('[data-rcs]', i => mupd(i.dataset.rcs, { cost: { Standard: parseFloat(i.value) || 0 } }));
+  bind('[data-rcp]', i => mupd(i.dataset.rcp, { cost: { Premium: parseFloat(i.value) || 0 } }));
+  bind('[data-rsb]', i => mupd(i.dataset.rsb, { spec: { Basic: i.value } }));
+  bind('[data-rss]', i => mupd(i.dataset.rss, { spec: { Standard: i.value } }));
+  bind('[data-rsp]', i => mupd(i.dataset.rsp, { spec: { Premium: i.value } }));
+  v.querySelectorAll('[data-raddm]').forEach(b => b.addEventListener('click', async () => { await api(`/recipes/${b.dataset.raddm}/materials`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New material' }) }); recipesTab(v); }));
+  v.querySelectorAll('[data-rmdel]').forEach(b => b.addEventListener('click', async () => { const [rid, mid] = b.dataset.rmdel.split('|'); await api(`/recipes/${rid}/materials/${mid}`, { method: 'DELETE' }); recipesTab(v); }));
+  v.querySelectorAll('[data-rdel]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this recipe? Costing for this deliverable will stop.')) { await api('/recipes/' + b.dataset.rdel, { method: 'DELETE' }); recipesTab(v); } }));
 }
 
 // ---------------- PRICING ----------------
 async function pricingSheet(v) {
   const items = await api('/price-list');
-  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Standard Pricing Sheet</h2><div class="sub">Single source of rates. Editing here won't change quotes already built.</div></div><button class="btn btn-blue" id="addItem">+ Add deliverable</button></div><div class="rule"></div>
+  const canEdit = isAdmin();
+  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Standard Pricing Sheet</h2><div class="sub">Sell rates. Editing never changes quotes already built (rate-locked).</div></div>${canEdit ? '<button class="btn btn-blue" id="addItem">+ Add deliverable</button>' : ''}</div><div class="rule"></div>
     <table><thead><tr><th>Code</th><th>Item</th><th>Unit</th><th>Basic</th><th>Standard</th><th>Premium</th><th>Flag</th><th></th></tr></thead><tbody>
     ${items.map(p => `<tr><td><b>${esc(p.code)}</b></td><td>${esc(p.name)}</td><td>${esc(p.unit)}</td>
       <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Basic.spec)}</span><br>${money(p.tiers.Basic.sell)}</td>
       <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Standard.spec)}</span><br>${money(p.tiers.Standard.sell)}</td>
       <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Premium.spec)}</span><br>${money(p.tiers.Premium.sell)}</td>
-      <td>${p.behaviour !== 'none' ? `<span class="tag tag-${p.behaviour === 'remeasurable' ? 'rem' : p.behaviour === 'allowance' ? 'allow' : 'opt'}">${BEHAV[p.behaviour]}</span>` : ''}</td>
-      <td class="right"><button class="btn btn-ghost btn-sm" data-edit="${p.id}">Edit</button></td></tr>`).join('')}</tbody></table></div>`;
-  $('#addItem').addEventListener('click', () => editPriceItem(null));
-  v.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(p => p.id === b.dataset.edit))));
+      <td>${p.behaviour !== 'none' ? `<span class="tag tag-${p.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${BEHAV[p.behaviour]}</span>` : ''}</td>
+      <td class="right">${canEdit ? `<button class="btn btn-ghost btn-sm" data-edit="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+  if (canEdit) { $('#addItem').addEventListener('click', () => editPriceItem(null)); v.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(p => p.id === b.dataset.edit)))); }
 }
 function editPriceItem(item) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
@@ -323,18 +638,18 @@ function editPriceItem(item) {
     if (item) await api('/price-list/' + item.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); else await api('/price-list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     bg.remove(); toast('Saved'); pricingSheet($('#view'));
   });
-  const del = $('#p_del'); if (del) del.addEventListener('click', async () => { if (confirm('Delete this deliverable?')) { await api('/price-list/' + item.id, { method: 'DELETE' }); bg.remove(); pricingSheet($('#view')); } });
+  const del = $('#p_del'); if (del) del.addEventListener('click', async () => { if (confirm('Delete?')) { await api('/price-list/' + item.id, { method: 'DELETE' }); bg.remove(); pricingSheet($('#view')); } });
 }
 
-// ---------------- SURCHARGES ----------------
+// ---------------- SURCHARGES / CHECKLIST ----------------
 async function surchargesTab(v) {
   const surs = await api('/price-list/surcharges/all');
-  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Site-Specific Surcharges</h2><div class="sub">Access, slope, etc. Applied per quote.</div></div><button class="btn btn-blue" id="addSur">+ Add surcharge</button></div><div class="rule"></div>
+  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Site-Specific Surcharges</h2></div><button class="btn btn-blue" id="addSur">+ Add surcharge</button></div><div class="rule"></div>
     <table><thead><tr><th>Name</th><th>Trigger</th><th>Type</th><th>Rate</th><th></th></tr></thead><tbody>
     ${surs.map(s => `<tr><td><b>${esc(s.name)}</b></td><td class="muted">${esc(s.trigger_note || '')}</td><td>${s.kind === 'percent' ? '% of Scope 1' : 'Fixed $'}</td><td>${s.kind === 'percent' ? s.rate + '%' : money(s.rate)}</td><td class="right"><button class="btn btn-ghost btn-sm" data-es="${s.id}">Edit</button> <button class="btn btn-danger btn-sm" data-ds="${s.id}">✕</button></td></tr>`).join('')}</tbody></table></div>`;
   $('#addSur').addEventListener('click', () => editSur(null));
   v.querySelectorAll('[data-es]').forEach(b => b.addEventListener('click', () => editSur(surs.find(s => s.id === b.dataset.es))));
-  v.querySelectorAll('[data-ds]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete surcharge?')) { await api('/price-list/surcharges/' + b.dataset.ds, { method: 'DELETE' }); surchargesTab(v); } }));
+  v.querySelectorAll('[data-ds]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete?')) { await api('/price-list/surcharges/' + b.dataset.ds, { method: 'DELETE' }); surchargesTab(v); } }));
 }
 function editSur(s) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
@@ -350,25 +665,22 @@ function editSur(s) {
     bg.remove(); toast('Saved'); surchargesTab($('#view'));
   });
 }
-
-// ---------------- CHECKLIST (editable template) ----------------
 async function checklistTab(v) {
   const tpl = await api('/checklist/template');
   const cats = {}; tpl.forEach(i => { (cats[i.category] = cats[i.category] || []).push(i); });
-  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Structural Checklist Template</h2><div class="sub">Editable master checklist. Each new quote gets a copy.</div></div><button class="btn btn-blue" id="addChk">+ Add item</button></div><div class="rule"></div>
+  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Structural Checklist Template</h2><div class="sub">Each new quote copies this.</div></div><button class="btn btn-blue" id="addChk">+ Add item</button></div><div class="rule"></div>
     ${Object.entries(cats).map(([cat, items]) => `<div style="margin-bottom:14px;"><div style="font-weight:800;font-size:12px;text-transform:uppercase;margin-bottom:6px;">${esc(cat)}</div>
-      ${items.map(i => `<div class="check-row" style="justify-content:space-between;"><div>${esc(i.label)} ${i.critical ? '<span class="tag tag-rem">Critical</span>' : ''}</div><div><button class="btn btn-ghost btn-sm" data-ec="${i.id}">Edit</button> <button class="btn btn-danger btn-sm" data-dc="${i.id}">✕</button></div></div>`).join('')}</div>`).join('')}
-  </div>`;
+      ${items.map(i => `<div class="check-row" style="justify-content:space-between;"><div>${esc(i.label)} ${i.critical ? '<span class="tag tag-rem">Critical</span>' : ''}</div><div><button class="btn btn-ghost btn-sm" data-ec="${i.id}">Edit</button> <button class="btn btn-danger btn-sm" data-dc="${i.id}">✕</button></div></div>`).join('')}</div>`).join('')}</div>`;
   $('#addChk').addEventListener('click', () => editChk(null));
   v.querySelectorAll('[data-ec]').forEach(b => b.addEventListener('click', () => editChk(tpl.find(i => i.id === b.dataset.ec))));
-  v.querySelectorAll('[data-dc]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete checklist item?')) { await api('/checklist/template/' + b.dataset.dc, { method: 'DELETE' }); checklistTab(v); } }));
+  v.querySelectorAll('[data-dc]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete item?')) { await api('/checklist/template/' + b.dataset.dc, { method: 'DELETE' }); checklistTab(v); } }));
 }
 function editChk(i) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${i ? 'Edit' : 'Add'} checklist item</h2>
     <div class="field"><label>Category</label><input id="c_cat" value="${esc(i?.category || 'General')}"></div>
     <div class="field"><label>Label</label><input id="c_label" value="${esc(i?.label || '')}"></div>
-    <label style="font-size:12px;display:flex;align-items:center;gap:7px;margin-bottom:12px;"><input type="checkbox" id="c_crit" ${i?.critical ? 'checked' : ''} style="width:auto;"> Critical (blocks quote save if unticked)</label>
+    <label style="font-size:12px;display:flex;align-items:center;gap:7px;margin-bottom:12px;"><input type="checkbox" id="c_crit" ${i?.critical ? 'checked' : ''} style="width:auto;"> Critical</label>
     <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="c_cancel">Cancel</button><button class="btn btn-blue" id="c_save">Save</button></div></div>`;
   document.body.appendChild(bg);
   $('#c_cancel').addEventListener('click', () => bg.remove());
@@ -381,8 +693,23 @@ function editChk(i) {
 
 // ---------------- SETTINGS ----------------
 async function settingsTab(v) {
-  const s = await api('/settings');
-  v.innerHTML = `<div class="card"><h2>Company</h2><div class="rule"></div><div class="grid2">
+  const [s, users] = await Promise.all([api('/settings'), api('/auth/users')]);
+  v.innerHTML = `
+  <div class="card"><h2>Customer tiers — target gross margin</h2><div class="sub">Warns on quotes below target, and drives the cost-plus guide price.</div><div class="rule"></div>
+    <div class="grid3">${[['tier_bronze', 'Bronze %'], ['tier_silver', 'Silver %'], ['tier_gold', 'Gold %']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <button class="btn btn-blue" id="saveTiers">Save tiers</button></div>
+  <div class="card"><h2>Quote ageing (days)</h2><div class="rule"></div>
+    <div class="grid3">${[['age_flag', 'Follow up from'], ['age_chase', 'Chase from'], ['age_dead', 'Dead from']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <button class="btn btn-blue" id="saveAge">Save ageing</button></div>
+  <div class="card"><h2>Labour & crew rates</h2><div class="sub">Used by every recipe: crew day rate ÷ people ÷ hours = cost per person-hour. Site time uses crew size on each quote.</div><div class="rule"></div>
+    <div class="grid4">${[['crew_day_rate', 'Crew day rate $'], ['crew_people', 'People in day rate'], ['extra_person_rate', 'Extra person $/day'], ['hours_per_day', 'Hours per day']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <button class="btn btn-blue" id="saveLab">Save rates</button></div>
+  <div class="card"><h2>Logins</h2><div class="sub">Estimators see quotes, builder and cost totals only — no margin, vendors, recipes, surcharges, checklist or settings.</div><div class="rule"></div>
+    <table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th></th></tr></thead><tbody>
+    ${(users || []).map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td><span class="tag ${u.role === 'admin' ? 'tag-accepted' : 'tag-draft'}">${u.role}</span></td>
+      <td class="right"><button class="btn btn-ghost btn-sm" data-eu="${u.id}">Reset password</button> <button class="btn btn-danger btn-sm" data-du="${u.id}">✕</button></td></tr>`).join('')}</tbody></table>
+    <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;"><input id="nu_name" placeholder="Name" style="width:140px;"><input id="nu_user" placeholder="username" style="width:120px;"><input id="nu_pass" placeholder="password" style="width:130px;"><select id="nu_role" style="width:110px;"><option value="estimator">Estimator</option><option value="admin">Admin</option></select><button class="btn btn-blue btn-sm" id="addUser">+ Add login</button></div></div>
+  <div class="card"><h2>Company</h2><div class="rule"></div><div class="grid2">
       ${[['company_name', 'Company name'], ['company_abn', 'ABN'], ['company_lic', 'Licence'], ['company_phone', 'Phone'], ['company_email', 'Email (Zoho)'], ['association_line', 'Association line'], ['company_address', 'Address'], ['tagline', 'Tagline']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" value="${esc(s[k])}"></div>`).join('')}
     </div><div style="font-size:11.5px;margin:6px 0 12px;">Email: ${s.smtpConfigured ? '<span class="tag tag-accepted">Zoho connected</span>' : '<span class="tag tag-superseded">Not configured</span>'}</div><button class="btn btn-blue" id="saveCompany">Save company</button></div>
   <div class="card"><h2>Package descriptions</h2><div class="rule"></div>${TIERS.map(t => `<div class="field"><label>${t}</label><textarea id="set_pkg_desc_${t.toLowerCase()}" rows="2">${esc(s['pkg_desc_' + t.toLowerCase()])}</textarea></div>`).join('')}<button class="btn btn-blue" id="savePkg">Save descriptions</button></div>
@@ -391,26 +718,24 @@ async function settingsTab(v) {
     <div class="field"><label>Warranty</label><textarea id="set_warranty_text" rows="4">${esc(s.warranty_text)}</textarea></div>
     <div class="field"><label>Your Protections</label><textarea id="set_protections_text" rows="5">${esc(s.protections_text)}</textarea></div>
     <div class="field"><label>Standard conditions</label><textarea id="set_standard_conditions" rows="6">${esc(s.standard_conditions)}</textarea></div>
-    <button class="btn btn-blue" id="saveContract">Save contract text</button></div>
-  <div class="card"><h2>Management PIN</h2><div class="sub">Gates margin & PO editing. Default 1234 — change it.</div><div class="rule"></div>
-    <div class="pin-note">The PIN is a light deterrent, not strong security.</div>
-    <div class="grid3" style="margin-top:12px;"><div class="field"><label>Current PIN</label><input id="pin_cur" type="password"></div><div class="field"><label>New PIN</label><input id="pin_new" type="password"></div><div class="field" style="display:flex;align-items:flex-end;"><button class="btn btn-blue" id="savePin">Change PIN</button></div></div></div>`;
+    <button class="btn btn-blue" id="saveContract">Save contract text</button></div>`;
   const save = (keys, msg) => async () => { const body = {}; keys.forEach(k => body[k] = $('#set_' + k).value); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast(msg); };
+  $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
+  $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
+  $('#saveLab').addEventListener('click', save(['crew_day_rate', 'crew_people', 'extra_person_rate', 'hours_per_day'], 'Rates saved'));
   $('#saveCompany').addEventListener('click', save(['company_name', 'company_abn', 'company_lic', 'company_phone', 'company_email', 'association_line', 'company_address', 'tagline'], 'Company saved'));
   $('#savePkg').addEventListener('click', save(['pkg_desc_basic', 'pkg_desc_standard', 'pkg_desc_premium'], 'Descriptions saved'));
   $('#saveContract').addEventListener('click', save(['default_special_clauses', 'warranty_text', 'protections_text', 'standard_conditions'], 'Contract text saved'));
-  $('#savePin').addEventListener('click', async () => { const r = await api('/settings/management/pin', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPin: $('#pin_cur').value, newPin: $('#pin_new').value }) }); if (r.ok) { toast('PIN changed'); $('#pin_cur').value = ''; $('#pin_new').value = ''; } else toast(r.error || 'Failed'); });
+  $('#addUser').addEventListener('click', async () => {
+    const r = await api('/auth/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: $('#nu_name').value, username: $('#nu_user').value, password: $('#nu_pass').value, role: $('#nu_role').value }) });
+    if (r.error) toast(r.error); else { toast('Login added'); settingsTab(v); }
+  });
+  v.querySelectorAll('[data-eu]').forEach(b => b.addEventListener('click', async () => {
+    const p = prompt('New password for this user:'); if (!p) return;
+    await api('/auth/users/' + b.dataset.eu, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: p }) });
+    toast('Password reset');
+  }));
+  v.querySelectorAll('[data-du]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this login?')) { const r = await api('/auth/users/' + b.dataset.du, { method: 'DELETE' }); if (r.error) toast(r.error); settingsTab(v); } }));
 }
 
-function pinPrompt(onOk) {
-  const bg = document.createElement('div'); bg.className = 'modal-bg';
-  bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">Management PIN</h2><div class="field"><input id="pin_in" type="password" placeholder="Enter PIN"></div><div id="pin_err" style="color:var(--red);font-size:12px;display:none;margin-bottom:8px;">Incorrect PIN</div><div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="pin_cancel">Cancel</button><button class="btn btn-blue" id="pin_ok">Unlock</button></div></div>`;
-  document.body.appendChild(bg);
-  $('#pin_in').focus();
-  $('#pin_cancel').addEventListener('click', () => bg.remove());
-  const go = async () => { const r = await api('/settings/management/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: $('#pin_in').value }) }); if (r.ok) { state.mgmtUnlocked = true; bg.remove(); shell(); onOk && onOk(); } else $('#pin_err').style.display = 'block'; };
-  $('#pin_ok').addEventListener('click', go);
-  $('#pin_in').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-}
-
-shell();
+boot();

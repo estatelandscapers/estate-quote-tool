@@ -6,6 +6,7 @@ const { TIERS, resolveItem, lineTotal, surchargeAmount } = require('../utils/pri
 const { sendMail } = require('../utils/email');
 const { buildSignedPdf } = require('../utils/signedPdf');
 const { createPOFromQuote } = require('./purchaseOrders');
+const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
 const getPI = id => id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(id) : null;
@@ -28,7 +29,7 @@ function clientView(q) {
     const anyR = resolveItem(it, pi, 'Standard');
     const row = {
       code: anyR.code, name: anyR.name, unit: anyR.unit, behaviour: anyR.behaviour,
-      qty: it.qty, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct, perTier,
+      qty: it.qty, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct, perTier, tierOverride: it.tier_override || null,
     };
     if (it.scope === 2) { s2 += perTier.Standard.price; scope2.push(row); }
     else { TIERS.forEach(t => tierTotals[t] += perTier[t].price); scope1.push(row); }
@@ -40,6 +41,7 @@ function clientView(q) {
     date: q.quote_date, validUntil: validUntil.toISOString().slice(0, 10), validityDays: q.validity_days,
     expired, superseded: laterRev > 0,
     defaultPackage: q.default_package, status: q.status, acceptedPackage: q.accepted_package,
+    mixed: (() => { try { const c = costQuote(q); return c.mixed ? { base: c.base, changes: c.changes.map(x => ({ code: x.code, name: x.name, to: x.to, delta: Math.round(x.delta), up: x.up })), sellExGst: Math.round(c.selected.sell) } : null; } catch { return null; } })(),
     paymentScheduleText: settingGet(q.payment_schedule === 'small' ? 'pay_sched_small' : 'pay_sched_standard'),
     siteNotes: q.site_notes, hasSiteplan: !!q.siteplan_data,
     surcharges: applied.map(s => ({ name: s.name, kind: s.kind, rate: s.rate })),
@@ -98,33 +100,46 @@ router.post('/:token/sign', async (req, res) => {
   db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload) VALUES (?,?,?,?)')
     .run(newId(), q.id, 'package_select', JSON.stringify({ tier, accepted: true }));
 
+  // Snapshot QUOTED gross-margin baseline at the moment of acceptance (jobs register compares actuals against this)
+  try {
+    const qq = db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id);
+    const cc = costQuote(qq);
+    // sell for the accepted configuration: mixed selections if any, otherwise straight tier
+    const sellSel = cc.mixed ? cc.selected.sell : Object.values(cc.perLine).reduce((a, l) => a + l.tiers[tier].sell, 0);
+    const costSel = cc.mixed ? cc.selected.cost : Object.values(cc.perLine).reduce((a, l) => a + l.tiers[tier].cost, 0);
+    db.prepare('UPDATE quotes SET quoted_sell=?, quoted_cost=?, accepted_mixed=? WHERE id=?')
+      .run(Math.round(sellSel * 100) / 100, Math.round(costSel * 100) / 100, JSON.stringify(cc.changes || []), q.id);
+  } catch (e) { console.error('quoted snapshot failed', e.message); }
+
   const fresh = db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id);
   const cv = clientView(fresh);
   const s1 = cv.tierTotals[tier], sur = cv.surchargePerTier[tier];
   const grandExGst = s1 + sur + cv.scope2Total;
   const totals = { grandExGst: Math.round(grandExGst), grandIncGst: Math.round(grandExGst * 1.1) };
 
-  const settings = {};
-  ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
-  let pdf = null;
-  try { pdf = await buildSignedPdf({ quote: fresh, totals, settings }); } catch (e) { console.error('pdf failed', e); }
-
-  const attachments = pdf ? [{ filename: `Estate-Landscapers-Signed-Contract-${fresh.quote_number}.pdf`, content: pdf }] : [];
-  const html = `<p>Contract signed and accepted.</p>
-    <p><b>Quote:</b> ${fresh.quote_number} — ${fresh.project_title}<br>
-    <b>Client:</b> ${fresh.client_name} · ${fresh.address}<br>
-    <b>Package:</b> ${tier} · <b>Total:</b> $${totals.grandIncGst.toLocaleString()} inc. GST<br>
-    <b>Signed by:</b> ${name} at ${fresh.accepted_at} (UTC)</p>
-    <p style="color:#888">Integrity. Precision. Value. — Estate Landscapers</p>`;
-  const results = { client: null, office: null };
-  const clientEmail = email || fresh.client_email;
-  try { if (clientEmail) results.client = await sendMail({ to: clientEmail, subject: `Your signed contract — Quote ${fresh.quote_number}`, html, attachments }); } catch (e) { console.error('client email failed', e.message); }
-  try { results.office = await sendMail({ to: settingGet('company_email'), subject: `SIGNED: Quote ${fresh.quote_number} — ${fresh.client_name} (${tier})`, html, attachments }); } catch (e) { console.error('office email failed', e.message); }
-
-  // On acceptance, auto-create the Purchase Order for the site team (PO number = quote number, revision ignored).
+  // Respond IMMEDIATELY — the slow work (PDF + two emails) runs in the background,
+  // so the client never hangs on "Submitting...". PO is created before responding.
   try { createPOFromQuote(fresh.id); } catch (e) { console.error('PO creation failed', e.message); }
+  res.json({ ok: true, emailed: { client: 'sending', office: 'sending' } });
 
-  res.json({ ok: true, emailed: { client: !!(results.client && !results.client.skipped), office: !!(results.office && !results.office.skipped) } });
+  setImmediate(async () => {
+    try {
+      const settings = {};
+      ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
+      let pdf = null;
+      try { pdf = await buildSignedPdf({ quote: fresh, totals, settings }); } catch (e) { console.error('pdf failed', e); }
+      const attachments = pdf ? [{ filename: `Estate-Landscapers-Signed-Contract-${fresh.quote_number}.pdf`, content: pdf }] : [];
+      const html = `<p>Contract signed and accepted.</p>
+        <p><b>Quote:</b> ${fresh.quote_number} — ${fresh.project_title}<br>
+        <b>Client:</b> ${fresh.client_name} · ${fresh.address}<br>
+        <b>Package:</b> ${tier} · <b>Total:</b> $${totals.grandIncGst.toLocaleString()} inc. GST<br>
+        <b>Signed by:</b> ${name} at ${fresh.accepted_at} (UTC)</p>
+        <p style="color:#888">Integrity. Precision. Value. — Estate Landscapers</p>`;
+      const clientEmail = email || fresh.client_email;
+      try { if (clientEmail) await sendMail({ to: clientEmail, subject: `Your signed contract — Quote ${fresh.quote_number}`, html, attachments }); } catch (e) { console.error('client email failed', e.message); }
+      try { await sendMail({ to: settingGet('company_email'), subject: `SIGNED: Quote ${fresh.quote_number} — ${fresh.client_name} (${tier})`, html, attachments }); } catch (e) { console.error('office email failed', e.message); }
+    } catch (e) { console.error('background sign work failed', e.message); }
+  });
 });
 
 module.exports = router;
