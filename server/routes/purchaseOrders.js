@@ -20,7 +20,7 @@ function createPOFromQuote(quoteId, opts = {}) {
   const poId = newId();
   const applied = JSON.parse(q.applied_surcharges || '[]');
   const challenges = q.surcharges_na ? [] : applied.map(s => s.name);
-  const c = costQuote(q);
+  const c = costQuote(q, { useSelections: true });
   db.prepare(`INSERT INTO purchase_orders (id,quote_id,po_number,client_name,address,siteplan_data,siteplan_mime,site_challenges,status,site_hours,crew_size)
     VALUES (?,?,?,?,?,?,?,?, 'open', ?, ?)`).run(poId, quoteId, q.parent_number, q.client_name, q.address,
     q.siteplan_data, q.siteplan_mime, JSON.stringify(challenges), c.hours, c.crew);
@@ -31,7 +31,7 @@ function createPOFromQuote(quoteId, opts = {}) {
   c.perLine.forEach((l, i) => {
     const t = l.tiers[l.selected];
     // site copy: spec only — no per-deliverable time (crew plans the job as a whole)
-    const note = (l.method === 'sub' || l.method === 'mixed') ? ' — subcontractor' : '';
+    const note = l.method === 'sub' ? ' — subcontractor' : (l.method === 'mixed' ? ' — mixed (crew + subcontractor)' : '');
     ins.run(newId(), poId, l.code, l.name, (t.spec || '') + note, l.qty, l.unit, i, null, 'site', 0);
   });
   // cost lines (vendor take-off, incl wastage) — these become the ACTUALS when edited

@@ -10,7 +10,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', matCat: 'all', recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -23,9 +23,10 @@ async function boot() {
 }
 function shell() {
   // Order: Leads | Quotes Pricing Recipes Vendors Editor | Projects Purchase Orders
-  const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['recipes', 'Recipes'],
-               ['vendors', 'Vendors'], ['editor', 'Editor'], ['jobs', 'Projects'], ['po', 'Purchase Orders']];
-  const adminOnlyTabs = ['editor', 'jobs', 'po'];
+  const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Materials & Plant'],
+               ['recipes', 'Recipes'], ['vendors', 'Vendors'], ['editor', 'Editor'],
+               ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders']];
+  const adminOnlyTabs = ['editor', 'jobs', 'selections', 'po'];
   const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
   if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
   $('#app').innerHTML = `
@@ -37,7 +38,7 @@ function shell() {
       <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
     </div>
     <div class="wrap" id="view"></div>`;
-  document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; route(); }));
+  document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; state.selQuoteId = null; route(); }));
   $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
   route();
 }
@@ -49,7 +50,9 @@ function route() {
   if (state.tab === 'jobs') return jobsTab(v);
   if (state.tab === 'po') return state.poId ? poEditor(v) : poList(v);
   if (state.tab === 'vendors') return vendorsTab(v);
+  if (state.tab === 'materials') return materialsTab(v);
   if (state.tab === 'recipes') return recipesTab(v);
+  if (state.tab === 'selections') return state.selQuoteId ? selectionDetail(v) : selectionsTab(v);
   if (state.tab === 'pricing') return pricingSheet(v);
   if (state.tab === 'editor') return editorTab(v);
 }
@@ -679,73 +682,224 @@ async function vendorsTab(v) {
   }
 }
 
-// ---------------- RECIPES ----------------
-async function recipesTab(v) {
-  const [recipes, priceItems] = await Promise.all([api('/recipes'), api('/price-list')]);
-  const noRecipe = priceItems.filter(p => !recipes.find(r => r.priceItemId === p.id));
-  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-    <div><h2>Cost recipes</h2><div class="sub">Materials + ratios + wastage + labour per deliverable. Everything editable — placeholder numbers marked until you replace them with your real rates.</div></div>
-    <div style="display:flex;gap:6px;"><select id="newRecipeFor" style="width:240px;"><option value="">+ Create recipe for…</option>${noRecipe.map(p => `<option value="${p.id}">${esc(p.code)} — ${esc(p.name)}</option>`).join('')}</select></div></div>
-    <div class="rule"></div><div id="recipeList"></div></div>`;
-  $('#newRecipeFor').addEventListener('change', async e => { if (!e.target.value) return; await api('/recipes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priceItemId: e.target.value }) }); recipesTab(v); });
-  $('#recipeList').innerHTML = recipes.map(r => `
-    <div class="recipe-box">
-      <div class="recipe-title"><span><b>${esc(r.code)}</b> ${esc(r.name)} <span class="muted" style="font-weight:400;">per ${esc(r.unit)}</span></span>
-        <span style="display:flex;gap:6px;align-items:center;">
-          <select data-rmeth="${r.id}" style="width:150px;font-size:10.5px;"><option value="in" ${r.methodDefault === 'in' ? 'selected' : ''}>Default: In-house</option><option value="sub" ${r.methodDefault === 'sub' ? 'selected' : ''}>Default: Subcontract</option></select>
-          <button class="btn btn-danger btn-sm" data-rdel="${r.id}">Delete recipe</button></span></div>
-      <table><thead><tr><th>Material</th><th>Vendor</th><th>Unit</th><th>Ratio / ${esc(r.unit)}</th><th>Waste %</th><th>Kind</th><th>Basic $</th><th>Standard $</th><th>Premium $</th><th></th></tr></thead><tbody>
-      ${r.materials.map(m => `<tr>
-        <td><input value="${esc(m.name)}" data-rn="${r.id}|${m.id}" style="min-width:120px;">${m.kind === 'tiered' ? `<br><input value="${esc(m.spec.Basic || '')}" placeholder="Basic spec" data-rsb="${r.id}|${m.id}" style="font-size:10px;margin-top:2px;"><input value="${esc(m.spec.Standard || '')}" placeholder="Standard spec" data-rss="${r.id}|${m.id}" style="font-size:10px;margin-top:2px;"><input value="${esc(m.spec.Premium || '')}" placeholder="Premium spec" data-rsp="${r.id}|${m.id}" style="font-size:10px;margin-top:2px;">` : ''}</td>
-        <td><input value="${esc(m.vendorName || '')}" data-rv="${r.id}|${m.id}" style="width:110px;"></td>
-        <td><input value="${esc(m.unit || '')}" data-ru="${r.id}|${m.id}" style="width:50px;"></td>
-        <td><input type="number" step="0.001" value="${m.ratio}" data-rr="${r.id}|${m.id}" style="width:70px;"></td>
-        <td><input type="number" step="0.5" value="${m.wastagePct}" data-rw="${r.id}|${m.id}" style="width:56px;"></td>
-        <td><select data-rk="${r.id}|${m.id}" style="width:92px;font-size:10.5px;"><option value="common" ${m.kind === 'common' ? 'selected' : ''}>Common</option><option value="tiered" ${m.kind === 'tiered' ? 'selected' : ''}>Tiered</option></select></td>
-        <td><input type="number" step="0.01" value="${m.cost.Basic}" data-rcb="${r.id}|${m.id}" style="width:72px;" ${m.kind === 'common' ? 'disabled' : ''}></td>
-        <td><input type="number" step="0.01" value="${m.cost.Standard}" data-rcs="${r.id}|${m.id}" style="width:72px;" title="${m.kind === 'common' ? 'Common cost (used for all tiers)' : ''}"></td>
-        <td><input type="number" step="0.01" value="${m.cost.Premium}" data-rcp="${r.id}|${m.id}" style="width:72px;" ${m.kind === 'common' ? 'disabled' : ''}></td>
-        <td class="right"><button class="btn btn-danger btn-sm" data-rmdel="${r.id}|${m.id}">✕</button></td></tr>`).join('')}
-      </tbody></table>
-      <button class="btn btn-ghost btn-sm" data-raddm="${r.id}" style="margin:8px 0;">+ Add material</button>
+// ---------------- MATERIALS & PLANT ----------------
+async function materialsTab(v) {
+  const [mats, vendors] = await Promise.all([api('/materials'), api('/vendors')]);
+  const cat = state.matCat || 'all';
+  const rows = mats.filter(m => cat === 'all' || m.category === cat);
+  v.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div><h2>Materials &amp; Plant</h2><div class="sub">The master list. Each item has a default vendor; recipes reference these items, so a price change flows everywhere at once.</div></div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <div class="seg" id="matSeg"><button data-v="all" class="${cat === 'all' ? 'on' : ''}">All</button><button data-v="material" class="${cat === 'material' ? 'on' : ''}">Materials</button><button data-v="plant" class="${cat === 'plant' ? 'on' : ''}">Plant</button></div>
+        ${isAdmin() ? '<button class="btn btn-blue" id="addMat">+ Add item</button>' : ''}</div>
+    </div><div class="rule"></div>
+    <table><thead><tr><th>Item</th><th>Type</th><th>Unit</th><th>Default vendor</th>${isAdmin() ? '<th class="right">Cost</th>' : ''}<th>Used in recipes</th><th></th></tr></thead><tbody>
+    ${rows.map(m => `<tr><td><b>${esc(m.name)}</b></td>
+      <td><span class="tag ${m.category === 'plant' ? 't-plantm' : 't-matm'}">${m.category}</span></td><td>${esc(m.unit || '')}</td>
+      <td>${m.defaultVendor ? esc(m.defaultVendor) : '<span class="tag tag-superseded">none set</span>'}</td>
+      ${isAdmin() ? `<td class="right">${money2(m.defaultCost || 0)}</td>` : ''}
+      <td>${m.usedIn.length ? m.usedIn.map(u => `<span class="tag t-def">${esc(u)}</span>`).join(' ') : '<span class="muted">not used</span>'}</td>
+      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-em="${m.id}">Open</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No items.</td></tr>'}
+    </tbody></table></div><div id="matDetail"></div>`;
+  $('#matSeg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.matCat = b.dataset.v; materialsTab(v); }));
+  const add = $('#addMat'); if (add) add.addEventListener('click', async () => {
+    const r = await api('/materials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New item', category: cat === 'plant' ? 'plant' : 'material' }) });
+    await materialsTab(v); openMat(r.id);
+  });
+  v.querySelectorAll('[data-em]').forEach(b => b.addEventListener('click', () => openMat(b.dataset.em)));
+  async function openMat(id) {
+    const all = await api('/materials'); const m = all.find(x => x.id === id); if (!m) return;
+    $('#matDetail').innerHTML = `<div class="card"><h2>${esc(m.name)}</h2><div class="rule"></div>
       <div class="grid4">
-        <div class="field"><label>Labour hrs/${esc(r.unit)} — Basic / Std / Prem</label>
-          <div style="display:flex;gap:4px;"><input type="number" step="0.01" value="${r.hrs.Basic}" data-rhb="${r.id}" style="width:33%;"><input type="number" step="0.01" value="${r.hrs.Standard}" data-rhs="${r.id}" style="width:33%;"><input type="number" step="0.01" value="${r.hrs.Premium}" data-rhp="${r.id}" style="width:33%;"></div></div>
-        <div class="field"><label>Delivery $ per job</label><input type="number" value="${r.deliveryCost}" data-rdc="${r.id}"></div>
-        <div class="field"><label>Plant $ / note</label><div style="display:flex;gap:4px;"><input type="number" value="${r.plantCost}" data-rpc="${r.id}" style="width:45%;"><input value="${esc(r.plantNote || '')}" data-rpn="${r.id}" style="width:55%;"></div></div>
-        <div class="field"><label>Subcontract $/${esc(r.unit)} — B / S / P + vendor</label>
-          <div style="display:flex;gap:4px;"><input type="number" step="0.01" value="${r.sub.Basic}" data-rsub="${r.id}" style="width:25%;"><input type="number" step="0.01" value="${r.sub.Standard}" data-rsus="${r.id}" style="width:25%;"><input type="number" step="0.01" value="${r.sub.Premium}" data-rsup="${r.id}" style="width:25%;"><input value="${esc(r.subVendor || '')}" data-rsuv="${r.id}" placeholder="vendor" style="width:25%;"></div></div>
+        <div class="field"><label>Name</label><input id="m_name" value="${esc(m.name)}"></div>
+        <div class="field"><label>Unit</label><input id="m_unit" value="${esc(m.unit || '')}"></div>
+        <div class="field"><label>Type</label><select id="m_cat"><option value="material" ${m.category === 'material' ? 'selected' : ''}>Material</option><option value="plant" ${m.category === 'plant' ? 'selected' : ''}>Plant</option></select></div>
+        <div class="field"><label>Default vendor</label><select id="m_def"><option value="">— none —</option>${(m.vendors || []).map(x => `<option value="${x.vendorId}" ${x.isDefault ? 'selected' : ''}>${esc(x.vendor)}</option>`).join('')}</select></div>
       </div>
-    </div>`).join('') || '<p class="muted">No recipes yet.</p>';
-  const rupd = (rid, body) => api('/recipes/' + rid, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const mupd = (key, body) => { const [rid, mid] = key.split('|'); return api(`/recipes/${rid}/materials/${mid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); };
+      <button class="btn btn-blue" id="m_save">Save item</button>
+      <div class="rule" style="margin-top:16px;"></div>
+      <h2 style="font-size:12px;">Vendors &amp; prices</h2>
+      <div class="sub">Add alternates so you can switch on proximity, price or availability — at quote time or at Selections.</div>
+      <table><thead><tr><th>Vendor</th><th class="right">Cost</th><th>Delivery rule</th><th>Review by</th><th>Default</th><th></th></tr></thead><tbody>
+      ${(m.vendors || []).map(x => `<tr><td><b>${esc(x.vendor)}</b></td>
+        <td class="right"><input type="number" step="0.01" value="${x.cost}" data-mvc="${x.id}" style="width:90px;text-align:right;"></td>
+        <td><input value="${esc(x.deliveryRule || '')}" data-mvd="${x.id}" placeholder="e.g. $180/load, free over $1k"></td>
+        <td><input type="date" value="${esc(x.reviewBy || '')}" data-mvr="${x.id}" style="width:135px;"> ${x.reviewBy && x.reviewBy < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">stale</span>' : ''}</td>
+        <td>${x.isDefault ? '<span class="tag tag-accepted">Default</span>' : `<button class="btn btn-ghost btn-sm" data-mvdef="${x.id}">Make default</button>`}</td>
+        <td class="right"><button class="btn btn-danger btn-sm" data-mvdel="${x.id}">✕</button></td></tr>`).join('')}
+      </tbody></table>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <select id="m_newv" style="max-width:220px;"><option value="">+ Add a vendor for this item…</option>${vendors.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
+        <input id="m_newc" type="number" step="0.01" placeholder="cost" style="width:100px;">
+        <button class="btn btn-ghost btn-sm" id="m_addv">Add</button>
+      </div>
+      <div class="legend">Used in: ${m.usedIn.length ? m.usedIn.join(', ') : 'no recipes yet'}. Items in use can\'t be deleted.</div>
+    </div>`;
+    $('#m_save').addEventListener('click', async () => {
+      await api('/materials/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: $('#m_name').value, unit: $('#m_unit').value, category: $('#m_cat').value, defaultVendorId: $('#m_def').value || null }) });
+      toast('Saved'); materialsTab(v);
+    });
+    $('#m_addv').addEventListener('click', async () => {
+      if (!$('#m_newv').value) return;
+      await api(`/materials/${id}/vendors`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vendorId: $('#m_newv').value, cost: parseFloat($('#m_newc').value) || 0 }) });
+      openMat(id);
+    });
+    const upd = (mvId, body) => api(`/materials/${id}/vendors/${mvId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    v.querySelectorAll('[data-mvc]').forEach(i => i.addEventListener('change', () => upd(i.dataset.mvc, { cost: parseFloat(i.value) || 0 }).then(() => toast('Price updated'))));
+    v.querySelectorAll('[data-mvd]').forEach(i => i.addEventListener('change', () => upd(i.dataset.mvd, { deliveryRule: i.value })));
+    v.querySelectorAll('[data-mvr]').forEach(i => i.addEventListener('change', () => upd(i.dataset.mvr, { reviewBy: i.value })));
+    v.querySelectorAll('[data-mvdef]').forEach(b => b.addEventListener('click', async () => { await upd(b.dataset.mvdef, { makeDefault: true }); openMat(id); }));
+    v.querySelectorAll('[data-mvdel]').forEach(b => b.addEventListener('click', async () => { await api(`/materials/${id}/vendors/${b.dataset.mvdel}`, { method: 'DELETE' }); openMat(id); }));
+    $('#matDetail').scrollIntoView({ behavior: 'smooth' });
+  }
+}
+
+// ---------------- RECIPES (three variants) ----------------
+const VNAME = { in: 'In-house', sub: 'Subcontract', mixed: 'Mixed' };
+async function recipesTab(v) {
+  const [recs, mats, vendors] = await Promise.all([api('/recipes'), api('/materials'), api('/vendors')]);
+  const openCode = state.recipeCode || (recs.find(r => Object.keys(r.variants).length) || recs[0] || {}).code;
+  const cur = recs.find(r => r.code === openCode) || recs[0];
+  const variant = state.recipeVariant || (cur && cur.defaultVariant) || 'in';
+  v.innerHTML = `<div class="card">
+      <h2>Cost recipes</h2><div class="sub">Every deliverable has three: In-house, Subcontract and Mixed. One is the default — it can be changed on a quote, and again at Selections before the PO.</div><div class="rule"></div>
+      <div id="recPick">${recs.map(r => `<span class="pickitem ${r.code === openCode ? 'on' : ''}" data-rc="${esc(r.code)}">${esc(r.code)} ${esc(r.name.split(' ').slice(0, 2).join(' '))}${r.defaultVariant ? ` <span class="muted">· ${VNAME[r.defaultVariant]}</span>` : ' <span class="tag tag-superseded">none</span>'}</span>`).join('')}</div>
+    </div>${cur ? `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div><h2>${esc(cur.code)} — ${esc(cur.name)}</h2><div class="sub">per ${esc(cur.unit)}${isAdmin() && cur.indicative ? ' · indicative cost per unit at Standard: ' + Object.entries(cur.indicative).map(([k, val]) => `${VNAME[k]} ${money(val)}`).join(' · ') : ''}</div></div>
+        <div class="seg" id="varSeg">${['in', 'sub', 'mixed'].map(x => `<button data-v="${x}" class="${variant === x ? 'on' : ''}">${VNAME[x]}${cur.defaultVariant === x ? ' ★' : ''}</button>`).join('')}</div>
+      </div><div class="rule"></div><div id="recBody"></div></div>` : ''}`;
+  v.querySelectorAll('[data-rc]').forEach(c => c.addEventListener('click', () => { state.recipeCode = c.dataset.rc; state.recipeVariant = null; recipesTab(v); }));
+  const vs = $('#varSeg'); if (vs) vs.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.recipeVariant = b.dataset.v; recipesTab(v); }));
+  if (!cur) return;
+  const R = cur.variants[variant];
+  const body = $('#recBody');
+  if (!R) {
+    body.innerHTML = `<p class="muted">No ${VNAME[variant]} recipe for ${esc(cur.code)} yet.</p>${isAdmin() ? '<button class="btn btn-blue" id="mkVar">+ Create ' + VNAME[variant] + ' recipe</button>' : ''}`;
+    const mk = $('#mkVar'); if (mk) mk.addEventListener('click', async () => { await api('/recipes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priceItemId: cur.priceItemId, variant }) }); recipesTab(v); });
+    return;
+  }
+  const matOpts = (sel) => `<option value="">—</option>` + mats.map(m => `<option value="${m.id}" ${sel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('');
+  body.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+      ${R.isDefault ? '<span class="tag tag-accepted">Default delivery method</span>' : (isAdmin() ? `<button class="btn btn-ghost btn-sm" id="mkDef">Make this the default</button>` : '')}
+      ${isAdmin() ? `<span style="font-size:11px;">Delivery $ <input type="number" id="r_del" value="${R.deliveryCost || 0}" style="width:80px;display:inline-block;"></span>` : ''}
+    </div>
+    <table><thead><tr><th>Component</th><th>Item / vendor</th><th>Ratio</th><th>Waste %</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th>Days</th><th></th></tr></thead><tbody>
+    ${R.components.map(c => {
+      if (c.kind === 'labour') return `<tr><td><span class="tag t-in">Our labour</span></td><td class="muted">Own crew · person-hrs per ${esc(cur.unit)}</td><td>—</td><td>—</td>
+        ${['Basic', 'Standard', 'Premium'].map(t => `<td class="center"><input type="number" step="0.01" value="${c.hrs[t] || 0}" data-rh="${R.id}|${c.id}|${t}" style="width:70px;text-align:center;"></td>`).join('')}
+        <td>—</td><td class="right"><button class="btn btn-danger btn-sm" data-rcdel="${R.id}|${c.id}">✕</button></td></tr>`;
+      if (c.kind === 'sub') return `<tr><td><span class="tag t-subv">Subcontractor</span></td>
+        <td><input value="${esc(c.label || '')}" data-rl="${R.id}|${c.id}" style="min-width:130px;">
+          <select data-rv="${R.id}|${c.id}" style="margin-top:3px;font-size:10.5px;"><option value="">— vendor —</option>${vendors.map(x => `<option value="${x.id}" ${c.vendorId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
+        <td><select data-rb="${R.id}|${c.id}" style="width:78px;font-size:10.5px;"><option value="unit" ${c.subBasis === 'unit' ? 'selected' : ''}>per unit</option><option value="lump" ${c.subBasis === 'lump' ? 'selected' : ''}>lump</option></select></td><td>—</td>
+        ${['Basic', 'Standard', 'Premium'].map(t => `<td class="center">${isAdmin() ? `<input type="number" step="0.01" value="${(c.sub || {})[t] || 0}" data-rs="${R.id}|${c.id}|${t}" style="width:76px;text-align:center;">` : '<span class="muted">—</span>'}</td>`).join('')}
+        <td><input type="number" step="0.5" value="${c.subDays || 0}" data-rd="${R.id}|${c.id}" style="width:60px;"></td>
+        <td class="right"><button class="btn btn-danger btn-sm" data-rcdel="${R.id}|${c.id}">✕</button></td></tr>`;
+      const tag = c.kind === 'plant' ? '<span class="tag t-plantm">Plant</span>' : '<span class="tag t-matm">Material</span>';
+      return `<tr><td>${tag}</td>
+        <td>${c.tiered
+          ? ['Basic', 'Standard', 'Premium'].map(t => `<select data-rm="${R.id}|${c.id}|${t}" style="font-size:10.5px;margin-bottom:2px;">${matOpts(c.mat[t])}</select>`).join('')
+          : `<select data-rmm="${R.id}|${c.id}">${matOpts(c.materialId)}</select>`}
+          <label style="font-size:10px;display:flex;align-items:center;gap:5px;margin-top:3px;"><input type="checkbox" data-rt="${R.id}|${c.id}" ${c.tiered ? 'checked' : ''} style="width:auto;"> different per tier</label>
+          ${c.vendor ? `<span class="muted" style="font-size:10px;">via ${esc(c.vendor)}</span>` : ''}</td>
+        <td><input type="number" step="0.001" value="${c.ratio}" data-rr="${R.id}|${c.id}" style="width:74px;"></td>
+        <td><input type="number" step="0.5" value="${c.wastagePct}" data-rw="${R.id}|${c.id}" style="width:62px;"></td>
+        ${isAdmin() && c.tierCost ? ['Basic', 'Standard', 'Premium'].map(t => `<td class="center muted">${money2(c.tierCost[t] || 0)}</td>`).join('')
+          : `<td class="center muted" colspan="3">${isAdmin() ? money2(c.unitCost || 0) + ' — from library' : 'from library'}</td>`}
+        <td>—</td><td class="right"><button class="btn btn-danger btn-sm" data-rcdel="${R.id}|${c.id}">✕</button></td></tr>`;
+    }).join('') || '<tr><td colspan="9" class="muted">No components yet.</td></tr>'}
+    </tbody></table>
+    ${isAdmin() ? `<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-ghost btn-sm" data-addc="material">+ Material</button>
+      <button class="btn btn-ghost btn-sm" data-addc="plant">+ Plant</button>
+      <button class="btn btn-ghost btn-sm" data-addc="labour">+ Our labour</button>
+      <button class="btn btn-ghost btn-sm" data-addc="sub">+ Subcontractor</button>
+      <button class="btn btn-danger btn-sm" id="delRec" style="margin-left:auto;">Delete this recipe</button></div>` : ''}
+    <div class="legend">Material prices come from the library — change one there and every recipe using it follows. Wastage here is the standard; each quote can override it for odd-shaped sites.</div>`;
+  const rput = (rid, body) => api('/recipes/' + rid, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const cput = (key, body) => { const [rid, cid] = key.split('|'); return api(`/recipes/${rid}/components/${cid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); };
+  const md = $('#mkDef'); if (md) md.addEventListener('click', async () => { await rput(R.id, { makeDefault: true }); toast('Default set'); recipesTab(v); });
+  const rd = $('#r_del'); if (rd) rd.addEventListener('change', () => rput(R.id, { deliveryCost: parseFloat(rd.value) || 0 }).then(() => toast('Saved')));
   const bind = (sel, fn) => v.querySelectorAll(sel).forEach(i => i.addEventListener('change', () => fn(i)));
-  bind('[data-rmeth]', i => rupd(i.dataset.rmeth, { methodDefault: i.value }));
-  bind('[data-rhb]', i => rupd(i.dataset.rhb, { hrs: { Basic: parseFloat(i.value) || 0 } }));
-  bind('[data-rhs]', i => rupd(i.dataset.rhs, { hrs: { Standard: parseFloat(i.value) || 0 } }));
-  bind('[data-rhp]', i => rupd(i.dataset.rhp, { hrs: { Premium: parseFloat(i.value) || 0 } }));
-  bind('[data-rdc]', i => rupd(i.dataset.rdc, { deliveryCost: parseFloat(i.value) || 0 }));
-  bind('[data-rpc]', i => rupd(i.dataset.rpc, { plantCost: parseFloat(i.value) || 0 }));
-  bind('[data-rpn]', i => rupd(i.dataset.rpn, { plantNote: i.value }));
-  bind('[data-rsub]', i => rupd(i.dataset.rsub, { sub: { Basic: parseFloat(i.value) || 0 } }));
-  bind('[data-rsus]', i => rupd(i.dataset.rsus, { sub: { Standard: parseFloat(i.value) || 0 } }));
-  bind('[data-rsup]', i => rupd(i.dataset.rsup, { sub: { Premium: parseFloat(i.value) || 0 } }));
-  bind('[data-rsuv]', i => rupd(i.dataset.rsuv, { subVendor: i.value }));
-  bind('[data-rn]', i => mupd(i.dataset.rn, { name: i.value }));
-  bind('[data-rv]', i => mupd(i.dataset.rv, { vendorName: i.value }));
-  bind('[data-ru]', i => mupd(i.dataset.ru, { unit: i.value }));
-  bind('[data-rr]', i => mupd(i.dataset.rr, { ratio: parseFloat(i.value) || 0 }));
-  bind('[data-rw]', i => mupd(i.dataset.rw, { wastagePct: parseFloat(i.value) || 0 }));
-  bind('[data-rk]', i => mupd(i.dataset.rk, { kind: i.value }).then(() => recipesTab(v)));
-  bind('[data-rcb]', i => mupd(i.dataset.rcb, { cost: { Basic: parseFloat(i.value) || 0 } }));
-  bind('[data-rcs]', i => mupd(i.dataset.rcs, { cost: { Standard: parseFloat(i.value) || 0 } }));
-  bind('[data-rcp]', i => mupd(i.dataset.rcp, { cost: { Premium: parseFloat(i.value) || 0 } }));
-  bind('[data-rsb]', i => mupd(i.dataset.rsb, { spec: { Basic: i.value } }));
-  bind('[data-rss]', i => mupd(i.dataset.rss, { spec: { Standard: i.value } }));
-  bind('[data-rsp]', i => mupd(i.dataset.rsp, { spec: { Premium: i.value } }));
-  v.querySelectorAll('[data-raddm]').forEach(b => b.addEventListener('click', async () => { await api(`/recipes/${b.dataset.raddm}/materials`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New material' }) }); recipesTab(v); }));
-  v.querySelectorAll('[data-rmdel]').forEach(b => b.addEventListener('click', async () => { const [rid, mid] = b.dataset.rmdel.split('|'); await api(`/recipes/${rid}/materials/${mid}`, { method: 'DELETE' }); recipesTab(v); }));
-  v.querySelectorAll('[data-rdel]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this recipe? Costing for this deliverable will stop.')) { await api('/recipes/' + b.dataset.rdel, { method: 'DELETE' }); recipesTab(v); } }));
+  bind('[data-rr]', i => cput(i.dataset.rr, { ratio: parseFloat(i.value) || 0 }));
+  bind('[data-rw]', i => cput(i.dataset.rw, { wastagePct: parseFloat(i.value) || 0 }));
+  bind('[data-rd]', i => cput(i.dataset.rd, { subDays: parseFloat(i.value) || 0 }));
+  bind('[data-rl]', i => cput(i.dataset.rl, { label: i.value }));
+  bind('[data-rv]', i => cput(i.dataset.rv, { vendorId: i.value || null }));
+  bind('[data-rb]', i => cput(i.dataset.rb, { subBasis: i.value }));
+  bind('[data-rmm]', i => cput(i.dataset.rmm, { materialId: i.value || null }));
+  bind('[data-rt]', i => { const [rid, cid] = i.dataset.rt.split('|'); cput(rid + '|' + cid, { tiered: i.checked }).then(() => recipesTab(v)); });
+  bind('[data-rh]', i => { const [rid, cid, t] = i.dataset.rh.split('|'); cput(rid + '|' + cid, { hrs: { [t]: parseFloat(i.value) || 0 } }); });
+  bind('[data-rs]', i => { const [rid, cid, t] = i.dataset.rs.split('|'); cput(rid + '|' + cid, { sub: { [t]: parseFloat(i.value) || 0 } }); });
+  bind('[data-rm]', i => { const [rid, cid, t] = i.dataset.rm.split('|'); cput(rid + '|' + cid, { mat: { [t]: i.value || null } }); });
+  v.querySelectorAll('[data-rcdel]').forEach(b => b.addEventListener('click', async () => { const [rid, cid] = b.dataset.rcdel.split('|'); await api(`/recipes/${rid}/components/${cid}`, { method: 'DELETE' }); recipesTab(v); }));
+  v.querySelectorAll('[data-addc]').forEach(b => b.addEventListener('click', async () => {
+    await api(`/recipes/${R.id}/components`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: b.dataset.addc, label: b.dataset.addc === 'sub' ? 'Subcontractor' : null }) });
+    recipesTab(v);
+  }));
+  const dr = $('#delRec'); if (dr) dr.addEventListener('click', async () => { if (confirm('Delete the ' + VNAME[variant] + ' recipe for ' + cur.code + '?')) { await api('/recipes/' + R.id, { method: 'DELETE' }); state.recipeVariant = null; recipesTab(v); } });
+}
+
+// ---------------- SELECTIONS ----------------
+async function selectionsTab(v) {
+  const rows = await api('/selections');
+  v.innerHTML = `<div class="card"><h2>Selections</h2>
+    <div class="sub">Every won job lands here first. Confirm how each deliverable will actually be done and who supplies it — then lock it and the PO is raised from those decisions.</div><div class="rule"></div>
+    <table><thead><tr><th>Quote</th><th>Client / site</th><th>Package</th><th>Stage</th><th>PO</th><th></th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td><b>${esc(r.quoteNumber)}</b></td><td>${esc(r.client || '')}<br><span class="muted" style="font-size:10.5px;">${esc(r.address || '')}</span></td>
+      <td>${esc(r.acceptedPackage || '')}</td>
+      <td><span class="tag ${r.locked ? 'tag-accepted' : 'tag-incomplete'}">${esc(r.stage)}</span></td>
+      <td>${r.poNumber ? esc(r.poNumber) : '<span class="muted">—</span>'}</td>
+      <td class="right"><button class="btn ${r.locked ? 'btn-ghost' : 'btn-blue'} btn-sm" data-sel="${r.id}">${r.locked ? 'View' : 'Make selections'}</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No won jobs yet.</td></tr>'}
+    </tbody></table></div>`;
+  v.querySelectorAll('[data-sel]').forEach(b => b.addEventListener('click', () => { state.selQuoteId = b.dataset.sel; route(); }));
+}
+async function selectionDetail(v) {
+  const d = await api('/selections/' + state.selQuoteId);
+  const dCost = d.final.cost - d.quoted.cost, dDays = Math.round((d.final.days - d.quoted.days) * 10) / 10;
+  v.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div><h2>Selections — Quote ${esc(d.quoteNumber)} · ${esc(d.client || '')}</h2><div class="sub">${esc(d.address || '')}</div></div>
+      <div style="display:flex;gap:6px;"><button class="btn btn-ghost btn-sm" id="backSel">← All selections</button>
+        ${d.locked ? '<button class="btn btn-ghost btn-sm" id="unlockSel">Unlock</button>' : ''}</div>
+    </div><div class="rule"></div>
+    <table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th>Quoted as</th><th>Final method</th><th>Vendor</th><th>Sub days</th><th class="right">Cost impact</th></tr></thead><tbody>
+    ${d.lines.map(l => `<tr ${l.delta !== 0 ? 'style="background:#FFFBF2;"' : ''}>
+      <td><b>${esc(l.code)}</b></td><td>${esc(l.name)}<br><span class="muted" style="font-size:10.5px;">${esc(l.spec || '')}</span></td>
+      <td>${l.qty} ${esc(l.unit || '')}</td>
+      <td><span class="tag ${l.quotedMethod === 'in' ? 't-in' : l.quotedMethod === 'sub' ? 't-subv' : 't-mix'}">${VNAME[l.quotedMethod] || l.quotedMethod}</span></td>
+      <td><select data-sm="${l.id}" ${d.locked ? 'disabled' : ''} style="width:118px;">
+        ${['in', 'sub', 'mixed'].map(x => `<option value="${x}" ${l.finalMethod === x ? 'selected' : ''} ${l.availableVariants.includes(x) ? '' : 'disabled'}>${VNAME[x]}${l.variantCost[x] ? ' · ' + money(l.variantCost[x].cost) : ''}</option>`).join('')}</select></td>
+      <td><select data-sv="${l.id}" ${d.locked ? 'disabled' : ''} style="width:140px;"><option value="">Default vendor</option>${d.vendors.map(x => `<option value="${x.id}" ${l.selVendorId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
+      <td><input type="number" step="0.5" value="${l.subDays ?? ''}" data-sd="${l.id}" ${d.locked ? 'disabled' : ''} style="width:62px;"></td>
+      <td class="right"><b style="color:${l.delta < 0 ? 'var(--green)' : l.delta > 0 ? 'var(--red)' : 'var(--grey)'};">${l.delta === 0 ? 'no change' : (l.delta > 0 ? '+' : '') + money(l.delta)}</b></td></tr>`).join('')}
+    </tbody></table>
+    <div class="grid4" style="margin-top:14px;">
+      <div class="stat"><div class="k">Quoted cost</div><div class="v">${money(d.quoted.cost)}</div></div>
+      <div class="stat hero"><div class="k">Selected cost</div><div class="v">${money(d.final.cost)}</div><div style="font-size:10px;color:#cfe0ff;">${dCost === 0 ? 'same as quoted' : (dCost > 0 ? '+' : '') + money(dCost)}</div></div>
+      <div class="admin-only"><div class="k">🔒 Margin after selections</div><div class="v" style="color:${d.final.marginPct >= d.quoted.marginPct ? 'var(--green)' : 'var(--red)'};">${d.final.marginPct}%</div><div style="font-size:10px;">was ${d.quoted.marginPct}% at quote</div></div>
+      <div class="stat time"><div class="k">Revised duration</div><div class="v">${d.final.days} days</div><div style="font-size:10px;color:#e0d0f5;">crew ${d.final.crewDays}d + subbies ${d.final.subDays}d${dDays !== 0 ? ` · ${dDays > 0 ? '+' : ''}${dDays}d vs quote` : ''}</div></div>
+    </div>
+    ${d.locked ? '<div class="legend" style="margin-top:12px;">Selections are locked and the PO has been raised. Unlock to change them — the PO will need superseding.</div>'
+      : '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;"><button class="btn btn-blue" id="lockSel">Lock selections &amp; create PO →</button></div>'}
+  </div>`;
+  $('#backSel').addEventListener('click', () => { state.selQuoteId = null; route(); });
+  const put = (id, body) => api(`/selections/${state.selQuoteId}/line/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(() => selectionDetail(v));
+  v.querySelectorAll('[data-sm]').forEach(s => s.addEventListener('change', () => put(s.dataset.sm, { method: s.value })));
+  v.querySelectorAll('[data-sv]').forEach(s => s.addEventListener('change', () => put(s.dataset.sv, { vendorId: s.value || null })));
+  v.querySelectorAll('[data-sd]').forEach(i => i.addEventListener('change', () => put(i.dataset.sd, { subDays: i.value === '' ? null : parseFloat(i.value) })));
+  const lock = $('#lockSel'); if (lock) lock.addEventListener('click', async () => {
+    if (!confirm('Lock these selections and raise the PO?')) return;
+    const r = await api(`/selections/${state.selQuoteId}/lock`, { method: 'POST' });
+    toast(r.poId ? 'Selections locked — PO raised' : 'Locked, but PO creation failed');
+    if (r.poId) { state.tab = 'po'; state.poId = r.poId; state.selQuoteId = null; shell(); } else selectionDetail(v);
+  });
+  const un = $('#unlockSel'); if (un) un.addEventListener('click', async () => { await api(`/selections/${state.selQuoteId}/unlock`, { method: 'POST' }); selectionDetail(v); });
 }
 
 // ---------------- PRICING ----------------
@@ -834,6 +988,16 @@ function editChk(i) {
 async function settingsTab(v) {
   const [s, users] = await Promise.all([api('/settings'), api('/auth/users')]);
   v.innerHTML = `
+  <div class="card"><h2>Current settings</h2><div class="sub">What the tool is using right now.</div><div class="rule"></div>
+    <div class="grid3">
+      <div class="stat"><div class="k">Customer tiers — target gross margin</div>
+        <div style="font-size:12.5px;line-height:1.9;margin-top:4px;"><b>Bronze</b> ${esc(s.tier_bronze || '15')}% · <b>Silver</b> ${esc(s.tier_silver || '25')}% · <b>Gold</b> ${esc(s.tier_gold || '35')}%</div></div>
+      <div class="stat"><div class="k">Quote ageing</div>
+        <div style="font-size:12.5px;line-height:1.9;margin-top:4px;">Follow up <b>${esc(s.age_flag || '7')}d</b> · Chase <b>${esc(s.age_chase || '14')}d</b> · Dead <b>${esc(s.age_dead || '30')}d</b></div></div>
+      <div class="stat"><div class="k">Labour &amp; crew</div>
+        <div style="font-size:12.5px;line-height:1.9;margin-top:4px;"><b>${money(parseFloat(s.crew_day_rate || 1150))}</b>/day for <b>${esc(s.crew_people || '2')}</b> people · <b>${esc(s.hours_per_day || '8')}</b> hrs/day<br>
+        <span class="muted">= ${money2((parseFloat(s.crew_day_rate || 1150) / Math.max(1, parseFloat(s.crew_people || 2)) / Math.max(1, parseFloat(s.hours_per_day || 8))))} per person-hour</span></div></div>
+    </div></div>
   <div class="card"><h2>Customer tiers — target gross margin</h2><div class="sub">Warns on quotes below target, and drives the cost-plus guide price.</div><div class="rule"></div>
     <div class="grid3">${[['tier_bronze', 'Bronze %'], ['tier_silver', 'Silver %'], ['tier_gold', 'Gold %']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveTiers">Save tiers</button></div>
@@ -851,7 +1015,7 @@ async function settingsTab(v) {
   <div class="card"><h2>Company</h2><div class="rule"></div><div class="grid2">
       ${[['company_name', 'Company name'], ['company_abn', 'ABN'], ['company_lic', 'Licence'], ['company_phone', 'Phone'], ['company_email', 'Email (Zoho)'], ['association_line', 'Association line'], ['company_address', 'Address'], ['tagline', 'Tagline']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" value="${esc(s[k])}"></div>`).join('')}
     </div>
-    <div style="font-size:11.5px;margin:6px 0 10px;">Email: ${s.smtpConfigured ? '<span class="tag tag-accepted">SMTP configured</span>' : '<span class="tag tag-superseded">Not configured</span>'}</div>
+    <div style="font-size:11.5px;margin:6px 0 10px;">Email provider: ${s.emailProvider ? `<span class="tag tag-accepted">${esc(s.emailProvider)}</span>` : '<span class="tag tag-superseded">none configured</span>'}</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
       <input id="testTo" placeholder="send test to…" value="${esc(s.company_email || '')}" style="max-width:250px;">
       <button class="btn btn-ghost btn-sm" id="testEmail">Send test email</button>
@@ -873,7 +1037,7 @@ async function settingsTab(v) {
     const el = $('#testResult'); el.innerHTML = '<span class="muted">Testing…</span>';
     const r = await api('/settings/test-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: $('#testTo').value }) });
     el.innerHTML = r.ok
-      ? `<span style="color:var(--green);font-weight:700;">✓ Sent via port ${r.port} — check ${esc(r.to)}</span>`
+      ? `<span style="color:var(--green);font-weight:700;">✓ Sent via ${esc(r.provider)} — check ${esc(r.to)}</span>`
       : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.error || 'failed')}</span><br><span class="muted">${esc(r.hint || '')}</span>`;
   });
   $('#saveCompany').addEventListener('click', save(['company_name', 'company_abn', 'company_lic', 'company_phone', 'company_email', 'association_line', 'company_address', 'tagline'], 'Company saved'));

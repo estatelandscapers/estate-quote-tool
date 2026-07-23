@@ -5,7 +5,6 @@ const { newId } = require('../utils/ids');
 const { TIERS, resolveItem, lineTotal, surchargeAmount } = require('../utils/pricing');
 const { sendMail } = require('../utils/email');
 const { buildSignedPdf } = require('../utils/signedPdf');
-const { createPOFromQuote } = require('./purchaseOrders');
 const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
@@ -141,9 +140,9 @@ router.post('/:token/sign', async (req, res) => {
   const grandExGst = s1 + sur + cv.scope2Total;
   const totals = { grandExGst: Math.round(grandExGst), grandIncGst: Math.round(grandExGst * 1.1) };
 
-  // Respond IMMEDIATELY — the slow work (PDF + two emails) runs in the background,
-  // so the client never hangs on "Submitting...". PO is created before responding.
-  try { createPOFromQuote(fresh.id); } catch (e) { console.error('PO creation failed', e.message); }
+  // Respond IMMEDIATELY — the slow work (PDF + two emails) runs in the background.
+  // NOTE: the PO is NOT created here any more. A won job goes to Selections first, where the
+  // delivery method and vendors are confirmed; locking those creates the PO.
   res.json({ ok: true, emailed: { client: 'sending', office: 'sending' } });
 
   setImmediate(async () => {

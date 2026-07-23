@@ -122,3 +122,6 @@ textarea{resize:vertical;line-height:1.5;}
 .emailbar.sent{background:#F2F8F4;border:1px solid #CBE0D2;color:#2E7D46;}
 .emailbar.partial{background:#FFF8E8;border:1px solid #EAD9AC;color:#B5761E;}
 .emailbar.failed{background:#FDF0EE;border:1px solid #E9C9C9;color:#C23B3B;}
+.t-matm{background:#E4EDFB;color:#143FB0;}
+.t-plantm{background:#F1E9D8;color:#B08D3E;}
+.t-mix{background:#FFF3D6;color:#8A6A1E;}

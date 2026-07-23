@@ -186,6 +186,10 @@ addColumn('quote_items','sub_days','REAL');
 addColumn('quotes','lead_id','TEXT');
 addColumn('quotes','email_status','TEXT');
 addColumn('quotes','email_detail','TEXT');
+addColumn('quotes','selections_locked','INTEGER DEFAULT 0');
+addColumn('quote_items','sel_method','TEXT');
+addColumn('quote_items','sel_vendor_id','TEXT');
+addColumn('quote_items','sel_sub_days','REAL');
 db.exec(`
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY, name TEXT, phone TEXT, email TEXT, address TEXT,
@@ -194,7 +198,22 @@ CREATE TABLE IF NOT EXISTS leads (
 );
 CREATE TABLE IF NOT EXISTS materials (
   id TEXT PRIMARY KEY, name TEXT, unit TEXT, category TEXT DEFAULT 'material',
-  notes TEXT, created_at TEXT DEFAULT (datetime('now'))
+  notes TEXT, default_vendor_id TEXT, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS recipe_v2 (
+  id TEXT PRIMARY KEY, price_item_id TEXT REFERENCES price_items(id) ON DELETE CASCADE,
+  variant TEXT, is_default INTEGER DEFAULT 0, delivery_cost REAL DEFAULT 0, notes TEXT,
+  UNIQUE(price_item_id, variant)
+);
+CREATE TABLE IF NOT EXISTS recipe_component (
+  id TEXT PRIMARY KEY, recipe_id TEXT REFERENCES recipe_v2(id) ON DELETE CASCADE,
+  kind TEXT DEFAULT 'material',
+  material_id TEXT, vendor_id TEXT, tiered INTEGER DEFAULT 0,
+  mat_basic TEXT, mat_standard TEXT, mat_premium TEXT,
+  ratio REAL DEFAULT 0, wastage_pct REAL DEFAULT 5,
+  hrs_basic REAL DEFAULT 0, hrs_standard REAL DEFAULT 0, hrs_premium REAL DEFAULT 0,
+  sub_basis TEXT DEFAULT 'unit', sub_basic REAL DEFAULT 0, sub_standard REAL DEFAULT 0, sub_premium REAL DEFAULT 0,
+  sub_days REAL DEFAULT 0, amount REAL DEFAULT 0, label TEXT, sort_order INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS material_vendors (
   id TEXT PRIMARY KEY, material_id TEXT REFERENCES materials(id) ON DELETE CASCADE,
@@ -202,6 +221,8 @@ CREATE TABLE IF NOT EXISTS material_vendors (
   cost REAL DEFAULT 0, delivery_rule TEXT, review_by TEXT, preferred INTEGER DEFAULT 0
 );
 `);
+// for databases created before this column existed
+addColumn('materials','default_vendor_id','TEXT');
 
 
 
@@ -341,6 +362,112 @@ if (!settingGet2('seed_v7')) {
  } catch (e) { console.error('[seed v7] skipped:', e.message); }
   // Always mark seeded — a partial seed must never crash-loop the app on restart.
   settingSet2('seed_v7','1');
+}
+
+
+// ---- v11: Materials & Plant library + three recipe variants per deliverable ----
+if (!settingGet2('seed_v11')) {
+ try {
+  const M = db.prepare('INSERT OR IGNORE INTO materials (id,name,unit,category,default_vendor_id) VALUES (?,?,?,?,?)');
+  const MV = db.prepare('INSERT OR IGNORE INTO material_vendors (id,material_id,vendor_id,cost,delivery_rule,preferred) VALUES (?,?,?,?,?,?)');
+  // make sure every vendor referenced below exists
+  const IV = db.prepare('INSERT OR IGNORE INTO vendors (id,name,is_supplier,is_subcontractor,area,terms) VALUES (?,?,?,?,?,?)');
+  [['Kennards Hire',1,0,'Rouse Hill - 3 km','Account'],
+   ['Nuturf',1,0,'Wetherill Park','30 days'],
+   ['Adbri Masonry',1,0,'Wetherill Park','30 days'],
+   ['Lawn Solutions',1,0,'Richmond - 28 km','COD'],
+   ['GreenScape Turf Co',0,1,'Kellyville - 9 km','14 days']].forEach(v => IV.run(uid2(), v[0], v[1], v[2], v[3], v[4]));
+  const vend = n => { const r = db.prepare('SELECT id FROM vendors WHERE name=?').get(n); return r ? r.id : null; };
+  const mk = (name, unit, cat, vendorName, cost, delivery) => {
+    const id = uid2(); const vid = vend(vendorName);
+    M.run(id, name, unit, cat, vid);
+    if (vid) MV.run(uid2(), id, vid, cost, delivery || '', 1);
+    return id;
+  };
+  const mKik = mk('Kikuyu turf','m2','material','Hunter Turf',8.50,'$180 / load');
+  const mSW  = mk('Sir Walter turf','m2','material','Hunter Turf',13.50,'$180 / load');
+  const mSG  = mk('Sir Grange turf','m2','material','Hunter Turf',22.00,'$180 / load');
+  const mSand= mk('Turf underlay sand','m3','material','Benedict Sands',68.00,'$140 / load');
+  const mFert= mk('Starter fertiliser','kg','material','Benedict Sands',4.20,'incl.');
+  const mTimb= mk('Treated timber sleeper','ea','material','Fencing Direct',28.00,'$120 / pallet');
+  const mConS= mk('Concrete sleeper 200x75','ea','material','ABC Concreting',48.00,'$220 / pallet');
+  const mBlk = mk('Besser block + render','m2','material','ABC Concreting',95.00,'$220 / pallet');
+  const mDrain=mk('Ag line + gravel backfill','m','material','Benedict Sands',13.80,'incl.');
+  const mCB  = mk('Colorbond kit 1.8m','m','material','Fencing Direct',49.90,'$140 flat');
+  const pTurf= mk('Turf cutter','day','plant','Kennards Hire',85.00,'pickup');
+  const pExc = mk('Excavator 1.7t','day','plant','Kennards Hire',340.00,'delivered');
+
+  const RV = db.prepare('INSERT OR IGNORE INTO recipe_v2 (id,price_item_id,variant,is_default,delivery_cost) VALUES (?,?,?,?,?)');
+  const RC = db.prepare(`INSERT OR IGNORE INTO recipe_component
+    (id,recipe_id,kind,material_id,tiered,mat_basic,mat_standard,mat_premium,ratio,wastage_pct,
+     hrs_basic,hrs_standard,hrs_premium,sub_basis,sub_basic,sub_standard,sub_premium,sub_days,amount,label,sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const item = c => { const r = db.prepare('SELECT id FROM price_items WHERE code=?').get(c); return r ? r.id : null; };
+  const mat = (rid,o,i) => RC.run(uid2(),rid,'material',o.material||null,o.tiered?1:0,o.b||null,o.s||null,o.p||null,
+      o.ratio||0,o.waste==null?5:o.waste,0,0,0,'unit',0,0,0,0,0,o.label||null,i);
+  const lab = (rid,o,i) => RC.run(uid2(),rid,'labour',null,0,null,null,null,0,0,o.b||0,o.s||0,o.p||0,'unit',0,0,0,0,0,'Own crew',i);
+  const plant=(rid,o,i)=> RC.run(uid2(),rid,'plant',o.material||null,0,null,null,null,o.days||1,0,0,0,0,'unit',0,0,0,0,o.amount||0,o.label||'Plant',i);
+  const sub = (rid,o,i) => { const id=uid2();
+    RC.run(id,rid,'sub',null,0,null,null,null,0,0,0,0,0,o.basis||'unit',o.b||0,o.s||0,o.p||0,o.days||0,0,o.label||'Subcontractor',i);
+    if (o.vendor) db.prepare('UPDATE recipe_component SET vendor_id=? WHERE id=?').run(vend(o.vendor), id); };
+
+  // GT — turf
+  const gt = item('GT');
+  if (gt) {
+    const a=uid2(); RV.run(a,gt,'in',1,180);
+    mat(a,{tiered:1,b:mKik,s:mSW,p:mSG,ratio:1.00,waste:5,label:'Turf variety'},0);
+    mat(a,{material:mSand,ratio:0.030,waste:10,label:'Underlay sand'},1);
+    mat(a,{material:mFert,ratio:0.020,waste:5,label:'Starter fertiliser'},2);
+    plant(a,{material:pTurf,amount:85,label:'Turf cutter'},3);
+    lab(a,{b:0.150,s:0.150,p:0.170},4);
+    const b=uid2(); RV.run(b,gt,'sub',0,0);
+    sub(b,{basis:'unit',b:28,s:32,p:46,days:1.5,label:'Turf supply & lay',vendor:'GreenScape Turf Co'},0);
+    const c=uid2(); RV.run(c,gt,'mixed',0,180);
+    mat(c,{tiered:1,b:mKik,s:mSW,p:mSG,ratio:1.00,waste:5,label:'Turf variety'},0);
+    mat(c,{material:mSand,ratio:0.030,waste:10,label:'Underlay sand'},1);
+    sub(c,{basis:'unit',b:9,s:9,p:12,days:1.0,label:'Laying labour',vendor:'GreenScape Turf Co'},2);
+    lab(c,{b:0.040,s:0.040,p:0.050},3);
+  }
+  // RW — retaining wall
+  const rw = item('RW');
+  if (rw) {
+    const a=uid2(); RV.run(a,rw,'in',1,220);
+    mat(a,{tiered:1,b:mTimb,s:mConS,p:mBlk,ratio:3.5,waste:8,label:'Wall units'},0);
+    mat(a,{material:mDrain,ratio:1.0,waste:0,label:'Drainage + backfill'},1);
+    plant(a,{material:pExc,amount:340,label:'Excavator'},2);
+    lab(a,{b:2.50,s:2.80,p:5.00},3);
+    const b=uid2(); RV.run(b,rw,'sub',0,0);
+    sub(b,{basis:'unit',b:300,s:390,p:600,days:2.5,label:'Wall supply & install',vendor:'ABC Concreting'},0);
+    const c=uid2(); RV.run(c,rw,'mixed',0,220);
+    mat(c,{tiered:1,b:mTimb,s:mConS,p:mBlk,ratio:3.5,waste:8,label:'Wall units'},0);
+    sub(c,{basis:'unit',b:180,s:220,p:340,days:1.5,label:'Install labour',vendor:'ABC Concreting'},1);
+    lab(c,{b:0.60,s:0.60,p:0.80},2);
+  }
+  // FC — fence
+  const fc = item('FC');
+  if (fc) {
+    const a=uid2(); RV.run(a,fc,'in',1,140);
+    mat(a,{material:mCB,ratio:1.0,waste:7,label:'Colorbond kit'},0);
+    lab(a,{b:0.35,s:0.35,p:0.35},1);
+    const b=uid2(); RV.run(b,fc,'sub',0,0);
+    sub(b,{basis:'unit',b:88,s:88,p:88,days:1.0,label:'Fence supply & install',vendor:'Fencing Direct'},0);
+    const c=uid2(); RV.run(c,fc,'mixed',0,140);
+    mat(c,{material:mCB,ratio:1.0,waste:7,label:'Colorbond kit'},0);
+    sub(c,{basis:'unit',b:32,s:32,p:32,days:0.5,label:'Install labour',vendor:'Fencing Direct'},1);
+  }
+  // CP — driveway (subcontract default)
+  const cp = item('CP');
+  if (cp) {
+    const a=uid2(); RV.run(a,cp,'sub',1,0);
+    sub(a,{basis:'unit',b:128,s:155,p:280,days:3.0,label:'Concrete supply & lay',vendor:'ABC Concreting'},0);
+    const b=uid2(); RV.run(b,cp,'in',0,0);
+    lab(b,{b:0.35,s:0.35,p:0.42},0);
+    const c=uid2(); RV.run(c,cp,'mixed',0,0);
+    sub(c,{basis:'unit',b:96,s:118,p:210,days:2.0,label:'Pour & finish',vendor:'ABC Concreting'},0);
+    lab(c,{b:0.12,s:0.12,p:0.15},1);
+  }
+ } catch (e) { console.error('[seed v11] skipped:', e.message); }
+ settingSet2('seed_v11','1');
 }
 
 module.exports = { db, settingGet, settingSet };

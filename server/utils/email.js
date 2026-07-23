@@ -1,67 +1,126 @@
-// SMTP via nodemailer.
-//   SMTP_HOST  smtp.zoho.com   (use smtp.zoho.com.au if your Zoho account is AU-hosted)
-//   SMTP_USER  info@estatelandscapers.com.au   — must be a full mailbox, not an alias
-//   SMTP_PASS  Zoho App Password
-//   SMTP_PORT  optional. 465 = SSL, 587 = STARTTLS. If unset we try 465 then fall back to 587.
-// Cloud hosts often drop outbound traffic on 465, which shows up as "Connection timeout".
-// We therefore fail fast and automatically retry on the other port before giving up.
+// Email sending.
+//
+// Railway blocks outbound SMTP (ports 465 and 587 both time out), so the tool sends over
+// HTTPS via an email API instead. Pick ONE provider by setting its key in Railway:
+//
+//   ZeptoMail (Zoho's own — keeps your existing verified domain):
+//     ZEPTOMAIL_TOKEN   the "Send Mail Token" from ZeptoMail
+//   Resend:
+//     RESEND_API_KEY
+//   SendGrid:
+//     SENDGRID_API_KEY
+//
+//   MAIL_FROM   optional, defaults to SMTP_USER or info@estatelandscapers.com.au
+//
+// If no API key is present it falls back to SMTP (which works on hosts that allow it).
 const nodemailer = require('nodemailer');
 
-function configured() { return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS); }
+const FROM_NAME = 'Estate Landscapers';
+function fromAddress() {
+  return process.env.MAIL_FROM || process.env.SMTP_USER || 'info@estatelandscapers.com.au';
+}
+function provider() {
+  if (process.env.ZEPTOMAIL_TOKEN) return 'zeptomail';
+  if (process.env.RESEND_API_KEY) return 'resend';
+  if (process.env.SENDGRID_API_KEY) return 'sendgrid';
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) return 'smtp';
+  return null;
+}
+function configured() { return !!provider(); }
 
-function transport(port) {
-  const secure = Number(port) === 465;
+const b64 = c => Buffer.isBuffer(c) ? c.toString('base64') : Buffer.from(String(c)).toString('base64');
+
+async function postJson(url, headers, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+  return text;
+}
+
+async function sendViaZepto({ to, subject, html, attachments }) {
+  return postJson('https://api.zeptomail.com/v1.1/email',
+    { Authorization: process.env.ZEPTOMAIL_TOKEN },
+    { from: { address: fromAddress(), name: FROM_NAME },
+      to: [{ email_address: { address: to } }],
+      subject, htmlbody: html,
+      attachments: (attachments || []).map(a => ({ name: a.filename, content: b64(a.content), mime_type: 'application/pdf' })) });
+}
+async function sendViaResend({ to, subject, html, attachments }) {
+  return postJson('https://api.resend.com/emails',
+    { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
+    { from: `${FROM_NAME} <${fromAddress()}>`, to: [to], subject, html,
+      attachments: (attachments || []).map(a => ({ filename: a.filename, content: b64(a.content) })) });
+}
+async function sendViaSendgrid({ to, subject, html, attachments }) {
+  return postJson('https://api.sendgrid.com/v3/mail/send',
+    { Authorization: `Bearer ${process.env.SENDGRID_API_KEY}` },
+    { personalizations: [{ to: [{ email: to }] }],
+      from: { email: fromAddress(), name: FROM_NAME },
+      subject, content: [{ type: 'text/html', value: html }],
+      attachments: (attachments || []).map(a => ({ filename: a.filename, content: b64(a.content), type: 'application/pdf' })) });
+}
+
+function smtpTransport(port) {
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.zoho.com',
-    port: Number(port), secure,
+    host: process.env.SMTP_HOST, port: Number(port), secure: Number(port) === 465,
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    // fail in seconds, not minutes, so signing never appears to hang
     connectionTimeout: 12000, greetingTimeout: 8000, socketTimeout: 20000,
     tls: { rejectUnauthorized: false },
   });
 }
-
-// Ports to attempt, in order. An explicit SMTP_PORT is tried first, then the other one.
-function portPlan() {
+function smtpPorts() {
   const p = Number(process.env.SMTP_PORT);
-  if (p === 465) return [465, 587];
-  if (p === 587) return [587, 465];
-  if (p) return [p];
-  return [465, 587];
+  return p === 465 ? [465, 587] : p === 587 ? [587, 465] : p ? [p] : [465, 587];
+}
+async function sendViaSmtp({ to, subject, html, attachments }) {
+  const errors = [];
+  for (const port of smtpPorts()) {
+    try {
+      await smtpTransport(port).sendMail({ from: `"${FROM_NAME}" <${fromAddress()}>`, to, subject, html, attachments });
+      return `smtp:${port}`;
+    } catch (e) { errors.push(`port ${port}: ${e.message}`); }
+  }
+  throw new Error(errors.join(' | '));
 }
 
 async function sendMail({ to, subject, html, attachments }) {
-  if (!configured()) {
-    console.log(`[email] SMTP not configured — skipped: ${subject} → ${to}`);
-    return { skipped: true, reason: 'SMTP not configured (SMTP_HOST / SMTP_USER / SMTP_PASS)' };
+  const p = provider();
+  if (!p) {
+    console.log(`[email] no provider configured — skipped: ${subject} → ${to}`);
+    return { skipped: true, reason: 'No email provider configured. Set ZEPTOMAIL_TOKEN, RESEND_API_KEY or SENDGRID_API_KEY in Railway.' };
   }
   if (!to) return { skipped: true, reason: 'no recipient address' };
-  const from = `"Estate Landscapers" <${process.env.SMTP_USER}>`;
-  const errors = [];
-  for (const port of portPlan()) {
-    try {
-      const info = await transport(port).sendMail({ from, to, subject, html, attachments });
-      console.log(`[email] sent on port ${port} → ${to} (${subject})`);
-      return { ok: true, port, messageId: info.messageId };
-    } catch (e) {
-      const msg = `port ${port}: ${e.message}`;
-      errors.push(msg);
-      console.error(`[email] ${msg}`);
-    }
+  const payload = { to, subject, html, attachments };
+  try {
+    if (p === 'zeptomail') await sendViaZepto(payload);
+    else if (p === 'resend') await sendViaResend(payload);
+    else if (p === 'sendgrid') await sendViaSendgrid(payload);
+    else await sendViaSmtp(payload);
+    console.log(`[email] sent via ${p} → ${to} (${subject})`);
+    return { ok: true, provider: p };
+  } catch (e) {
+    console.error(`[email] ${p} FAILED → ${to}: ${e.message}`);
+    throw new Error(`${p}: ${e.message}`);
   }
-  const err = new Error(errors.join(' | '));
-  err.allPortsFailed = true;
-  throw err;
 }
 
-// Connection-only check for the Settings "Send test email" button.
+// Used by the Settings "Send test email" button.
 async function verifyConnection() {
-  if (!configured()) return { ok: false, error: 'SMTP not configured — set SMTP_HOST, SMTP_USER and SMTP_PASS in Railway.' };
+  const p = provider();
+  if (!p) return { ok: false, error: 'No email provider configured.',
+    hint: 'Railway blocks SMTP, so set an email API key instead: ZEPTOMAIL_TOKEN (Zoho), RESEND_API_KEY or SENDGRID_API_KEY.' };
+  if (p !== 'smtp') return { ok: true, provider: p };
   const errors = [];
-  for (const port of portPlan()) {
-    try { await transport(port).verify(); return { ok: true, port }; }
+  for (const port of smtpPorts()) {
+    try { await smtpTransport(port).verify(); return { ok: true, provider: `smtp:${port}` }; }
     catch (e) { errors.push(`port ${port}: ${e.message}`); }
   }
-  return { ok: false, error: errors.join(' | ') };
+  return { ok: false, provider: 'smtp', error: errors.join(' | '),
+    hint: 'Both SMTP ports timed out — this host blocks outbound SMTP. Switch to an email API: set ZEPTOMAIL_TOKEN, RESEND_API_KEY or SENDGRID_API_KEY in Railway.' };
 }
-module.exports = { sendMail, configured, verifyConnection };
+module.exports = { sendMail, configured, verifyConnection, provider, fromAddress };

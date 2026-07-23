@@ -11,6 +11,7 @@ const KEYS = ['company_name','company_abn','company_lic','company_address','comp
 router.get('/', (req, res) => {
   const out = {}; KEYS.forEach(k => out[k] = settingGet(k));
   out.smtpConfigured = configured();
+  try { out.emailProvider = require('../utils/email').provider(); } catch { out.emailProvider = null; }
   res.json(out);
 });
 router.put('/', (req, res) => {
@@ -34,15 +35,14 @@ router.post('/test-email', async (req, res) => {
   const { sendMail, verifyConnection } = require('../utils/email');
   const to = (req.body && req.body.to) || settingGet('company_email');
   const v = await verifyConnection();
-  if (!v.ok) return res.json({ ok: false, stage: 'connection', error: v.error,
-    hint: 'A "Connection timeout" here means the host is blocking outbound SMTP. Try setting SMTP_PORT=587 in Railway; if both ports time out, SMTP is blocked entirely and we should switch to an email API instead.' });
+  if (!v.ok) return res.json({ ok: false, stage: 'connection', error: v.error, hint: v.hint });
   try {
     await sendMail({ to, subject: 'Estate Landscapers — test email',
       html: '<p>This is a test from your quote tool. If you can read this, signed contracts will send correctly.</p>' });
-    res.json({ ok: true, to, port: v.port });
+    res.json({ ok: true, to, provider: v.provider });
   } catch (e) {
     res.json({ ok: false, stage: 'send', error: e.message,
-      hint: 'Connection worked but sending failed — usually the App Password, or info@ being a Zoho alias rather than a full mailbox.' });
+      hint: 'The provider rejected the message. Usually the sending domain is not verified with that provider yet, or the API key lacks send permission.' });
   }
 });
 

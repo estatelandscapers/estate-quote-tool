@@ -1,76 +1,111 @@
+// Recipes v11 — three variants per deliverable (in / sub / mixed), built from components
+// that reference the Materials & Plant library. One variant is the default.
 const express = require('express');
 const { db } = require('../db');
 const { newId } = require('../utils/ids');
+const { materialPrice, costVariant, recipesFor } = require('../utils/costing');
 const router = express.Router();
-const adminGuard = (req, res, next) => req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'admin only' });
 const isAdmin = req => req.user && req.user.role === 'admin';
-// Estimators may READ recipes (ratios, wastage, labour hours) — all costs stripped below.
-// Every write stays admin-only.
-router.use((req, res, next) => (req.method === 'GET' || isAdmin(req)) ? next() : adminGuard(req, res, next));
-function strip(r) {
-  const { sub, subVendor, ...rest } = r;
-  rest.materials = (r.materials || []).map(m => { const { cost, vendorName, ...mm } = m; return mm; });
-  return rest;
-}
+router.use((req, res, next) => (req.method === 'GET' || isAdmin(req)) ? next() : res.status(403).json({ error: 'admin only' }));
+const VARIANTS = ['in', 'sub', 'mixed'];
+const VNAME = { in: 'In-house', sub: 'Subcontract', mixed: 'Mixed' };
 
-function view(r) {
-  return { id: r.id, priceItemId: r.price_item_id, methodDefault: r.method_default,
-    hrs: { Basic: r.hrs_basic, Standard: r.hrs_standard, Premium: r.hrs_premium },
-    deliveryCost: r.delivery_cost, plantCost: r.plant_cost, plantNote: r.plant_note,
-    sub: { Basic: r.sub_basic, Standard: r.sub_standard, Premium: r.sub_premium }, subVendor: r.sub_vendor,
-    materials: db.prepare('SELECT * FROM recipe_materials WHERE recipe_id=? ORDER BY sort_order').all(r.id).map(m => ({
-      id: m.id, name: m.name, unit: m.unit, ratio: m.ratio, wastagePct: m.wastage_pct, kind: m.kind, vendorName: m.vendor_name,
-      cost: { Basic: m.cost_basic, Standard: m.cost_standard, Premium: m.cost_premium },
-      spec: { Basic: m.spec_basic, Standard: m.spec_standard, Premium: m.spec_premium } })) };
+function compView(c, admin) {
+  const base = { id: c.id, kind: c.kind, label: c.label, sortOrder: c.sort_order,
+    materialId: c.material_id, tiered: !!c.tiered,
+    mat: { Basic: c.mat_basic, Standard: c.mat_standard, Premium: c.mat_premium },
+    ratio: c.ratio, wastagePct: c.wastage_pct,
+    hrs: { Basic: c.hrs_basic, Standard: c.hrs_standard, Premium: c.hrs_premium },
+    subBasis: c.sub_basis, subDays: c.sub_days, vendorId: c.vendor_id };
+  const nameOf = id => { const m = materialPrice(id); return m ? m.name : null; };
+  base.materialName = c.tiered ? null : nameOf(c.material_id);
+  base.matNames = c.tiered ? { Basic: nameOf(c.mat_basic), Standard: nameOf(c.mat_standard), Premium: nameOf(c.mat_premium) } : null;
+  if (admin) {
+    const mp = materialPrice(c.tiered ? c.mat_standard : c.material_id, c.vendor_id);
+    base.vendor = mp ? mp.vendor : null;
+    base.unitCost = mp ? mp.cost : 0;
+    base.amount = c.amount;
+    base.sub = { Basic: c.sub_basic, Standard: c.sub_standard, Premium: c.sub_premium };
+    if (c.tiered) {
+      base.tierCost = {};
+      ['Basic', 'Standard', 'Premium'].forEach(t => {
+        const p = materialPrice(c[`mat_${t.toLowerCase()}`], c.vendor_id);
+        base.tierCost[t] = p ? p.cost : 0;
+      });
+    }
+  }
+  return base;
+}
+function recipeView(r, admin) {
+  const comps = db.prepare('SELECT * FROM recipe_component WHERE recipe_id=? ORDER BY sort_order').all(r.id);
+  return { id: r.id, variant: r.variant, variantName: VNAME[r.variant] || r.variant,
+    isDefault: !!r.is_default, deliveryCost: admin ? r.delivery_cost : undefined, notes: r.notes,
+    components: comps.map(c => compView(c, admin)) };
 }
 router.get('/', (req, res) => {
-  const rows = db.prepare('SELECT r.*, p.code, p.name pname, p.unit punit FROM recipes r JOIN price_items p ON p.id=r.price_item_id ORDER BY p.sort_order').all();
-  const out = rows.map(r => ({ ...view(r), code: r.code, name: r.pname, unit: r.punit }));
-  res.json(isAdmin(req) ? out : out.map(strip));
-});
-router.get('/by-item/:priceItemId', (req, res) => {
-  const r = db.prepare('SELECT * FROM recipes WHERE price_item_id=?').get(req.params.priceItemId);
-  if (!r) return res.status(404).json({ error: 'no recipe' });
-  res.json(isAdmin(req) ? view(r) : strip(view(r)));
+  const admin = isAdmin(req);
+  const items = db.prepare('SELECT * FROM price_items ORDER BY sort_order').all();
+  res.json(items.map(p => {
+    const recs = db.prepare('SELECT * FROM recipe_v2 WHERE price_item_id=?').all(p.id);
+    const out = { priceItemId: p.id, code: p.code, name: p.name, unit: p.unit, variants: {} };
+    recs.forEach(r => out.variants[r.variant] = recipeView(r, admin));
+    const d = recs.find(r => r.is_default);
+    out.defaultVariant = d ? d.variant : null;
+    if (admin) {
+      // indicative cost of each variant for 1 unit at Standard
+      out.indicative = {};
+      const full = recipesFor(p.id);
+      VARIANTS.forEach(v => { if (full[v]) out.indicative[v] = Math.round(costVariant({ qty: 1 }, full[v], 'Standard').cost * 100) / 100; });
+    }
+    return out;
+  }));
 });
 router.post('/', (req, res) => {
-  const { priceItemId } = req.body || {};
-  if (!priceItemId) return res.status(400).json({ error: 'priceItemId required' });
-  if (db.prepare('SELECT id FROM recipes WHERE price_item_id=?').get(priceItemId)) return res.status(400).json({ error: 'recipe already exists' });
+  const { priceItemId, variant } = req.body || {};
+  if (!priceItemId || !VARIANTS.includes(variant)) return res.status(400).json({ error: 'priceItemId and valid variant required' });
+  if (db.prepare('SELECT id FROM recipe_v2 WHERE price_item_id=? AND variant=?').get(priceItemId, variant))
+    return res.status(400).json({ error: 'that variant already exists' });
   const id = newId();
-  db.prepare('INSERT INTO recipes (id,price_item_id) VALUES (?,?)').run(id, priceItemId);
+  const any = db.prepare('SELECT COUNT(*) c FROM recipe_v2 WHERE price_item_id=?').get(priceItemId).c;
+  db.prepare('INSERT INTO recipe_v2 (id,price_item_id,variant,is_default) VALUES (?,?,?,?)').run(id, priceItemId, variant, any === 0 ? 1 : 0);
   res.status(201).json({ id });
 });
 router.put('/:id', (req, res) => {
-  const r = db.prepare('SELECT * FROM recipes WHERE id=?').get(req.params.id);
+  const r = db.prepare('SELECT * FROM recipe_v2 WHERE id=?').get(req.params.id);
   if (!r) return res.status(404).json({ error: 'not found' });
-  const b = req.body || {}; const h = b.hrs || {}, s = b.sub || {};
-  db.prepare(`UPDATE recipes SET method_default=?,hrs_basic=?,hrs_standard=?,hrs_premium=?,delivery_cost=?,plant_cost=?,plant_note=?,sub_basic=?,sub_standard=?,sub_premium=?,sub_vendor=? WHERE id=?`)
-    .run(b.methodDefault ?? r.method_default, h.Basic ?? r.hrs_basic, h.Standard ?? r.hrs_standard, h.Premium ?? r.hrs_premium,
-      b.deliveryCost ?? r.delivery_cost, b.plantCost ?? r.plant_cost, b.plantNote ?? r.plant_note,
-      s.Basic ?? r.sub_basic, s.Standard ?? r.sub_standard, s.Premium ?? r.sub_premium, b.subVendor ?? r.sub_vendor, r.id);
+  const b = req.body || {};
+  if (b.makeDefault) {
+    db.prepare('UPDATE recipe_v2 SET is_default=0 WHERE price_item_id=?').run(r.price_item_id);
+    db.prepare('UPDATE recipe_v2 SET is_default=1 WHERE id=?').run(r.id);
+  }
+  db.prepare('UPDATE recipe_v2 SET delivery_cost=?, notes=? WHERE id=?')
+    .run(b.deliveryCost ?? r.delivery_cost, b.notes ?? r.notes, r.id);
   res.json({ ok: true });
 });
-router.delete('/:id', (req, res) => { db.prepare('DELETE FROM recipes WHERE id=?').run(req.params.id); res.status(204).end(); });
-router.post('/:id/materials', (req, res) => {
+router.delete('/:id', (req, res) => { db.prepare('DELETE FROM recipe_v2 WHERE id=?').run(req.params.id); res.status(204).end(); });
+router.post('/:id/components', (req, res) => {
   const b = req.body || {}; const id = newId();
-  const max = db.prepare('SELECT MAX(sort_order) m FROM recipe_materials WHERE recipe_id=?').get(req.params.id);
-  db.prepare(`INSERT INTO recipe_materials (id,recipe_id,name,unit,ratio,wastage_pct,kind,vendor_name,cost_basic,cost_standard,cost_premium,spec_basic,spec_standard,spec_premium,sort_order)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, req.params.id, b.name || 'Material', b.unit || 'ea', b.ratio || 0, b.wastagePct ?? 5, b.kind === 'tiered' ? 'tiered' : 'common',
-      b.vendorName || '', (b.cost && b.cost.Basic) || 0, (b.cost && b.cost.Standard) || 0, (b.cost && b.cost.Premium) || 0,
-      (b.spec && b.spec.Basic) || null, (b.spec && b.spec.Standard) || null, (b.spec && b.spec.Premium) || null, (max.m ?? -1) + 1);
+  const max = db.prepare('SELECT MAX(sort_order) m FROM recipe_component WHERE recipe_id=?').get(req.params.id);
+  db.prepare(`INSERT INTO recipe_component (id,recipe_id,kind,material_id,tiered,ratio,wastage_pct,sub_basis,label,sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(id, req.params.id, b.kind || 'material', b.materialId || null,
+    b.tiered ? 1 : 0, b.ratio || 0, b.wastagePct ?? 5, b.subBasis || 'unit', b.label || null, (max.m ?? -1) + 1);
   res.status(201).json({ id });
 });
-router.put('/:id/materials/:mid', (req, res) => {
-  const m = db.prepare('SELECT * FROM recipe_materials WHERE id=?').get(req.params.mid);
-  if (!m) return res.status(404).json({ error: 'not found' });
-  const b = req.body || {}; const c = b.cost || {}, sp = b.spec || {};
-  db.prepare(`UPDATE recipe_materials SET name=?,unit=?,ratio=?,wastage_pct=?,kind=?,vendor_name=?,cost_basic=?,cost_standard=?,cost_premium=?,spec_basic=?,spec_standard=?,spec_premium=? WHERE id=?`)
-    .run(b.name ?? m.name, b.unit ?? m.unit, b.ratio ?? m.ratio, b.wastagePct ?? m.wastage_pct, b.kind ?? m.kind, b.vendorName ?? m.vendor_name,
-      c.Basic ?? m.cost_basic, c.Standard ?? m.cost_standard, c.Premium ?? m.cost_premium,
-      sp.Basic ?? m.spec_basic, sp.Standard ?? m.spec_standard, sp.Premium ?? m.spec_premium, m.id);
+router.put('/:id/components/:cid', (req, res) => {
+  const c = db.prepare('SELECT * FROM recipe_component WHERE id=?').get(req.params.cid);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {}; const m = b.mat || {}, h = b.hrs || {}, s = b.sub || {};
+  db.prepare(`UPDATE recipe_component SET kind=?,material_id=?,vendor_id=?,tiered=?,mat_basic=?,mat_standard=?,mat_premium=?,
+      ratio=?,wastage_pct=?,hrs_basic=?,hrs_standard=?,hrs_premium=?,sub_basis=?,sub_basic=?,sub_standard=?,sub_premium=?,
+      sub_days=?,amount=?,label=? WHERE id=?`)
+    .run(b.kind ?? c.kind, b.materialId !== undefined ? b.materialId : c.material_id,
+      b.vendorId !== undefined ? b.vendorId : c.vendor_id, b.tiered !== undefined ? (b.tiered ? 1 : 0) : c.tiered,
+      m.Basic !== undefined ? m.Basic : c.mat_basic, m.Standard !== undefined ? m.Standard : c.mat_standard,
+      m.Premium !== undefined ? m.Premium : c.mat_premium, b.ratio ?? c.ratio, b.wastagePct ?? c.wastage_pct,
+      h.Basic ?? c.hrs_basic, h.Standard ?? c.hrs_standard, h.Premium ?? c.hrs_premium,
+      b.subBasis ?? c.sub_basis, s.Basic ?? c.sub_basic, s.Standard ?? c.sub_standard, s.Premium ?? c.sub_premium,
+      b.subDays ?? c.sub_days, b.amount ?? c.amount, b.label ?? c.label, c.id);
   res.json({ ok: true });
 });
-router.delete('/:id/materials/:mid', (req, res) => { db.prepare('DELETE FROM recipe_materials WHERE id=?').run(req.params.mid); res.status(204).end(); });
+router.delete('/:id/components/:cid', (req, res) => { db.prepare('DELETE FROM recipe_component WHERE id=?').run(req.params.cid); res.status(204).end(); });
 module.exports = router;
