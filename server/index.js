@@ -17,6 +17,7 @@ app.use((req, res, next) => {
 const { requireAuth } = require('./utils/auth');
 app.use(requireAuth);
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/leads', require('./routes/leads'));
 app.use('/api/vendors', require('./routes/vendors'));
 app.use('/api/recipes', require('./routes/recipes'));
 app.use('/api/jobs', require('./routes/jobs'));

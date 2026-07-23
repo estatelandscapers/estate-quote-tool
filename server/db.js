@@ -177,6 +177,31 @@ addColumn('po_items','kind',"TEXT DEFAULT 'site'");
 addColumn('po_items','unit_cost','REAL DEFAULT 0');
 addColumn('purchase_orders','site_hours','REAL DEFAULT 0');
 addColumn('purchase_orders','crew_size','INTEGER DEFAULT 2');
+addColumn('purchase_orders','revision','INTEGER DEFAULT 1');
+addColumn('purchase_orders','superseded','INTEGER DEFAULT 0');
+addColumn('purchase_orders','supersedes_id','TEXT');
+addColumn('purchase_orders','sub_days','REAL DEFAULT 0');
+addColumn('po_items','po_status',"TEXT DEFAULT 'pending'");
+addColumn('quote_items','sub_days','REAL');
+addColumn('quotes','lead_id','TEXT');
+addColumn('quotes','email_status','TEXT');
+addColumn('quotes','email_detail','TEXT');
+db.exec(`
+CREATE TABLE IF NOT EXISTS leads (
+  id TEXT PRIMARY KEY, name TEXT, phone TEXT, email TEXT, address TEXT,
+  source TEXT DEFAULT 'Phone', notes TEXT, status TEXT DEFAULT 'New',
+  quote_id TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS materials (
+  id TEXT PRIMARY KEY, name TEXT, unit TEXT, category TEXT DEFAULT 'material',
+  notes TEXT, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS material_vendors (
+  id TEXT PRIMARY KEY, material_id TEXT REFERENCES materials(id) ON DELETE CASCADE,
+  vendor_id TEXT REFERENCES vendors(id) ON DELETE CASCADE,
+  cost REAL DEFAULT 0, delivery_rule TEXT, review_by TEXT, preferred INTEGER DEFAULT 0
+);
+`);
 
 
 
@@ -280,8 +305,9 @@ if (!settingGet('seeded_v2')) {
 
 // seeds for v7-v10 (run once each)
 if (!settingGet2('seed_v7')) {
+ try {
   const sha=(s)=>crypto.createHash('sha256').update(s).digest('hex');
-  const iu=db.prepare('INSERT INTO users (id,name,username,pass_hash,role) VALUES (?,?,?,?,?)');
+  const iu=db.prepare('INSERT OR IGNORE INTO users (id,name,username,pass_hash,role) VALUES (?,?,?,?,?)');
   iu.run(uid2(),'Smit','admin',sha('Smit@1234'),'admin');
   iu.run(uid2(),'Estimator 1','est1',sha('Est1@1234'),'estimator');
   iu.run(uid2(),'Estimator 2','est2',sha('Est2@1234'),'estimator');
@@ -289,7 +315,7 @@ if (!settingGet2('seed_v7')) {
    ['age_flag','7'],['age_chase','14'],['age_dead','30'],
    ['crew_day_rate','1150'],['crew_people','2'],['extra_person_rate','420'],['hours_per_day','8']
   ].forEach(([k,v])=>settingSet2(k,v));
-  const iv=db.prepare('INSERT INTO vendors (id,name,is_supplier,is_subcontractor,contact,phone,area,terms) VALUES (?,?,?,?,?,?,?,?)');
+  const iv=db.prepare('INSERT OR IGNORE INTO vendors (id,name,is_supplier,is_subcontractor,contact,phone,area,terms) VALUES (?,?,?,?,?,?,?,?)');
   const vHT=uid2(); iv.run(vHT,'Hunter Turf',1,0,'Dave','0412 000 111','Kellyville - 12 km','30 days');
   const vBS=uid2(); iv.run(vBS,'Benedict Sands',1,0,'Sales','02 9000 0000','Chipping Norton','Account');
   const vFD=uid2(); iv.run(vFD,'Fencing Direct',1,0,'Sam','0414 555 666','Blacktown - 18 km','COD');
@@ -300,8 +326,8 @@ if (!settingGet2('seed_v7')) {
   const rw=db.prepare("SELECT id FROM price_items WHERE code='RW'").get();
   const fc=db.prepare("SELECT id FROM price_items WHERE code='FC'").get();
   const cp=db.prepare("SELECT id FROM price_items WHERE code='CP'").get();
-  const ir=db.prepare('INSERT INTO recipes (id,price_item_id,method_default,hrs_basic,hrs_standard,hrs_premium,delivery_cost,plant_cost,plant_note,sub_basic,sub_standard,sub_premium,sub_vendor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
-  const im=db.prepare('INSERT INTO recipe_materials (id,recipe_id,name,unit,ratio,wastage_pct,kind,vendor_name,cost_basic,cost_standard,cost_premium,spec_basic,spec_standard,spec_premium,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  const ir=db.prepare('INSERT OR IGNORE INTO recipes (id,price_item_id,method_default,hrs_basic,hrs_standard,hrs_premium,delivery_cost,plant_cost,plant_note,sub_basic,sub_standard,sub_premium,sub_vendor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  const im=db.prepare('INSERT OR IGNORE INTO recipe_materials (id,recipe_id,name,unit,ratio,wastage_pct,kind,vendor_name,cost_basic,cost_standard,cost_premium,spec_basic,spec_standard,spec_premium,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   if (gt){const r=uid2(); ir.run(r,gt.id,'in',0.150,0.150,0.170,180,85,'Turf cutter',28,32,46,null);
     im.run(uid2(),r,'Turf variety','m2',1.00,5,'tiered','Hunter Turf',8.50,13.50,22.00,'Kikuyu','Sir Walter','Sir Grange',0);
     im.run(uid2(),r,'Turf underlay sand','m3',0.030,10,'common','Benedict Sands',68,68,68,null,null,null,1);
@@ -312,6 +338,8 @@ if (!settingGet2('seed_v7')) {
   if (fc){const r=uid2(); ir.run(r,fc.id,'in',0.35,0.35,0.35,140,0,'',88,88,88,null);
     im.run(uid2(),r,'Colorbond kit (sheet, posts, rails, concrete)','m',1.00,7,'common','Fencing Direct',49.90,49.90,49.90,null,null,null,0);}
   if (cp){const r=uid2(); ir.run(r,cp.id,'sub',0,0,0,0,0,'',128,155,280,'ABC Concreting');}
+ } catch (e) { console.error('[seed v7] skipped:', e.message); }
+  // Always mark seeded — a partial seed must never crash-loop the app on restart.
   settingSet2('seed_v7','1');
 }
 

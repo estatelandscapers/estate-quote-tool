@@ -162,7 +162,7 @@
         overlay.querySelector('.modal').innerHTML = stepsBar() + `
           <h2 style="margin:0 0 14px;font-size:16px;text-transform:uppercase;letter-spacing:.5px;">Your details &amp; signature</h2>
           <div class="field"><label>Full name</label><input id="fname" value="${esc(D.client || '')}" placeholder="Your full name"></div>
-          <div class="field"><label>Email (for your signed copy)</label><input id="femail" type="email" placeholder="you@example.com"></div>
+          <div class="field"><label>Email (for your signed copy)</label><input id="femail" type="email" value="${esc(D.clientEmail || '')}" placeholder="you@example.com"></div>
           <div class="field"><label>Signature</label><div class="sig-tabs"><div class="sig-tab on" data-m="type">Type</div><div class="sig-tab" data-m="draw">Draw</div></div><div id="sigArea"></div></div>
           <div class="err" id="err" style="display:none;"></div>
           <div style="display:flex;gap:8px;justify-content:space-between;"><button class="btn btn-ghost" id="back2">Back</button><button class="btn btn-blue" id="signBtn">Apply signature &amp; accept</button></div>`;

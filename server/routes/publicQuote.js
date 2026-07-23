@@ -40,7 +40,7 @@ function clientView(q) {
     quoteNumber: q.quote_number, projectTitle: q.project_title, client: q.client_name, address: q.address,
     date: q.quote_date, validUntil: validUntil.toISOString().slice(0, 10), validityDays: q.validity_days,
     expired, superseded: laterRev > 0,
-    defaultPackage: q.default_package, status: q.status, acceptedPackage: q.accepted_package,
+    defaultPackage: q.default_package, status: q.status, acceptedPackage: q.accepted_package, clientEmail: q.client_email || '',
     mixed: (() => { try { const c = costQuote(q); return c.mixed ? { base: c.base, changes: c.changes.map(x => ({ code: x.code, name: x.name, to: x.to, delta: Math.round(x.delta), up: x.up })), sellExGst: Math.round(c.selected.sell) } : null; } catch { return null; } })(),
     paymentScheduleText: settingGet(q.payment_schedule === 'small' ? 'pay_sched_small' : 'pay_sched_standard'),
     siteNotes: q.site_notes, hasSiteplan: !!q.siteplan_data,
@@ -85,6 +85,30 @@ router.post('/:token/event', (req, res) => {
   res.status(201).json({ ok: true });
 });
 
+
+// Assemble everything the signed-contract PDF needs from a quote at a given tier.
+function pdfPayload(q, tier) {
+  const cv = clientView(q);
+  const acc = tier || q.accepted_package || q.default_package || 'Standard';
+  const deliverables = [];
+  (cv.scope1 || []).forEach(d => {
+    const lt = (cv.mixed && d.tierOverride) ? d.tierOverride : acc;
+    const pt = d.perTier[lt] || d.perTier[acc];
+    deliverables.push({ code: d.code, name: d.name, spec: pt.spec, qty: d.qty, unit: d.unit,
+      price: pt.price, showQty: d.behaviour === 'remeasurable' });
+  });
+  (cv.scope2 || []).forEach(d => {
+    const pt = d.perTier[acc];
+    deliverables.push({ code: d.code, name: d.name + ' (remeasurable — cost + 15%)', spec: pt.spec,
+      qty: d.qty, unit: d.unit, price: pt.price, showQty: true });
+  });
+  (cv.surcharges || []).forEach(s => {
+    deliverables.push({ code: 'SC', name: 'Site condition — ' + s.name, spec: '', qty: 1, unit: '', price: 0, showQty: false });
+  });
+  return { deliverables, payment: cv.paymentScheduleText || '',
+    sitePlan: q.siteplan_data ? { data: q.siteplan_data } : null };
+}
+
 // Accept + built-in sign. Generates the signed PDF and emails both parties via Zoho.
 router.post('/:token/sign', async (req, res) => {
   const q = getQ(req.params.token);
@@ -127,7 +151,8 @@ router.post('/:token/sign', async (req, res) => {
       const settings = {};
       ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
       let pdf = null;
-      try { pdf = await buildSignedPdf({ quote: fresh, totals, settings }); } catch (e) { console.error('pdf failed', e); }
+      const payload = pdfPayload(fresh, tier);
+      try { pdf = await buildSignedPdf({ quote: fresh, totals, settings, ...payload }); } catch (e) { console.error('pdf failed', e); }
       const attachments = pdf ? [{ filename: `Estate-Landscapers-Signed-Contract-${fresh.quote_number}.pdf`, content: pdf }] : [];
       const html = `<p>Contract signed and accepted.</p>
         <p><b>Quote:</b> ${fresh.quote_number} — ${fresh.project_title}<br>
@@ -136,10 +161,27 @@ router.post('/:token/sign', async (req, res) => {
         <b>Signed by:</b> ${name} at ${fresh.accepted_at} (UTC)</p>
         <p style="color:#888">Integrity. Precision. Value. — Estate Landscapers</p>`;
       const clientEmail = email || fresh.client_email;
-      try { if (clientEmail) await sendMail({ to: clientEmail, subject: `Your signed contract — Quote ${fresh.quote_number}`, html, attachments }); } catch (e) { console.error('client email failed', e.message); }
-      try { await sendMail({ to: settingGet('company_email'), subject: `SIGNED: Quote ${fresh.quote_number} — ${fresh.client_name} (${tier})`, html, attachments }); } catch (e) { console.error('office email failed', e.message); }
+      const outcome = [];
+      let anySent = false, anyFail = false;
+      try {
+        if (clientEmail) {
+          const r = await sendMail({ to: clientEmail, subject: `Your signed contract — Quote ${fresh.quote_number}`, html, attachments });
+          if (r && r.skipped) { outcome.push('client: SMTP not configured'); anyFail = true; }
+          else { outcome.push('client: sent to ' + clientEmail); anySent = true; }
+        } else { outcome.push('client: no email address given'); anyFail = true; }
+      } catch (e) { outcome.push('client FAILED: ' + e.message); anyFail = true; console.error('client email failed', e.message); }
+      try {
+        const r = await sendMail({ to: settingGet('company_email'), subject: `SIGNED: Quote ${fresh.quote_number} — ${fresh.client_name} (${tier})`, html, attachments });
+        if (r && r.skipped) { outcome.push('office: SMTP not configured'); anyFail = true; }
+        else { outcome.push('office: sent'); anySent = true; }
+      } catch (e) { outcome.push('office FAILED: ' + e.message); anyFail = true; console.error('office email failed', e.message); }
+      if (!pdf) outcome.push('WARNING: PDF could not be generated');
+      const status = anyFail ? (anySent ? 'partial' : 'failed') : 'sent';
+      db.prepare('UPDATE quotes SET email_status=?, email_detail=? WHERE id=?').run(status, outcome.join(' | '), fresh.id);
+      console.log(`[sign] quote ${fresh.quote_number} email ${status}: ${outcome.join(' | ')}`);
     } catch (e) { console.error('background sign work failed', e.message); }
   });
 });
 
 module.exports = router;
+module.exports.pdfPayload = pdfPayload;

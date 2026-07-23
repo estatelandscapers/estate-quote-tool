@@ -55,6 +55,7 @@ function costItemAtTier(item, pi, recipe, tier) {
 // Full quote costing: every line at every tier + selected (mixed) totals.
 function costQuote(q) {
   const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? AND scope=1 ORDER BY sort_order').all(q.id);
+  let subDays = 0;
   const crew = Math.max(1, q.crew_size || 2);
   const hpd = Math.max(1, parseFloat(settingGet('hours_per_day') || '8'));
   const base = q.default_package || 'Standard';
@@ -83,6 +84,8 @@ function costQuote(q) {
         c.lines.forEach(L => takeoff.push({ ...L, itemCode: r.code }));
       }
     });
+    if ((it.method === 'sub' || it.method === 'mixed') && it.sub_days) subDays += it.sub_days;
+    line.subDays = it.sub_days || null;
     line.tiered = line.tiers.Basic.sell !== line.tiers.Premium.sell || line.tiers.Basic.spec !== line.tiers.Premium.spec;
     if (selTier !== base) changes.push({ code: line.code, name: line.name,
       from: line.tiers[base].spec, to: line.tiers[selTier].spec,
@@ -90,12 +93,14 @@ function costQuote(q) {
       up: TIERS.indexOf(selTier) > TIERS.indexOf(base) });
     perLine.push(line);
   });
-  const days = selTot.hrs / crew / hpd;
+  const crewDays = selTot.hrs / crew / hpd;
+  const days = crewDays + subDays;
   const target = parseFloat(settingGet('tier_' + (q.customer_tier || 'Silver').toLowerCase()) || '25');
   const margin = selTot.sell - selTot.cost;
   const pct = selTot.sell > 0 ? margin / selTot.sell * 100 : 0;
   return { base, crew, perLine, tierTotals: tierTot, selected: selTot,
-    days: Math.round(days * 10) / 10, hours: Math.round(selTot.hrs * 10) / 10,
+    days: Math.round(days * 10) / 10, crewDays: Math.round(crewDays * 10) / 10,
+    subDays: Math.round(subDays * 10) / 10, hours: Math.round(selTot.hrs * 10) / 10,
     grossMargin: margin, grossMarginPct: Math.round(pct * 10) / 10,
     target, belowTarget: pct < target,
     guidePrice: selTot.cost * (1 + target / 100),

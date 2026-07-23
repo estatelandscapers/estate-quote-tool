@@ -10,7 +10,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'dash', quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -22,14 +22,16 @@ async function boot() {
   shell();
 }
 function shell() {
-  const all = [['dash', 'Dashboard'], ['quotes', 'Quotes'], ['jobs', 'Jobs'], ['po', 'Purchase Orders'], ['vendors', 'Vendors'], ['recipes', 'Recipes'], ['pricing', 'Pricing'], ['surcharges', 'Surcharges'], ['checklist', 'Checklist'], ['settings', 'Settings']];
-  const adminOnlyTabs = ['jobs', 'vendors', 'recipes', 'surcharges', 'checklist', 'settings'];
+  // Order: Leads | Quotes Pricing Recipes Vendors Editor | Projects Purchase Orders
+  const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['recipes', 'Recipes'],
+               ['vendors', 'Vendors'], ['editor', 'Editor'], ['jobs', 'Projects'], ['po', 'Purchase Orders']];
+  const adminOnlyTabs = ['editor', 'jobs', 'po'];
   const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
-  if (!tabs.find(t => t[0] === state.tab)) state.tab = 'dash';
+  if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
   $('#app').innerHTML = `
     <div class="top">
       <div class="brand">${LOGO}<div><b>ESTATE LANDSCAPERS</b><span>Quote Tool</span></div></div>
-      <div class="nav">${tabs.map(t => `<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}">${t[1]}</button>`).join('')}</div>
+      <div class="nav">${tabs.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}">${t[1]}</button>`).join('')}</div>
       <div class="spacer"></div>
       <span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}</span>
       <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
@@ -42,38 +44,99 @@ function shell() {
 function route() {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   const v = $('#view');
-  if (state.tab === 'dash') return dashboard(v);
+  if (state.tab === 'leads') return leadsTab(v);
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
   if (state.tab === 'jobs') return jobsTab(v);
   if (state.tab === 'po') return state.poId ? poEditor(v) : poList(v);
   if (state.tab === 'vendors') return vendorsTab(v);
   if (state.tab === 'recipes') return recipesTab(v);
   if (state.tab === 'pricing') return pricingSheet(v);
-  if (state.tab === 'surcharges') return surchargesTab(v);
-  if (state.tab === 'checklist') return checklistTab(v);
-  if (state.tab === 'settings') return settingsTab(v);
+  if (state.tab === 'editor') return editorTab(v);
 }
 
-// ---------------- DASHBOARD ----------------
-async function dashboard(v) {
-  v.innerHTML = `<div class="card"><h2>Dashboard</h2><div class="sub">Secured = accepted & signed. FY = 1 Jul – 30 Jun. All margins shown in this tool are GROSS margin.</div><div class="rule"></div><div id="dashcards">Loading…</div></div><div class="card"><h2>Recent activity</h2><div class="rule"></div><div id="dashrecent"></div></div>`;
+// ---------------- LEADS (enquiries + figures) ----------------
+const LEAD_STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
+async function leadsTab(v) {
+  v.innerHTML = `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div><h2>Leads &amp; enquiries</h2><div class="sub">Log every enquiry, then convert it straight into a quote. A website form can feed this list later.</div></div>
+        <button class="btn btn-blue" id="addLead">+ New enquiry</button></div>
+      <div class="rule"></div><div id="leadTable">Loading…</div></div>
+    <div class="card"><h2>Figures</h2><div class="sub">Secured = accepted &amp; signed. FY = 1 Jul – 30 Jun. All margins in this tool are GROSS margin.</div><div class="rule"></div><div id="dashcards">Loading…</div></div>`;
+  $('#addLead').addEventListener('click', () => editLead(null, v));
+  const data = await api('/leads');
+  const rows = data.leads || [];
+  $('#leadTable').innerHTML = rows.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th>Site</th><th>Source</th><th>Age</th><th>Status</th><th>Quote</th><th></th></tr></thead><tbody>
+    ${rows.map(l => `<tr><td><b>${esc(l.name || '—')}</b>${l.notes ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.notes.slice(0, 60))}</span>` : ''}</td>
+      <td>${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
+      <td>${esc(l.address || '')}</td><td>${esc(l.source || '')}</td>
+      <td><span class="tag ${l.ageDays >= 7 ? 'age-flag' : 'age-fresh'}">${l.ageDays}d</span></td>
+      <td><select data-ls="${l.id}" style="width:110px;font-size:10.5px;">${LEAD_STATUS.map(s => `<option ${l.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
+      <td>${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" data-lq="${l.quoteId}">${esc(l.quoteNumber)}</button>` : `<button class="btn btn-blue btn-sm" data-lc="${l.id}">→ Quote</button>`}</td>
+      <td class="right"><button class="btn btn-ghost btn-sm" data-le="${l.id}">Edit</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`).join('')}
+    </tbody></table>` : '<p class="muted">No enquiries logged yet.</p>';
+  v.querySelectorAll('[data-ls]').forEach(s => s.addEventListener('change', async () => { await api('/leads/' + s.dataset.ls, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: s.value }) }); toast('Status updated'); }));
+  v.querySelectorAll('[data-lc]').forEach(b => b.addEventListener('click', async () => {
+    const r = await api('/leads/' + b.dataset.lc + '/convert', { method: 'POST' });
+    if (r.error) return toast(r.error);
+    toast('Quote ' + r.quoteNumber + ' created'); state.tab = 'quotes'; state.quoteId = r.quoteId; shell();
+  }));
+  v.querySelectorAll('[data-lq]').forEach(b => b.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = b.dataset.lq; shell(); }));
+  v.querySelectorAll('[data-le]').forEach(b => b.addEventListener('click', () => editLead(rows.find(x => x.id === b.dataset.le), v)));
+  v.querySelectorAll('[data-ld]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this enquiry?')) { await api('/leads/' + b.dataset.ld, { method: 'DELETE' }); leadsTab(v); } }));
   const d = await api('/dashboard');
   $('#dashcards').innerHTML = `
     <div class="grid4">
       <div class="stat hero"><div class="k">Secured — week</div><div class="v">${money(d.securedWeek)}</div></div>
       <div class="stat hero"><div class="k">Secured — month</div><div class="v">${money(d.securedMonth)}</div></div>
       <div class="stat hero"><div class="k">Secured — FY</div><div class="v">${money(d.securedFY)}</div></div>
-      <div class="stat"><div class="k">Quotes built (30d)</div><div class="v">${d.builtMonth || 0}</div></div>
+      <div class="stat"><div class="k">Open enquiries</div><div class="v">${data.openCount || 0}</div></div>
     </div>
-    <div class="grid3" style="margin-top:10px;">
+    <div class="grid4" style="margin-top:10px;">
+      <div class="stat"><div class="k">Quotes built (30d)</div><div class="v">${d.builtMonth || 0}</div></div>
       <div class="stat"><div class="k">Value quoted (30d)</div><div class="v">${money(d.quotedValueMonth)}</div></div>
       <div class="stat"><div class="k">Win rate (value, FY)</div><div class="v">${d.winRateValue || 0}%</div></div>
       <div class="stat"><div class="k">Avg quote value</div><div class="v">${money(d.avgQuote)}</div></div>
     </div>`;
-  const recent = d.recent || [];
-  $('#dashrecent').innerHTML = recent.length ? `<table><thead><tr><th>Quote</th><th>Client</th><th>Value</th><th>Status</th><th>When</th></tr></thead><tbody>
-    ${recent.map(r => `<tr><td><b>${esc(r.quoteNumber)}</b></td><td>${esc(r.client || '—')}</td><td>${r.value ? money(r.value) : '—'}</td><td><span class="tag tag-${r.status}">${esc(r.status)}</span></td><td class="muted">${r.updatedAt ? new Date(r.updatedAt + 'Z').toLocaleDateString('en-AU') : ''}</td></tr>`).join('')}
-    </tbody></table>` : '<p class="muted">No activity yet.</p>';
+}
+function editLead(l, v) {
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${l ? 'Edit' : 'New'} enquiry</h2>
+    <div class="grid2">
+      <div class="field"><label>Name</label><input id="l_name" value="${esc(l?.name || '')}"></div>
+      <div class="field"><label>Phone</label><input id="l_phone" value="${esc(l?.phone || '')}"></div>
+      <div class="field"><label>Email</label><input id="l_email" value="${esc(l?.email || '')}"></div>
+      <div class="field"><label>Site address</label><input id="l_address" value="${esc(l?.address || '')}"></div>
+      <div class="field"><label>Source</label><select id="l_source">${['Phone', 'Email', 'Website', 'Referral', 'Walk-in', 'Repeat client'].map(s => `<option ${l?.source === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+      <div class="field"><label>Status</label><select id="l_status">${LEAD_STATUS.map(s => `<option ${l?.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label>Notes — what they asked for</label><textarea id="l_notes" rows="3">${esc(l?.notes || '')}</textarea></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="l_cancel">Cancel</button><button class="btn btn-blue" id="l_save">Save</button></div></div>`;
+  document.body.appendChild(bg);
+  $('#l_cancel').addEventListener('click', () => bg.remove());
+  $('#l_save').addEventListener('click', async () => {
+    const body = { name: $('#l_name').value, phone: $('#l_phone').value, email: $('#l_email').value,
+      address: $('#l_address').value, source: $('#l_source').value, status: $('#l_status').value, notes: $('#l_notes').value };
+    if (l) await api('/leads/' + l.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    else await api('/leads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    bg.remove(); toast('Saved'); leadsTab(v);
+  });
+}
+
+// ---------------- EDITOR (surcharges + checklist + settings merged) ----------------
+async function editorTab(v) {
+  const sub = state.editorSub || 'surcharges';
+  v.innerHTML = `<div class="card" style="padding:10px 12px;">
+      <div class="seg" id="edSeg">
+        <button data-v="surcharges" class="${sub === 'surcharges' ? 'on' : ''}">Surcharges</button>
+        <button data-v="checklist" class="${sub === 'checklist' ? 'on' : ''}">Checklist</button>
+        <button data-v="settings" class="${sub === 'settings' ? 'on' : ''}">Settings</button>
+      </div></div><div id="edBody"></div>`;
+  $('#edSeg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.editorSub = b.dataset.v; editorTab(v); }));
+  const body = $('#edBody');
+  if (sub === 'surcharges') return surchargesTab(body);
+  if (sub === 'checklist') return checklistTab(body);
+  return settingsTab(body);
 }
 
 // ---------------- QUOTES ----------------
@@ -117,6 +180,7 @@ async function quoteEditor(v) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a><span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${q.status}</span></div>
     </div>
     <div class="rule"></div>
+    ${q.emailStatus ? `<div class="emailbar ${q.emailStatus}"><b>Signed-contract email: ${q.emailStatus.toUpperCase()}</b><br><span style="font-size:11px;">${esc(q.emailDetail || '')}</span></div>` : ''}
     <div class="linkbar"><span>🔗 Live link:</span><input id="linkInput" readonly value="${esc(link)}"><button class="btn btn-blue btn-sm" id="copyLink">Copy</button><a class="btn btn-ghost btn-sm" href="${esc(link)}" target="_blank">Preview</a></div>
   </div>
 
@@ -143,8 +207,14 @@ async function quoteEditor(v) {
 
   <div class="card">
     <h2>Add deliverables</h2><div class="sub">Tick common items or pick from the full sheet. Keeps your place on the page.</div><div class="rule"></div>
-    <div id="pickList">${commonCodes.map(code => { const pi = priceItems.find(p => p.code === code); if (!pi) return ''; const on = usedItemIds.has(pi.id); return `<span class="pickitem ${on ? 'on' : ''}" data-pick="${pi.id}">${on ? '✓ ' : ''}${esc(pi.code)} ${esc(pi.name.split(' ').slice(0, 2).join(' '))}</span>`; }).join('')}</div>
-    <div style="margin-top:8px;"><select id="addPick" style="max-width:360px;"><option value="">+ Add any deliverable…</option>${priceItems.map(p => `<option value="${p.id}">${esc(p.code)} — ${esc(p.name)}</option>`).join('')}</select> <button class="btn btn-ghost btn-sm" id="addCustom">+ Custom line</button></div>
+    <div id="pickList">${priceItems.map(pi => { const on = usedItemIds.has(pi.id); const common = commonCodes.includes(pi.code);
+        return `<span class="pickitem ${on ? 'have' : ''} ${common ? '' : 'more'}" data-pick="${pi.id}" ${on ? 'title="Already on this quote"' : ''}>${on ? '✓ ' : ''}${esc(pi.code)} ${esc(pi.name.split(' ').slice(0, 3).join(' '))}</span>`; }).join('')}</div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button class="btn btn-blue" id="addSelected" disabled style="opacity:.5;">Add selected</button>
+      <a href="#" id="showMore" style="font-size:11px;">Show all deliverables</a>
+      <button class="btn btn-ghost btn-sm" id="addCustom">+ Custom line</button>
+      <span class="muted" style="font-size:11px;" id="pickCount">Tick the ones you need, then Add selected.</span>
+    </div>
   </div>
 
   <div class="card">
@@ -188,6 +258,20 @@ async function quoteEditor(v) {
   renderChecklist(checklist);
   window.scrollTo(0, state.scrollY);
   const reload = () => { state.scrollY = window.scrollY; quoteEditor(v); };
+  // Re-fetch costing and repaint only the cost panel + tier prices — keeps focus and scroll.
+  async function refreshCosting() {
+    const c2 = await api('/quotes/' + q.id + '/costing');
+    renderCostPanel(c2);
+    (c2.perLine || []).forEach(l => {
+      TIERS.forEach(t => {
+        const cell = v.querySelector(`[data-tier-pick="${l.id}"][data-t="${t}"]`);
+        if (cell) { const pr = cell.querySelector('.pr'); if (pr) pr.textContent = money(l.tiers[t].sell); }
+      });
+    });
+    const cb = $('#changesBar');
+    if (cb && !c2.mixed) cb.innerHTML = '';
+  }
+
 
   const autosave = async () => {
     const body = { client: $('#f_client').value, clientEmail: $('#f_email').value, projectTitle: $('#f_title').value, address: $('#f_address').value, validityDays: parseInt($('#f_validity').value) || 14, defaultPackage: $('#segPkg .on').dataset.v, paymentSchedule: $('#segPay .on').dataset.v, siteNotes: $('#f_notes').value, customerTier: $('#f_ctier').value, crewSize: parseInt($('#f_crew').value) || 2 };
@@ -195,7 +279,7 @@ async function quoteEditor(v) {
     $('#saveStatus').textContent = 'Auto-saved just now.';
   };
   ['f_client', 'f_email', 'f_title', 'f_address', 'f_validity', 'f_notes'].forEach(id => $('#' + id).addEventListener('change', autosave));
-  ['f_ctier', 'f_crew'].forEach(id => $('#' + id).addEventListener('change', () => autosave().then(reload)));
+  ['f_ctier', 'f_crew'].forEach(id => $('#' + id).addEventListener('change', () => autosave().then(refreshCosting)));
   $('#segPkg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPkg').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave().then(reload); }));
   $('#segPay').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPay').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave(); }));
 
@@ -205,15 +289,30 @@ async function quoteEditor(v) {
   $('#saveDraft').addEventListener('click', async () => { await autosave(); toast('Draft saved'); });
   $('#saveSend').addEventListener('click', async () => { await autosave(); toast('Saved — live link ready'); });
 
-  v.querySelectorAll('[data-pick]').forEach(chip => chip.addEventListener('click', async () => {
-    state.scrollY = window.scrollY;
+  // tick to stage, one Save to add them all — no page reload per click
+  const staged = new Set();
+  const refreshPickBar = () => {
+    const b = $('#addSelected'); const n = staged.size;
+    b.disabled = n === 0; b.style.opacity = n ? '1' : '.5';
+    b.textContent = n ? `Add ${n} deliverable${n > 1 ? 's' : ''}` : 'Add selected';
+    $('#pickCount').textContent = n ? 'Then continue building below.' : 'Tick the ones you need, then Add selected.';
+  };
+  v.querySelectorAll('[data-pick]').forEach(chip => chip.addEventListener('click', () => {
+    if (chip.classList.contains('have')) return; // already on the quote — remove it in the table below
     const pid = chip.dataset.pick;
-    const existing = [...q.items.scope1, ...q.items.scope2].find(i => i.priceItemId === pid);
-    if (existing) await api(`/quotes/${q.id}/items/${existing.id}`, { method: 'DELETE' });
-    else { const pi = priceItems.find(p => p.id === pid); await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: pi.code === 'SC2' ? 2 : 1, priceItemId: pid, qty: 1 }) }); }
-    reload();
+    if (staged.has(pid)) { staged.delete(pid); chip.classList.remove('on'); }
+    else { staged.add(pid); chip.classList.add('on'); }
+    refreshPickBar();
   }));
-  $('#addPick').addEventListener('change', async e => { if (!e.target.value) return; state.scrollY = window.scrollY; const pi = priceItems.find(p => p.id === e.target.value); await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: pi.code === 'SC2' ? 2 : 1, priceItemId: pi.id, qty: 1 }) }); reload(); });
+  $('#showMore').addEventListener('click', e => { e.preventDefault(); v.querySelectorAll('.pickitem.more').forEach(c => c.classList.add('show')); e.target.style.display = 'none'; });
+  $('#addSelected').addEventListener('click', async () => {
+    state.scrollY = window.scrollY;
+    for (const pid of staged) {
+      const pi = priceItems.find(p => p.id === pid);
+      await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: pi.code === 'SC2' ? 2 : 1, priceItemId: pid, qty: 1 }) });
+    }
+    toast(staged.size + ' deliverable(s) added'); reload();
+  });
   $('#addCustom').addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: 1, customCode: 'XX', customName: 'Custom line', customUnit: 'ea', customRate: 0, qty: 1 }) }); reload(); });
   v.querySelectorAll('[data-sur]').forEach(c => c.addEventListener('click', async () => {
     state.scrollY = window.scrollY;
@@ -248,8 +347,15 @@ async function quoteEditor(v) {
         <td><b>${esc(it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
         <td>${esc(it.name)}
           ${behav ? `<br><span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${behav}</span>` : ''}
-          ${cl && cl.hasRecipe ? `<br><select data-method="${it.id}" style="width:100px;font-size:10.5px;margin-top:3px;"><option value="" ${!it.method ? 'selected' : ''}>Default</option><option value="in" ${it.method === 'in' ? 'selected' : ''}>In-house</option><option value="sub" ${it.method === 'sub' ? 'selected' : ''}>Subcontract</option></select>
-          <input data-waste="${it.id}" type="number" placeholder="waste %" value="${it.wastageOverride ?? ''}" style="width:64px;font-size:10.5px;margin-top:3px;" title="Wastage override %">` : ''}
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;align-items:center;">
+            <select data-method="${it.id}" style="width:104px;font-size:10.5px;" title="How this deliverable is done">
+              <option value="" ${!it.method ? 'selected' : ''}>Default</option>
+              <option value="in" ${it.method === 'in' ? 'selected' : ''}>In-house</option>
+              <option value="sub" ${it.method === 'sub' ? 'selected' : ''}>Subcontract</option>
+              <option value="mixed" ${it.method === 'mixed' ? 'selected' : ''}>Mixed</option></select>
+            <input data-waste="${it.id}" type="number" step="0.5" placeholder="waste%" value="${it.wastageOverride ?? ''}" style="width:66px;font-size:10.5px;" title="Site-specific wastage % — overrides the recipe default (odd-shaped sites)">
+            ${(it.method === 'sub' || it.method === 'mixed') ? `<input data-subdays="${it.id}" type="number" step="0.5" placeholder="sub days" value="${it.subDays ?? ''}" style="width:74px;font-size:10.5px;" title="Days the subcontractor needs on site">` : ''}
+          </div>
         </td>
         <td><input type="number" step="0.01" value="${it.qty}" data-qty="${it.id}" style="width:70px;"> ${esc(it.unit)}</td>
         ${tierCells}
@@ -272,10 +378,11 @@ async function quoteEditor(v) {
       await api(`/quotes/${q.id}/items/${cell.dataset.tierPick}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tierOverride: t === c.base ? null : t }) });
       reload();
     }));
-    v.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${i.dataset.qty}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qty: parseFloat(i.value) || 0 }) }); reload(); }));
+    v.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.qty}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qty: parseFloat(i.value) || 0 }) }); refreshCosting(); }));
     v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
     v.querySelectorAll('[data-method]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.method}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: s.value || null }) }); reload(); }));
-    v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); reload(); }));
+    v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); toast('Wastage updated'); }));
+    v.querySelectorAll('[data-subdays]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.subdays}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subDays: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); }));
   }
 
   function renderCostPanel(c) {
@@ -294,7 +401,8 @@ async function quoteEditor(v) {
           <div class="stat"><div class="k">Sell (ex GST)</div><div class="v">${money(s.sell)}</div></div>
           <div class="admin-only"><div class="k">🔒 Gross margin</div><div class="v" style="color:${ok ? 'var(--green)' : 'var(--red)'};">${money(c.grossMargin)} · ${c.grossMarginPct}%</div><div style="font-size:10px;color:${ok ? 'var(--green)' : 'var(--red)'};font-weight:700;">${ok ? 'Above' : 'BELOW'} ${c.target}% target</div></div>
           <div class="stat"><div class="k">Cost-plus guide (${c.target}%)</div><div class="v">${money(c.guidePrice)}</div><div style="font-size:10px;color:var(--grey);">Guide only — sheet sets sell</div></div>
-          <div class="stat time"><div class="k">Site time</div><div class="v">${c.days} days</div><div style="font-size:10px;color:#e0d0f5;">${c.hours} person-hrs · crew ${c.crew}</div></div>
+          <div class="stat time"><div class="k">Total site duration</div><div class="v">${c.days} days</div>
+            <div style="font-size:10px;color:#e0d0f5;line-height:1.5;">Our crew ${c.crewDays}d (${c.hours} person-hrs, crew ${c.crew})<br>Subcontractors ${c.subDays}d<br><b>Total ${c.days}d = crew + subbies</b></div></div>
         </div>
         <div class="legend">GST on the final client total: sell ${money(s.sell)} + GST ${money(s.sell * 0.1)} = <b>${money(s.sell * 1.1)}</b> inc. GST (before surcharges/Scope 2).</div>`;
     } else {
@@ -302,7 +410,8 @@ async function quoteEditor(v) {
         <div class="grid3">
           <div class="stat"><div class="k">Total cost</div><div class="v">${money(s.cost)}</div></div>
           <div class="stat"><div class="k">Sell (ex GST)</div><div class="v">${money(s.sell)}</div></div>
-          <div class="stat time"><div class="k">Site time</div><div class="v">${c.days} days</div><div style="font-size:10px;color:#e0d0f5;">${c.hours} person-hrs · crew ${c.crew}</div></div>
+          <div class="stat time"><div class="k">Total site duration</div><div class="v">${c.days} days</div>
+            <div style="font-size:10px;color:#e0d0f5;line-height:1.5;">Our crew ${c.crewDays}d · Subcontractors ${c.subDays}d</div></div>
         </div>`;
     }
   }
@@ -327,16 +436,20 @@ async function jobsTab(v) {
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
       <div><h2>Jobs won — register</h2><div class="sub">Quoted vs ACTUAL gross margin. Actuals come from the final (edited) PO for each job. Net margin is a year-end figure after overheads.</div></div>
-      <div class="field" style="margin:0;"><label>Financial year</label><select id="fySel"><option value="all">All years</option>${fys.map(f => `<option value="${f}" ${state.jobsFy === f ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
+      <div style="display:flex;gap:10px;align-items:flex-end;">
+        <label style="font-size:11px;display:flex;align-items:center;gap:7px;padding-bottom:8px;"><input type="checkbox" id="gstTog" ${state.incGst ? 'checked' : ''} style="width:auto;"> Show inc. GST</label>
+        <div class="field" style="margin:0;"><label>Financial year</label><select id="fySel"><option value="all">All years</option>${fys.map(f => `<option value="${f}" ${state.jobsFy === f ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
+      </div>
     </div>
     <div class="rule"></div>
-    <table><thead><tr><th>Quote</th><th>Client</th><th>FY</th><th>Package</th><th class="right">Sell ex GST</th><th class="right">Quoted cost</th><th class="right">Quoted GM</th><th class="right">Actual cost (final PO)</th><th class="right">Actual GM</th><th>Status</th><th></th></tr></thead><tbody>
+    <div class="legend" style="margin-bottom:6px;">Showing <b>${state.incGst ? 'INCLUDING' : 'EXCLUDING'} GST</b>. Margins are calculated ex-GST either way.</div>
+    <table><thead><tr><th>Quote</th><th>Client</th><th>FY</th><th>Package</th><th class="right">Sell ${state.incGst ? 'inc' : 'ex'} GST</th><th class="right">Quoted cost</th><th class="right">Quoted GM</th><th class="right">Actual cost (final PO)</th><th class="right">Actual GM</th><th>Status</th><th></th></tr></thead><tbody>
     ${(data.jobs || []).map(jb => {
       const aC = jb.actualGMPct == null ? 'var(--grey)' : (jb.actualGMPct >= jb.quotedGMPct ? 'var(--green)' : 'var(--red)');
       return `<tr><td><b>${esc(jb.quoteNumber)}</b></td><td>${esc(jb.client || '')}</td><td>${esc(jb.fy || '')}</td><td>${esc(jb.tier || '')}${jb.mixed ? ' <span class="tag t-up">mixed</span>' : ''}</td>
-      <td class="right">${money(jb.sellExGst)}</td><td class="right">${money(jb.quotedCost)}</td>
+      <td class="right">${money(jb.sellExGst * (state.incGst ? 1.1 : 1))}</td><td class="right">${money(jb.quotedCost * (state.incGst ? 1.1 : 1))}</td>
       <td class="right"><b>${money(jb.quotedGM)} · ${jb.quotedGMPct}%</b></td>
-      <td class="right">${jb.actualCost != null ? money(jb.actualCost) : '—'}</td>
+      <td class="right">${jb.actualCost != null ? money(jb.actualCost * (state.incGst ? 1.1 : 1)) : '—'}</td>
       <td class="right"><b style="color:${aC};">${jb.actualGM != null ? money(jb.actualGM) + ' · ' + jb.actualGMPct + '%' : '—'}</b></td>
       <td><span class="tag ${jb.jobStatus === 'complete' ? 'tag-closed' : 'tag-open'}">${jb.jobStatus}</span></td>
       <td class="right">${jb.poId ? `<button class="btn btn-ghost btn-sm" data-po="${jb.poId}">PO</button>` : ''}</td></tr>`;
@@ -346,6 +459,7 @@ async function jobsTab(v) {
   <div class="card"><h2>Year-end close — net margin</h2><div class="sub">Enter the year's overheads (office, insurance, vehicles…) once actual costs are known, then close the year.</div><div class="rule"></div>
     <div id="yearend">${fys.length ? '' : '<p class="muted">No completed financial years yet.</p>'}</div></div>`;
   $('#fySel').addEventListener('change', e => { state.jobsFy = e.target.value; jobsTab(v); });
+  $('#gstTog').addEventListener('change', e => { state.incGst = e.target.checked; jobsTab(v); });
   v.querySelectorAll('[data-po]').forEach(b => b.addEventListener('click', () => { state.tab = 'po'; state.poId = b.dataset.po; shell(); }));
   if (fys.length) {
     const fy = state.jobsFy !== 'all' ? state.jobsFy : fys[0];
@@ -353,8 +467,8 @@ async function jobsTab(v) {
     const oh = y.overheads || {};
     $('#yearend').innerHTML = `
       <div class="grid4">
-        <div class="stat"><div class="k">${fy} revenue (won jobs)</div><div class="v">${money(y.revenue)}</div></div>
-        <div class="stat"><div class="k">Actual cost</div><div class="v">${money(y.actualCost)}</div></div>
+        <div class="stat"><div class="k">${fy} revenue (won jobs)</div><div class="v">${money(y.revenue * (state.incGst ? 1.1 : 1))}</div></div>
+        <div class="stat"><div class="k">Actual cost</div><div class="v">${money(y.actualCost * (state.incGst ? 1.1 : 1))}</div></div>
         <div class="stat"><div class="k">Gross margin</div><div class="v">${money(y.grossMargin)} · ${y.grossMarginPct}%</div></div>
         <div class="stat ${y.netMargin >= 0 ? 'goodbox' : 'warnbox'}"><div class="k">NET margin (after overheads)</div><div class="v" style="color:${y.netMargin >= 0 ? 'var(--green)' : 'var(--red)'};">${money(y.netMargin)} · ${y.netMarginPct}%</div></div>
       </div>
@@ -402,13 +516,14 @@ async function poEditor(v) {
         <a class="btn btn-blue btn-sm" href="/api/purchase-orders/${po.id}/print/site" target="_blank">🖨 Print SITE copy (no $)</a>
         ${admin ? (po.status === 'open' ? '<button class="btn btn-danger btn-sm" id="closePo">Close PO (site complete)</button>' : '<button class="btn btn-ghost btn-sm" id="reopenPo">Reopen</button>') : ''}
         ${admin ? '<button class="btn btn-ghost btn-sm" id="resetPo">↺ Reset to quote</button>' : ''}
+        ${admin ? '<button class="btn btn-ghost btn-sm" id="supersedePo">⇪ Job changed — new PO revision</button>' : ''}
       </div>
     </div>
     <div class="rule"></div>
     <div class="grid3">
-      <div class="stat time"><div class="k">Allocated site time</div><div class="v">${po.siteDays} days</div></div>
+      <div class="stat time"><div class="k">Total site duration</div><div class="v">${po.siteDays} days</div><div style="font-size:10px;color:#e0d0f5;">crew ${po.crewDays}d + subbies ${po.subDays}d</div></div>
       <div class="stat"><div class="k">Crew size</div><div class="v">${po.crewSize} people</div></div>
-      <div class="stat"><div class="k">Total person-hours</div><div class="v">${Math.round(po.siteHours * 10) / 10} hrs</div></div>
+      <div class="stat"><div class="k">PO revision</div><div class="v">R${po.revision}${po.superseded ? ' (superseded)' : ''}</div></div>
     </div>
   </div>
 
@@ -466,10 +581,34 @@ async function poEditor(v) {
   v.querySelectorAll('[data-pn]').forEach(i => i.addEventListener('change', () => upd(i.dataset.pn, { name: i.value })));
   v.querySelectorAll('[data-prm]').forEach(b => b.addEventListener('click', async () => { await api(`/purchase-orders/${po.id}/items/${b.dataset.prm}`, { method: 'DELETE' }); poEditor(v); }));
   v.querySelectorAll('[data-vstat]').forEach(s => s.addEventListener('change', async () => { await api(`/purchase-orders/${po.id}/vendor-status/${s.dataset.vstat}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: s.value }) }); toast('Status updated'); poEditor(v); }));
+  const sup = $('#supersedePo'); if (sup) sup.addEventListener('click', async () => {
+    if (!confirm('Job details changed?\n\nThis supersedes PO ' + po.poNumber + ' and creates the next revision.\nLines already Ordered or Delivered are carried forward.')) return;
+    const r = await api('/purchase-orders/' + po.id + '/supersede', { method: 'POST' });
+    if (r.error) return toast(r.error);
+    state.poId = r.id; toast('New revision created — ' + r.carried + ' line(s) carried forward'); poEditor(v);
+  });
   const addLine = $('#addPoLine'); if (addLine) addLine.addEventListener('click', async () => {
-    const vendor = prompt('Vendor name for this line?', (po.vendors[0] || {}).name || 'Supplier'); if (vendor == null) return;
-    await api(`/purchase-orders/${po.id}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New line', qty: 1, unit: 'ea', unitCost: 0, vendor, kind: 'material' }) });
-    poEditor(v);
+    const opts = await api('/purchase-orders/vendor-options');
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">Add cost line</h2>
+      <div class="field"><label>Vendor / category</label><select id="cl_vendor">
+        <optgroup label="Vendors">${(opts.vendors || []).map(x => `<option>${esc(x)}</option>`).join('')}</optgroup>
+        <optgroup label="Other costs">${(opts.misc || []).map(x => `<option>${esc(x)}</option>`).join('')}</optgroup></select></div>
+      <div class="field"><label>Description</label><input id="cl_name" placeholder="e.g. Repair to damaged fence panel"></div>
+      <div class="grid3">
+        <div class="field"><label>Qty</label><input id="cl_qty" type="number" step="0.01" value="1"></div>
+        <div class="field"><label>Unit</label><input id="cl_unit" value="ea"></div>
+        <div class="field"><label>Unit cost $</label><input id="cl_cost" type="number" step="0.01" value="0"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="cl_cancel">Cancel</button><button class="btn btn-blue" id="cl_save">Add line</button></div></div>`;
+    document.body.appendChild(bg);
+    $('#cl_cancel').addEventListener('click', () => bg.remove());
+    $('#cl_save').addEventListener('click', async () => {
+      await api(`/purchase-orders/${po.id}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: $('#cl_name').value || 'Cost line', qty: parseFloat($('#cl_qty').value) || 1,
+          unit: $('#cl_unit').value, unitCost: parseFloat($('#cl_cost').value) || 0, vendor: $('#cl_vendor').value, kind: 'material' }) });
+      bg.remove(); toast('Line added'); poEditor(v);
+    });
   });
 }
 
@@ -662,7 +801,7 @@ function editSur(s) {
   $('#s_save').addEventListener('click', async () => {
     const body = { name: $('#s_name').value, triggerNote: $('#s_note').value, kind: $('#s_kind').value, rate: +$('#s_rate').value };
     if (s) await api('/price-list/surcharges/' + s.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); else await api('/price-list/surcharges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    bg.remove(); toast('Saved'); surchargesTab($('#view'));
+    bg.remove(); toast('Saved'); surchargesTab($('#edBody') || $('#view'));
   });
 }
 async function checklistTab(v) {
@@ -687,7 +826,7 @@ function editChk(i) {
   $('#c_save').addEventListener('click', async () => {
     const body = { category: $('#c_cat').value, label: $('#c_label').value, critical: $('#c_crit').checked };
     if (i) await api('/checklist/template/' + i.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); else await api('/checklist/template', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    bg.remove(); toast('Saved'); checklistTab($('#view'));
+    bg.remove(); toast('Saved'); checklistTab($('#edBody') || $('#view'));
   });
 }
 

@@ -3,7 +3,15 @@ const { db } = require('../db');
 const { newId } = require('../utils/ids');
 const router = express.Router();
 const adminGuard = (req, res, next) => req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'admin only' });
-router.use(adminGuard);
+const isAdmin = req => req.user && req.user.role === 'admin';
+// Estimators may READ recipes (ratios, wastage, labour hours) — all costs stripped below.
+// Every write stays admin-only.
+router.use((req, res, next) => (req.method === 'GET' || isAdmin(req)) ? next() : adminGuard(req, res, next));
+function strip(r) {
+  const { sub, subVendor, ...rest } = r;
+  rest.materials = (r.materials || []).map(m => { const { cost, vendorName, ...mm } = m; return mm; });
+  return rest;
+}
 
 function view(r) {
   return { id: r.id, priceItemId: r.price_item_id, methodDefault: r.method_default,
@@ -17,12 +25,13 @@ function view(r) {
 }
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT r.*, p.code, p.name pname, p.unit punit FROM recipes r JOIN price_items p ON p.id=r.price_item_id ORDER BY p.sort_order').all();
-  res.json(rows.map(r => ({ ...view(r), code: r.code, name: r.pname, unit: r.punit })));
+  const out = rows.map(r => ({ ...view(r), code: r.code, name: r.pname, unit: r.punit }));
+  res.json(isAdmin(req) ? out : out.map(strip));
 });
 router.get('/by-item/:priceItemId', (req, res) => {
   const r = db.prepare('SELECT * FROM recipes WHERE price_item_id=?').get(req.params.priceItemId);
   if (!r) return res.status(404).json({ error: 'no recipe' });
-  res.json(view(r));
+  res.json(isAdmin(req) ? view(r) : strip(view(r)));
 });
 router.post('/', (req, res) => {
   const { priceItemId } = req.body || {};

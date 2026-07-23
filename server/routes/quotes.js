@@ -23,7 +23,7 @@ function computeQuote(q) {
     const row = {
       id: it.id, scope: it.scope, code: rEff.code, name: rEff.name, unit: rEff.unit,
       qty: it.qty, behaviour: rEff.behaviour, tierOverride: it.tier_override,
-      sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct,
+      method: it.method || null, subDays: it.sub_days, wastageOverride: it.wastage_override, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct,
       priceItemId: it.price_item_id, customRate: it.custom_rate,
       perTier, effectiveTier: eff, effectiveTotal: lineTotal(it, rEff), effectiveRate: rEff.rate, effectiveSpec: rEff.spec,
     };
@@ -52,7 +52,10 @@ function fullQuote(q) {
     paymentSchedule: q.payment_schedule, siteNotes: q.site_notes, specialClauses: q.special_clauses,
     hasSiteplan: !!q.siteplan_data, status: laterRev > 0 ? 'superseded' : q.status,
     acceptedPackage: q.accepted_package, acceptedAt: q.accepted_at, signedName: q.signed_name,
-    updatedAt: q.updated_at, createdAt: q.created_at, ...c,
+    updatedAt: q.updated_at, createdAt: q.created_at,
+    customerTier: q.customer_tier || 'Silver', crewSize: q.crew_size || 2,
+    siteplanNa: !!q.siteplan_na, surchargesNa: !!q.surcharges_na,
+    emailStatus: q.email_status || null, emailDetail: q.email_detail || null, ...c,
   };
 }
 
@@ -93,17 +96,20 @@ router.get('/:id', (req, res) => {
   res.json(fullQuote(q));
 });
 
-router.post('/', (req, res) => {
-  const b = req.body || {};
+// Reusable so Leads can convert an enquiry straight into a quote.
+function createQuote(b = {}) {
   const maxNum = db.prepare("SELECT MAX(CAST(parent_number AS INTEGER)) m FROM quotes").get().m;
   const parent = b.parentNumber || String((maxNum || 1409) + 1);
   const id = newId();
-  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,default_package,payment_schedule,site_notes,special_clauses)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,default_package,payment_schedule,site_notes,special_clauses,lead_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, newToken(), parent, parent, b.projectTitle || 'Landscape Works', b.client || '', b.clientEmail || '',
     b.address || '', b.date || new Date().toISOString().slice(0, 10), b.defaultPackage || 'Standard',
-    b.paymentSchedule || 'standard', '', settingGet('default_special_clauses') || '');
-  res.status(201).json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(id)));
+    b.paymentSchedule || 'standard', '', settingGet('default_special_clauses') || '', b.leadId || null);
+  return db.prepare('SELECT * FROM quotes WHERE id=?').get(id);
+}
+router.post('/', (req, res) => {
+  res.status(201).json(fullQuote(createQuote(req.body || {})));
 });
 
 // New revision: copies everything, next suffix, older ones become superseded automatically
@@ -179,6 +185,7 @@ router.put('/:id/items/:itemId', (req, res) => {
       b.sharedPct ?? e.shared_pct, b.customName ?? e.custom_name, b.customRate ?? e.custom_rate,
       b.scope ?? e.scope, b.method !== undefined ? b.method : e.method,
       b.wastageOverride !== undefined ? b.wastageOverride : e.wastage_override, req.params.itemId);
+  if (b.subDays !== undefined) db.prepare('UPDATE quote_items SET sub_days=? WHERE id=?').run(b.subDays, req.params.itemId);
   res.json({ ok: true });
 });
 router.delete('/:id/items/:itemId', (req, res) => { db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
@@ -206,22 +213,30 @@ router.get('/:id/costing', (req, res) => {
   res.json(c);
 });
 
-// Signed-contract PREVIEW (admin): see exactly the PDF a client would receive, before any send.
+// Signed-contract PREVIEW (admin): the exact PDF a client receives, before any send.
 router.get('/:id/signed-preview', async (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const { buildSignedPdf } = require('../utils/signedPdf');
+  const { pdfPayload } = require('./publicQuote');
   const fq = fullQuote(q);
   const totals = { grandExGst: Math.round(fq.grandExGst), grandIncGst: Math.round(fq.grandIncGst) };
   const settings = {};
   ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
-  const preview = { ...q, accepted_package: q.accepted_package || q.default_package, signed_name: q.signed_name || '(preview — not yet signed)', accepted_at: q.accepted_at || new Date().toISOString() };
+  const signed = !!q.signed_name;
+  const preview = { ...q,
+    accepted_package: q.accepted_package || q.default_package,
+    signed_name: q.signed_name || q.client_name || '(not yet signed)',
+    signed_sig: q.signed_sig || q.client_name || '',
+    accepted_at: q.accepted_at || new Date().toISOString().slice(0, 19).replace('T', ' ') };
   try {
-    const pdf = await buildSignedPdf({ quote: preview, totals, settings });
+    const payload = pdfPayload(preview, preview.accepted_package);
+    const pdf = await buildSignedPdf({ quote: preview, totals, settings, ...payload, preview: !signed });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="preview-${q.quote_number}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="contract-${q.quote_number}.pdf"`);
     res.send(pdf);
   } catch (e) { res.status(500).json({ error: 'preview failed: ' + e.message }); }
 });
 
 module.exports = router;
+module.exports.createQuote = createQuote;
