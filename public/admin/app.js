@@ -850,7 +850,14 @@ async function settingsTab(v) {
     <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;"><input id="nu_name" placeholder="Name" style="width:140px;"><input id="nu_user" placeholder="username" style="width:120px;"><input id="nu_pass" placeholder="password" style="width:130px;"><select id="nu_role" style="width:110px;"><option value="estimator">Estimator</option><option value="admin">Admin</option></select><button class="btn btn-blue btn-sm" id="addUser">+ Add login</button></div></div>
   <div class="card"><h2>Company</h2><div class="rule"></div><div class="grid2">
       ${[['company_name', 'Company name'], ['company_abn', 'ABN'], ['company_lic', 'Licence'], ['company_phone', 'Phone'], ['company_email', 'Email (Zoho)'], ['association_line', 'Association line'], ['company_address', 'Address'], ['tagline', 'Tagline']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" value="${esc(s[k])}"></div>`).join('')}
-    </div><div style="font-size:11.5px;margin:6px 0 12px;">Email: ${s.smtpConfigured ? '<span class="tag tag-accepted">Zoho connected</span>' : '<span class="tag tag-superseded">Not configured</span>'}</div><button class="btn btn-blue" id="saveCompany">Save company</button></div>
+    </div>
+    <div style="font-size:11.5px;margin:6px 0 10px;">Email: ${s.smtpConfigured ? '<span class="tag tag-accepted">SMTP configured</span>' : '<span class="tag tag-superseded">Not configured</span>'}</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+      <input id="testTo" placeholder="send test to…" value="${esc(s.company_email || '')}" style="max-width:250px;">
+      <button class="btn btn-ghost btn-sm" id="testEmail">Send test email</button>
+      <span id="testResult" style="font-size:11.5px;"></span>
+    </div>
+    <button class="btn btn-blue" id="saveCompany">Save company</button></div>
   <div class="card"><h2>Package descriptions</h2><div class="rule"></div>${TIERS.map(t => `<div class="field"><label>${t}</label><textarea id="set_pkg_desc_${t.toLowerCase()}" rows="2">${esc(s['pkg_desc_' + t.toLowerCase()])}</textarea></div>`).join('')}<button class="btn btn-blue" id="savePkg">Save descriptions</button></div>
   <div class="card"><h2>Contract text</h2><div class="sub">Protections: one per line as "Title|Detail".</div><div class="rule"></div>
     <div class="field"><label>Default special clauses</label><textarea id="set_default_special_clauses" rows="3">${esc(s.default_special_clauses)}</textarea></div>
@@ -862,6 +869,13 @@ async function settingsTab(v) {
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
   $('#saveLab').addEventListener('click', save(['crew_day_rate', 'crew_people', 'extra_person_rate', 'hours_per_day'], 'Rates saved'));
+  $('#testEmail').addEventListener('click', async () => {
+    const el = $('#testResult'); el.innerHTML = '<span class="muted">Testing…</span>';
+    const r = await api('/settings/test-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: $('#testTo').value }) });
+    el.innerHTML = r.ok
+      ? `<span style="color:var(--green);font-weight:700;">✓ Sent via port ${r.port} — check ${esc(r.to)}</span>`
+      : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.error || 'failed')}</span><br><span class="muted">${esc(r.hint || '')}</span>`;
+  });
   $('#saveCompany').addEventListener('click', save(['company_name', 'company_abn', 'company_lic', 'company_phone', 'company_email', 'association_line', 'company_address', 'tagline'], 'Company saved'));
   $('#savePkg').addEventListener('click', save(['pkg_desc_basic', 'pkg_desc_standard', 'pkg_desc_premium'], 'Descriptions saved'));
   $('#saveContract').addEventListener('click', save(['default_special_clauses', 'warranty_text', 'protections_text', 'standard_conditions'], 'Contract text saved'));

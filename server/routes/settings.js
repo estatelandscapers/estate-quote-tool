@@ -27,4 +27,23 @@ router.put('/management/pin', (req, res) => {
   settingSet('management_pin_hash', hashPin(newPin));
   res.json({ ok: true });
 });
+
+// "Send test email" — proves SMTP end to end and returns the exact failure reason.
+router.post('/test-email', async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const { sendMail, verifyConnection } = require('../utils/email');
+  const to = (req.body && req.body.to) || settingGet('company_email');
+  const v = await verifyConnection();
+  if (!v.ok) return res.json({ ok: false, stage: 'connection', error: v.error,
+    hint: 'A "Connection timeout" here means the host is blocking outbound SMTP. Try setting SMTP_PORT=587 in Railway; if both ports time out, SMTP is blocked entirely and we should switch to an email API instead.' });
+  try {
+    await sendMail({ to, subject: 'Estate Landscapers — test email',
+      html: '<p>This is a test from your quote tool. If you can read this, signed contracts will send correctly.</p>' });
+    res.json({ ok: true, to, port: v.port });
+  } catch (e) {
+    res.json({ ok: false, stage: 'send', error: e.message,
+      hint: 'Connection worked but sending failed — usually the App Password, or info@ being a Zoho alias rather than a full mailbox.' });
+  }
+});
+
 module.exports = router;
