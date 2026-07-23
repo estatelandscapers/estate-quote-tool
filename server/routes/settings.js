@@ -42,7 +42,7 @@ router.post('/test-email', async (req, res) => {
     res.json({ ok: true, to, provider: v.provider });
   } catch (e) {
     res.json({ ok: false, stage: 'send', error: e.message,
-      hint: 'The provider rejected the message. Usually the sending domain is not verified with that provider yet, or the API key lacks send permission.' });
+      hint: e.hint || 'The provider rejected the message. Usually the sending domain is not verified with that provider yet, or the API key lacks send permission.' });
   }
 });
 

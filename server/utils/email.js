@@ -42,14 +42,47 @@ async function postJson(url, headers, body) {
   return text;
 }
 
-async function sendViaZepto({ to, subject, html, attachments }) {
-  return postJson('https://api.zeptomail.com/v1.1/email',
-    { Authorization: process.env.ZEPTOMAIL_TOKEN },
-    { from: { address: fromAddress(), name: FROM_NAME },
-      to: [{ email_address: { address: to } }],
-      subject, htmlbody: html,
-      attachments: (attachments || []).map(a => ({ name: a.filename, content: b64(a.content), mime_type: 'application/pdf' })) });
+// ZeptoMail needs two things people commonly get wrong:
+//   1. the Authorization header must be "Zoho-enczapikey <token>", not the bare token
+//   2. the endpoint is regional — AU-hosted Zoho accounts use api.zeptomail.com.au
+// We normalise the token and try each region until one is accepted.
+function zeptoAuth() {
+  const raw = (process.env.ZEPTOMAIL_TOKEN || '').trim();
+  return /^Zoho-enczapikey\s/i.test(raw) ? raw : `Zoho-enczapikey ${raw}`;
 }
+function zeptoEndpoints() {
+  if (process.env.ZEPTOMAIL_URL) return [process.env.ZEPTOMAIL_URL];
+  const r = (process.env.ZEPTOMAIL_REGION || '').toLowerCase();
+  if (r === 'au') return ['https://api.zeptomail.com.au/v1.1/email'];
+  if (r === 'eu') return ['https://api.zeptomail.eu/v1.1/email'];
+  if (r === 'in') return ['https://api.zeptomail.in/v1.1/email'];
+  // unknown: try AU first (this account is Australian), then global, then EU/IN
+  return ['https://api.zeptomail.com.au/v1.1/email',
+          'https://api.zeptomail.com/v1.1/email',
+          'https://api.zeptomail.eu/v1.1/email',
+          'https://api.zeptomail.in/v1.1/email'];
+}
+async function sendViaZepto({ to, subject, html, attachments }) {
+  const body = {
+    from: { address: fromAddress(), name: FROM_NAME },
+    to: [{ email_address: { address: to } }],
+    subject, htmlbody: html,
+    attachments: (attachments || []).map(a => ({ name: a.filename, content: b64(a.content), mime_type: 'application/pdf' })),
+  };
+  const errors = [];
+  for (const url of zeptoEndpoints()) {
+    try {
+      await postJson(url, { Authorization: zeptoAuth() }, body);
+      console.log(`[email] zeptomail endpoint ${url} accepted`);
+      return url;
+    } catch (e) {
+      errors.push(`${url.replace('https://api.', '').replace('/v1.1/email', '')}: ${e.message}`);
+      // a 401 on one region usually means wrong region, so keep trying; other errors too
+    }
+  }
+  throw new Error(errors.join(' | '));
+}
+
 async function sendViaResend({ to, subject, html, attachments }) {
   return postJson('https://api.resend.com/emails',
     { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
@@ -105,7 +138,11 @@ async function sendMail({ to, subject, html, attachments }) {
     return { ok: true, provider: p };
   } catch (e) {
     console.error(`[email] ${p} FAILED → ${to}: ${e.message}`);
-    throw new Error(`${p}: ${e.message}`);
+    const err = new Error(`${p}: ${e.message}`);
+    if (p === 'zeptomail' && /SERR_157|Invalid API Token|401/i.test(e.message)) {
+      err.hint = 'ZeptoMail rejected the token on every region. Check you copied the Mail Agent\'s "Send Mail Token" (not an OAuth key), and that the Mail Agent is Active. If your Zoho account is Australian, set ZEPTOMAIL_REGION=au in Railway.';
+    }
+    throw err;
   }
 }
 
