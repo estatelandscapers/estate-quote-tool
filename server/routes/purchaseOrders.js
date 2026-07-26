@@ -30,9 +30,12 @@ function createPOFromQuote(quoteId, opts = {}) {
   // site copy lines (no prices): deliverable + qty + allocated hrs in spec
   c.perLine.forEach((l, i) => {
     const t = l.tiers[l.selected];
-    // site copy: spec only — no per-deliverable time (crew plans the job as a whole)
+    // site copy: spec + scope description — no per-deliverable time (crew plans the job as a whole)
     const note = l.method === 'sub' ? ' — subcontractor' : (l.method === 'mixed' ? ' — mixed (crew + subcontractor)' : '');
-    ins.run(newId(), poId, l.code, l.name, (t.spec || '') + note, l.qty, l.unit, i, null, 'site', 0);
+    const qi = db.prepare('SELECT desc_override, price_item_id FROM quote_items WHERE id=?').get(l.id);
+    const dpi = qi && qi.price_item_id ? db.prepare('SELECT description FROM price_items WHERE id=?').get(qi.price_item_id) : null;
+    const desc = (qi && qi.desc_override) || (dpi && dpi.description) || '';
+    ins.run(newId(), poId, l.code, l.name, [(t.spec || '') + note, desc].filter(Boolean).join('\n'), l.qty, l.unit, i, null, 'site', 0);
   });
   // cost lines (vendor take-off, incl wastage) — these become the ACTUALS when edited
   let n = 100;

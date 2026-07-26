@@ -43,18 +43,32 @@ function defaultVariant(priceItemId) {
 
 // Cost one deliverable, at one tier, using one variant.
 function costVariant({ qty, wastageOverride, subDaysOverride, vendorOverride }, recipe, tier) {
-  const out = { cost: 0, hrs: 0, subDays: 0, matCost: 0, labCost: 0, subCost: 0, plantCost: 0, delivery: 0, lines: [] };
+  const out = { cost: 0, hrs: 0, subDays: 0, matCost: 0, labCost: 0, subCost: 0, plantCost: 0, ohCost: 0, delivery: 0, wastageSurcharge: 0, lines: [] };
   if (!recipe) return out;
   const t = tier.toLowerCase();
   const rate = crewHourRate();
   (recipe.components || []).forEach(c => {
-    if (c.kind === 'material' || c.kind === 'plant') {
+    if (c.kind === 'overhead') {
+      // references an O item from Costs: monthly cost -> per working day, x ratio (days)
+      const o = c.material_id ? db.prepare('SELECT name, monthly_cost FROM materials WHERE id=?').get(c.material_id) : null;
+      if (o) {
+        const wd = Math.max(1, parseFloat(settingGet('work_days_per_month') || '21'));
+        const daily = (o.monthly_cost || 0) / wd;
+        const amt = daily * (c.ratio || 1);
+        out.ohCost = (out.ohCost || 0) + amt; out.cost0 = true;
+        out.lines.push({ kind: 'overhead', vendor: 'Overhead', name: o.name, unit: 'day', qty: c.ratio || 1, unitCost: Math.round(daily * 100) / 100 });
+      }
+    } else if (c.kind === 'material' || c.kind === 'plant') {
       const mid = c.tiered ? (c[`mat_${t}`] || c.material_id) : c.material_id;
       const mp = materialPrice(mid, vendorOverride || c.vendor_id);
       if (!mp) return;
-      const waste = (wastageOverride != null ? wastageOverride : c.wastage_pct) / 100;
-      const orderQty = c.kind === 'plant' ? (c.ratio || 1) : qty * (c.ratio || 0) * (1 + waste);
+      const stdWaste = (c.wastage_pct || 0) / 100;
+      const effWaste = (wastageOverride != null ? wastageOverride : c.wastage_pct || 0) / 100;
+      const orderQty = c.kind === 'plant' ? (c.ratio || 1) : qty * (c.ratio || 0) * (1 + effWaste);
       const lineCost = c.kind === 'plant' ? (c.amount || mp.cost) * (c.ratio || 1) : orderQty * mp.cost;
+      // wastage above the recipe standard is tracked as an internal surcharge on the item
+      if (c.kind === 'material' && effWaste > stdWaste)
+        out.wastageSurcharge += qty * (c.ratio || 0) * (effWaste - stdWaste) * mp.cost;
       if (c.kind === 'plant') out.plantCost += lineCost; else out.matCost += lineCost;
       out.lines.push({ kind: c.kind, vendor: mp.vendor, vendorId: mp.vendorId, name: mp.name,
         unit: mp.unit, qty: Math.round(orderQty * 100) / 100, unitCost: c.kind === 'plant' ? (c.amount || mp.cost) : mp.cost });
@@ -76,7 +90,7 @@ function costVariant({ qty, wastageOverride, subDaysOverride, vendorOverride }, 
     const first = out.lines.find(l => l.kind === 'material');
     out.lines.push({ kind: 'delivery', vendor: first ? first.vendor : 'Supplier', name: 'Delivery', unit: 'job', qty: 1, unitCost: out.delivery });
   }
-  out.cost = out.matCost + out.plantCost + out.labCost + out.subCost + out.delivery;
+  out.cost = out.matCost + out.plantCost + out.labCost + out.subCost + (out.ohCost || 0) + out.delivery;
   return out;
 }
 
@@ -114,10 +128,13 @@ function costQuote(q, opts = {}) {
       const c = costVariant({ qty: it.qty, wastageOverride: it.wastage_override, subDaysOverride: subDaysOv, vendorOverride }, recs[method], t);
       line.tiers[t] = { spec: r.spec, rate: r.rate, sell, cost: c.cost, hrs: c.hrs, subDays: c.subDays };
       tierTot[t].cost += c.cost; tierTot[t].sell += sell; tierTot[t].hrs += c.hrs;
+      line.tiers[t].wastageSurcharge = Math.round(c.wastageSurcharge);
       if (t === selTier) {
         selTot.cost += c.cost; selTot.sell += sell; selTot.hrs += c.hrs;
         selTot.matCost += c.matCost; selTot.plantCost += c.plantCost; selTot.labCost += c.labCost;
         selTot.subCost += c.subCost; selTot.delivery += c.delivery;
+        selTot.ohCost = (selTot.ohCost || 0) + (c.ohCost || 0);
+        selTot.wastageSurcharge = (selTot.wastageSurcharge || 0) + c.wastageSurcharge;
         subDays += c.subDays;
         c.lines.forEach(L => takeoff.push({ ...L, itemCode: r.code }));
       }
@@ -137,6 +154,11 @@ function costQuote(q, opts = {}) {
 
   const crewDays = selTot.hrs / crew / hpd;
   const days = crewDays + subDays;
+  const wd = Math.max(1, parseFloat(settingGet('work_days_per_month') || '21'));
+  const ohPoolMonthly = db.prepare(`SELECT COALESCE(SUM(monthly_cost),0) s FROM materials
+    WHERE category='overhead' AND id NOT IN (SELECT material_id FROM recipe_component WHERE kind='overhead' AND material_id IS NOT NULL)`).get().s;
+  const ohDailyRate = ohPoolMonthly / wd;
+  const ohAllocated = ohDailyRate * crewDays;
   const target = parseFloat(settingGet('tier_' + (q.customer_tier || 'Silver').toLowerCase()) || '25');
   const margin = selTot.sell - selTot.cost;
   const pct = selTot.sell > 0 ? margin / selTot.sell * 100 : 0;
@@ -144,7 +166,10 @@ function costQuote(q, opts = {}) {
     crewDays: Math.round(crewDays * 10) / 10, subDays: Math.round(subDays * 10) / 10,
     days: Math.round(days * 10) / 10, hours: Math.round(selTot.hrs * 10) / 10,
     grossMargin: margin, grossMarginPct: Math.round(pct * 10) / 10,
-    target, belowTarget: pct < target, guidePrice: selTot.cost * (1 + target / 100),
+    target, belowTarget: pct < target, guidePrice: target < 100 ? selTot.cost / (1 - target / 100) : selTot.cost, // margin-on-sell, NOT markup
+    ohDailyRate: Math.round(ohDailyRate), ohAllocated: Math.round(ohAllocated),
+    netMarginPct: selTot.sell > 0 ? Math.round((selTot.sell - selTot.cost - ohAllocated) / selTot.sell * 1000) / 10 : 0,
+    wastageSurcharge: Math.round(selTot.wastageSurcharge || 0),
     changes, mixed: changes.length > 0, takeoff, selectionsLocked: !!q.selections_locked };
 }
 module.exports = { costQuote, costVariant, recipesFor, defaultVariant, materialPrice, crewHourRate, TIERS, VARIANTS };

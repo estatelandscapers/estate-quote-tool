@@ -27,7 +27,10 @@ router.get('/:quoteId', (req, res) => {
     .map(v => ({ id: v.id, name: v.name, isSub: !!v.is_subcontractor }));
   const lines = selected.perLine.map(l => {
     const qLine = quoted.perLine.find(x => x.id === l.id) || l;
+    const qi = db.prepare('SELECT desc_override, price_item_id FROM quote_items WHERE id=?').get(l.id);
+    const dpi = qi && qi.price_item_id ? db.prepare('SELECT description FROM price_items WHERE id=?').get(qi.price_item_id) : null;
     return { id: l.id, code: l.code, name: l.name, qty: l.qty, unit: l.unit, tier: l.selected,
+      description: (qi && qi.desc_override) || (dpi && dpi.description) || '',
       spec: l.tiers[l.selected].spec, quotedMethod: qLine.method, finalMethod: l.method,
       defaultMethod: l.defaultMethod, availableVariants: l.availableVariants,
       subDays: l.subDays, selVendorId: l.selVendorId,
@@ -48,10 +51,11 @@ router.put('/:quoteId/line/:itemId', (req, res) => {
   const b = req.body || {};
   const e = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
   if (!e) return res.status(404).json({ error: 'line not found' });
-  db.prepare('UPDATE quote_items SET sel_method=?, sel_vendor_id=?, sel_sub_days=? WHERE id=?')
+  db.prepare('UPDATE quote_items SET sel_method=?, sel_vendor_id=?, sel_sub_days=?, desc_override=? WHERE id=?')
     .run(b.method !== undefined ? b.method : e.sel_method,
       b.vendorId !== undefined ? b.vendorId : e.sel_vendor_id,
-      b.subDays !== undefined ? b.subDays : e.sel_sub_days, e.id);
+      b.subDays !== undefined ? b.subDays : e.sel_sub_days,
+      b.description !== undefined ? (b.description || null) : e.desc_override, e.id);
   res.json({ ok: true });
 });
 // Lock the selections and raise the PO from those exact decisions.

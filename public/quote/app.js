@@ -34,7 +34,7 @@
     if (c.lic) badges.push(`<span class="badge green">&#10003; Licensed &mdash; ${esc(c.lic)}</span>`);
     if (c.association) badges.push(`<span class="badge green">&#10003; ${esc(c.association)}</span>`);
     badges.push(`<span class="badge amber">Valid ${D.validityDays} days &mdash; until ${esc(D.validUntil)}</span>`);
-    const heading = `${esc(D.projectTitle || 'Landscape Works')} Fee Proposal &mdash; Quote ${esc(D.quoteNumber)}`;
+    const heading = `${esc(D.projectTitle || 'Landscape Works')} Fee Proposal</div><div class="eyebrow">Quote ${esc(D.quoteNumber)}`;
 
     root.innerHTML = `
     <div class="frame" oncontextmenu="return false">
@@ -47,6 +47,11 @@
         <div class="company-addr">${esc(c.name || 'Estate Landscapers')} &middot; ${esc(c.address || '')}${c.abn ? ' &middot; ' + esc(c.abn) : ''}</div>
       </div>
       ${accepted ? `<div class="accepted-banner">&#10003; Accepted &mdash; ${esc(D.acceptedPackage)} package. Thank you! A signed copy has been emailed to you.</div>` : ''}
+      ${D.hasSiteplan ? `<div class="siteplan-wrap top"><img id="siteplan" src="/api/public/quote/${token}/siteplan" alt="Site plan" draggable="false"><div class="siteplan-cap">Your site &mdash; tap to enlarge</div></div>` : ''}
+      ${accepted ? '' : `<div class="howto">
+        <div class="ht-t">How to read this quote</div>
+        <div class="ht-b">Tap <b>Basic</b>, <b>Standard</b> or <b>Premium</b> to compare three levels of finish &mdash; the prices and specifications below update instantly. Items marked <span class="chg-badge">changes with package</span> are the ones that differ; everything else stays the same whichever you choose. When you're happy, tap <b>Accept</b> at the bottom to review the full contract and sign. Nothing is locked in until you sign.</div>
+      </div>`}
       ${D.mixed ? `<div class="mixed-box">
         <div class="mb-t">Your selection</div>
         <div class="mb-h">${esc(D.mixed.base)} package, with ${D.mixed.changes.length} change${D.mixed.changes.length > 1 ? 's' : ''}</div>
@@ -55,10 +60,7 @@
         ${TIERS.map(t => `<div class="pkg ${t === tier ? 'on' : ''}" data-t="${t}"><b>${t}</b><div class="eo">${t === 'Basic' ? 'Entry spec' : '+' + money(eoFor(t)) + ' vs Basic'}</div></div>`).join('')}
       </div>
       <div class="pkg-desc" id="pkgDesc"></div>`}
-      <div class="split-area">
-        ${D.hasSiteplan ? `<div class="siteplan-wrap"><img id="siteplan" src="/api/public/quote/${token}/siteplan" alt="Site plan" draggable="false"><div class="siteplan-cap">Your site plan &mdash; tap to enlarge</div></div>` : ''}
-        <div class="box deliv-box"><div class="box-title">Scope 1 &mdash; Landscaping Works Deliverables</div><div id="delivs"></div></div>
-      </div>
+      <div class="box deliv-box"><div class="box-title">Scope 1 &mdash; Landscaping Works Deliverables</div><div id="delivs"></div></div>
       ${D.scope2 && D.scope2.length ? `<div class="box s2"><div class="box-title">Scope 2 &mdash; Disposal of Construction Waste</div>
         <div style="font-size:12.5px;color:var(--grey);line-height:1.6;">Estimated ${esc(String(D.scope2[0].qty))} m&sup3; at <b style="color:var(--ink)">${money(D.scope2[0].perTier.Standard.rate)}/m&sup3; &mdash; remeasurable</b>. Completed at cost + 15%, substantiated by disposal invoices. Final cost adjusted on actual quantities removed.</div></div>` : ''}
       ${D.siteNotes ? `<div class="notes-box"><div class="nt">Site-specific notes from our team</div><div class="nb">${esc(D.siteNotes)}</div></div>` : ''}
@@ -107,18 +109,26 @@
       const eo = pt.price - d.perTier.Basic.price;
       const isRem = d.behaviour === 'remeasurable';
       const shared = d.sharedEnabled ? ` &middot; shared ${d.sharedPct}% with neighbour` : '';
-      return `<div class="deliv"><div class="t"><span class="code">${esc(d.code)}</span>${esc(d.name)}</div>
+      const alts = d.changes ? TIERS.filter(t => t !== lineTier && d.alternates[t] && d.alternates[t] !== pt.spec)
+        .map(t => `${t}: ${d.alternates[t]}`).join(' \u00B7 ') : '';
+      return `<div class="deliv${d.changes ? ' varies' : ''}">
+        <div class="t"><span class="code">${esc(d.code)}</span>${esc(d.name)}${d.changes ? '<span class="chg-badge">changes with package</span>' : ''}</div>
         <div class="spec-line"><div class="n">${esc(pt.spec || d.name)}</div><div class="p">${money(pt.price)}</div></div>
+        ${alts ? `<div class="alt-line">Other packages &mdash; ${esc(alts)}</div>` : ''}
+        ${d.description ? `<div class="desc-line">${esc(d.description)}</div>` : ''}
         ${isRem ? `<div class="rem-line">&#9878; ${esc(String(d.qty))} ${esc(d.unit)} @ ${money(pt.rate)}/${esc(d.unit)} &mdash; remeasurable: final quantity measured on site${shared}</div>` : ''}
         ${eo > 0 ? `<div class="eo-line">+${money(eo)} over the Basic spec for this item</div>` : ''}</div>`;
     }).join('');
+    // Total = (Scope 1 + Scope 2) x (1 + % surcharges) + fixed surcharges, then GST
     const sub = D.mixed ? D.mixed.sellExGst : D.tierTotals[tier];
-    const sur = D.surchargePerTier ? D.surchargePerTier[tier] : 0;
     const s2 = D.scope2Total || 0;
-    const exGst = sub + sur + s2;
+    const works = sub + s2;
+    const sur = D.surchargePerTier ? D.surchargePerTier[tier] : 0;
+    const exGst = works + sur;
     let rows = `<div class="r"><span>Scope 1 subtotal &mdash; ${D.mixed ? D.mixed.base + ' + changes' : tier}</span><span>${money(sub)}</span></div>`;
-    if (sur > 0 && D.surcharges && D.surcharges.length) rows += `<div class="r"><span>Site conditions &mdash; ${D.surcharges.map(s => esc(s.name)).join(', ')}</span><span>${money(sur)}</span></div>`;
     if (s2 > 0) rows += `<div class="r"><span>Scope 2 disposal (est. &mdash; remeasurable)</span><span>${money(s2)}</span></div>`;
+    if (sur > 0 && D.surcharges && D.surcharges.length)
+      rows += `<div class="r"><span>Site-specific surcharges &mdash; ${D.surcharges.map(s => esc(s.code) + ' ' + esc(s.name) + (s.kind === 'percent' ? ` (+${s.rate}%)` : '')).join(', ')}</span><span>${money(sur)}</span></div>`;
     rows += `<div class="r"><span>GST (10%)</span><span>${money(exGst * 0.1)}</span></div>`;
     rows += `<div class="r g"><span>Total inc. GST</span><span>${money(exGst * 1.1)}</span></div>`;
     document.getElementById('totalCard').innerHTML = rows;

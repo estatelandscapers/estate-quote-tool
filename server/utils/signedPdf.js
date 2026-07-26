@@ -4,8 +4,18 @@
 const PDFDocument = require('pdfkit');
 
 function money(n) { return '$' + Math.round(n || 0).toLocaleString('en-AU'); }
+// Sydney local time for the signature record (AEST/AEDT handled automatically)
+function sydneyTime(utcStr) {
+  if (!utcStr) return '';
+  try {
+    const d = new Date(utcStr.includes('T') ? utcStr : utcStr.replace(' ', 'T') + 'Z');
+    const fmt = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Sydney',
+      day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short' });
+    return fmt.format(d);
+  } catch { return utcStr; }
+}
 
-function buildSignedPdf({ quote, totals, settings, deliverables = [], payment = null, sitePlan = null, preview = false }) {
+function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges = [], payment = null, sitePlan = null, preview = false }) {
   return new Promise((resolve) => {
     const doc = new PDFDocument({ size: 'A4', margins: { top: 50, bottom: 50, left: 50, right: 50 }, bufferPages: true });
     const chunks = [];
@@ -49,12 +59,14 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], payment = 
         doc.fontSize(9);
         const nameH = doc.heightOfString(d.name || '', { width: wName });
         const specH = d.spec ? doc.fontSize(7.8).heightOfString(d.spec, { width: wName }) : 0;
-        const rowH = nameH + (specH ? specH + 2 : 0) + 8;
+        const descH = d.description ? doc.fontSize(7.4).heightOfString(d.description, { width: wName }) : 0;
+        const rowH = nameH + (specH ? specH + 2 : 0) + (descH ? descH + 2 : 0) + 8;
         if (doc.y + rowH > doc.page.height - 70) { doc.addPage(); headRow(); }
         const y = doc.y;
         doc.fontSize(9).font('Helvetica-Bold').fillColor('#000').text(d.code || '', cCode, y, { width: 32, lineBreak: false });
         doc.font('Helvetica').text(d.name || '', cName, y, { width: wName });
         if (d.spec) doc.fontSize(7.8).fillColor('#666').text(d.spec, cName, y + nameH + 1, { width: wName });
+        if (d.description) doc.fontSize(7.4).fillColor('#888').text(d.description, cName, y + nameH + (specH ? specH + 3 : 1), { width: wName });
         doc.fontSize(9).fillColor('#000');
         doc.text(d.showQty ? `${d.qty} ${d.unit || ''}` : '', cQty, y, { width: 74, lineBreak: false });
         doc.text(d.price ? money(d.price) : '—', cPrice, y, { width: 92, align: 'right', lineBreak: false });
@@ -79,6 +91,15 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], payment = 
       doc.x = 50;
     }
 
+    // ---- site-specific surcharges: their own coded section (SS1, SS2...) ----
+    if (surcharges.length) {
+      H('Site-specific surcharges');
+      surcharges.forEach(ss => {
+        doc.fontSize(9).font('Helvetica-Bold').text(`${ss.code}`, { continued: true }).font('Helvetica')
+          .text(`  ${ss.name} — ${ss.detail}`);
+      });
+    }
+
     // ---- payment schedule ----
     if (payment) {
       H('Agreed payment schedule');
@@ -100,7 +121,10 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], payment = 
     H('Signature record');
     doc.fontSize(9.5);
     doc.text(`Signed by: ${quote.signed_name || ''}`);
-    doc.text(`Signed at: ${quote.accepted_at || ''} (server time, UTC)`);
+    doc.text(`Signed at: ${sydneyTime(quote.accepted_at)} (Sydney time)`);
+    doc.fontSize(7.5).fillColor('#999').text(`Server record (UTC): ${quote.accepted_at || ''}`).fontSize(9.5).fillColor('#000');
+    if (quote.client_email) doc.text(`Client email: ${quote.client_email}`);
+    if (quote.address) doc.text(`Site address: ${quote.address}`);
     doc.text(`IP address: ${quote.signed_ip || 'n/a'}`);
     doc.moveDown(0.4);
     const sig = quote.signed_sig || '';
@@ -121,8 +145,8 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], payment = 
     doc.moveTo(52, doc.y).lineTo(280, doc.y).lineWidth(0.8).strokeColor('#666').stroke();
     doc.moveDown(0.3).fontSize(8).fillColor('#666').text(`${quote.signed_name || ''} — Client`, 52).fillColor('#000');
 
-    // ---- terms ----
-    doc.addPage();
+    // ---- terms (flow on — only page-break when genuinely near the bottom) ----
+    if (doc.y > doc.page.height - 160) doc.addPage();
     H('Special clauses (as signed)');
     doc.fontSize(9).text(quote.special_clauses || settings.default_special_clauses || 'None for this quote.');
     H('Warranty');
@@ -131,23 +155,32 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], payment = 
     doc.fontSize(8.5).text(settings.standard_conditions || '');
 
     // Signature strip on the footer of EVERY page, plus page numbers.
+    // IMPORTANT: writing inside the bottom margin makes pdfkit auto-add pages, so the
+    // bottom margin is temporarily zeroed while stamping. Without this the footer itself
+    // generates a blank page per page — which is exactly what caused the empty pages.
     const range = doc.bufferedPageRange();
+    const lastPage = range.start + range.count - 1;
     const sigRaw = quote.signed_sig || '';
-    for (let i = range.start; i < range.start + range.count; i++) {
+    const stampName = `${quote.signed_name || ''}${quote.accepted_at ? '  ·  ' + sydneyTime(quote.accepted_at) : ''}`;
+    for (let i = range.start; i <= lastPage; i++) {
       doc.switchToPage(i);
-      const fy = doc.page.height - 44;
-      doc.moveTo(50, fy - 8).lineTo(doc.page.width - 50, fy - 8).lineWidth(0.5).strokeColor('#DDD').stroke();
+      const savedBottom = doc.page.margins.bottom;
+      doc.page.margins.bottom = 0;           // stops auto-pagination while we draw
+      const fy = doc.page.height - 46;
+      doc.moveTo(50, fy - 10).lineTo(doc.page.width - 50, fy - 10).lineWidth(0.5).strokeColor('#DDD').stroke();
       doc.fontSize(7).fillColor('#999')
         .text(`${settings.tagline || 'Integrity. Precision. Value.'}   ·   Quote ${quote.quote_number}   ·   Page ${i - range.start + 1} of ${range.count}`,
-          50, fy + 12, { width: 300, lineBreak: false });
-      doc.fontSize(7).fillColor('#999').text('Signed:', doc.page.width - 190, fy - 2, { lineBreak: false });
+          50, fy + 10, { width: 260, lineBreak: false });
+      doc.fontSize(6.5).fillColor('#AAA').text('SIGNED', doc.page.width - 232, fy - 2, { width: 40, lineBreak: false });
       if (sigRaw.startsWith('data:image')) {
-        try { doc.image(Buffer.from(sigRaw.split(',')[1], 'base64'), doc.page.width - 155, fy - 8, { fit: [95, 26] }); } catch (e) {}
+        try { doc.image(Buffer.from(sigRaw.split(',')[1], 'base64'), doc.page.width - 190, fy - 8, { fit: [86, 24] }); } catch (e) {}
       } else {
-        doc.font('Helvetica-Oblique').fontSize(11).fillColor('#333')
-          .text(sigRaw || quote.signed_name || '', doc.page.width - 155, fy - 2, { width: 105, lineBreak: false }).font('Helvetica');
+        doc.font('Helvetica-Oblique').fontSize(11).fillColor('#444')
+          .text(sigRaw || quote.signed_name || '', doc.page.width - 190, fy - 4, { width: 140, lineBreak: false }).font('Helvetica');
       }
-      doc.fontSize(6.5).fillColor('#AAA').text(quote.signed_name || '', doc.page.width - 155, fy + 14, { width: 105, lineBreak: false });
+      doc.fontSize(6.5).fillColor('#AAA')
+        .text(stampName, doc.page.width - 190, fy + 12, { width: 145, lineBreak: false });
+      doc.page.margins.bottom = savedBottom;  // restore
     }
     doc.end();
   });

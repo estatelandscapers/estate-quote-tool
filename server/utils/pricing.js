@@ -48,10 +48,16 @@ function lineTotal(item, resolved) {
   return t;
 }
 
-function surchargeAmount(applied, scope1Total) {
+// Total = (Scope 1 + Scope 2) x (1 + sum of % surcharges) + fixed surcharges, then GST.
+// Percentage surcharges apply to the FULL works subtotal (both scopes).
+function surchargeAmount(applied, worksSubtotal) {
   let total = 0;
-  (applied || []).forEach(s => { total += s.kind === 'percent' ? scope1Total * (s.rate / 100) : Number(s.rate) || 0; });
+  (applied || []).forEach(s => { total += s.kind === 'percent' ? worksSubtotal * (s.rate / 100) : Number(s.rate) || 0; });
   return total;
 }
+// Site-specific surcharge codes: SS1, SS2... in applied order.
+function surchargeList(applied) {
+  return (applied || []).map((s, i) => ({ code: 'SS' + (i + 1), name: s.name, kind: s.kind, rate: s.rate }));
+}
 
-module.exports = { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount };
+module.exports = { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeList };

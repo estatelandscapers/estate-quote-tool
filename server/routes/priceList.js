@@ -4,7 +4,7 @@ const { newId } = require('../utils/ids');
 const router = express.Router();
 
 const rowOut = r => ({
-  id: r.id, code: r.code, name: r.name, unit: r.unit, behaviour: r.behaviour, notes: r.notes,
+  id: r.id, code: r.code, name: r.name, description: r.description || '', unit: r.unit, behaviour: r.behaviour, notes: r.notes,
   tiers: { Basic: { spec: r.basic_spec, sell: r.basic_sell }, Standard: { spec: r.standard_spec, sell: r.standard_sell }, Premium: { spec: r.premium_spec, sell: r.premium_sell } },
 });
 
@@ -30,6 +30,7 @@ router.put('/:id', (req, res) => {
       t.Standard?.spec ?? e.standard_spec, t.Standard?.sell ?? e.standard_sell,
       t.Premium?.spec ?? e.premium_spec, t.Premium?.sell ?? e.premium_sell,
       b.notes ?? e.notes, req.params.id);
+  if (b.description !== undefined) db.prepare('UPDATE price_items SET description=? WHERE id=?').run(b.description, req.params.id);
   db.prepare('INSERT INTO audit_log (id,entity_type,entity_id,actor,action,detail) VALUES (?,?,?,?,?,?)')
     .run(newId(), 'price_item', req.params.id, req.headers['x-actor'] || 'owner', 'update', `Rate updated: ${b.name || e.name}`);
   res.json(rowOut(db.prepare('SELECT * FROM price_items WHERE id=?').get(req.params.id)));

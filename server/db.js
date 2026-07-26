@@ -187,6 +187,9 @@ addColumn('quotes','lead_id','TEXT');
 addColumn('quotes','email_status','TEXT');
 addColumn('quotes','email_detail','TEXT');
 addColumn('quotes','selections_locked','INTEGER DEFAULT 0');
+addColumn('price_items','description','TEXT');
+addColumn('quote_items','desc_override','TEXT');
+addColumn('vendors','code_no','INTEGER');
 addColumn('quote_items','sel_method','TEXT');
 addColumn('quote_items','sel_vendor_id','TEXT');
 addColumn('quote_items','sel_sub_days','REAL');
@@ -198,7 +201,8 @@ CREATE TABLE IF NOT EXISTS leads (
 );
 CREATE TABLE IF NOT EXISTS materials (
   id TEXT PRIMARY KEY, name TEXT, unit TEXT, category TEXT DEFAULT 'material',
-  notes TEXT, default_vendor_id TEXT, created_at TEXT DEFAULT (datetime('now'))
+  notes TEXT, default_vendor_id TEXT, monthly_cost REAL DEFAULT 0, code_no INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS recipe_v2 (
   id TEXT PRIMARY KEY, price_item_id TEXT REFERENCES price_items(id) ON DELETE CASCADE,
@@ -221,8 +225,10 @@ CREATE TABLE IF NOT EXISTS material_vendors (
   cost REAL DEFAULT 0, delivery_rule TEXT, review_by TEXT, preferred INTEGER DEFAULT 0
 );
 `);
-// for databases created before this column existed
+// for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
+addColumn('materials','monthly_cost','REAL DEFAULT 0');
+addColumn('materials','code_no','INTEGER');
 
 
 
@@ -332,10 +338,12 @@ if (!settingGet2('seed_v7')) {
   iu.run(uid2(),'Smit','admin',sha('Smit@1234'),'admin');
   iu.run(uid2(),'Estimator 1','est1',sha('Est1@1234'),'estimator');
   iu.run(uid2(),'Estimator 2','est2',sha('Est2@1234'),'estimator');
+  // Defaults only — NEVER clobber a value the owner has already set.
   [['tier_bronze','15'],['tier_silver','25'],['tier_gold','35'],
    ['age_flag','7'],['age_chase','14'],['age_dead','30'],
-   ['crew_day_rate','1150'],['crew_people','2'],['extra_person_rate','420'],['hours_per_day','8']
-  ].forEach(([k,v])=>settingSet2(k,v));
+   ['crew_day_rate','1150'],['crew_people','2'],['extra_person_rate','420'],['hours_per_day','8'],
+   ['work_days_per_month','21']
+  ].forEach(([k,v])=>{ const cur=settingGet2(k); if(cur===null||cur===undefined||cur==='') settingSet2(k,v); });
   const iv=db.prepare('INSERT OR IGNORE INTO vendors (id,name,is_supplier,is_subcontractor,contact,phone,area,terms) VALUES (?,?,?,?,?,?,?,?)');
   const vHT=uid2(); iv.run(vHT,'Hunter Turf',1,0,'Dave','0412 000 111','Kellyville - 12 km','30 days');
   const vBS=uid2(); iv.run(vBS,'Benedict Sands',1,0,'Sales','02 9000 0000','Chipping Norton','Account');
@@ -468,6 +476,53 @@ if (!settingGet2('seed_v11')) {
   }
  } catch (e) { console.error('[seed v11] skipped:', e.message); }
  settingSet2('seed_v11','1');
+}
+
+
+// ---- v12: codes, overheads, descriptions ----
+if (!settingGet2('seed_v12')) {
+ try {
+  // vendor codes V1, V2... in creation order
+  db.prepare("SELECT id FROM vendors WHERE code_no IS NULL ORDER BY created_at, name").all()
+    .forEach((v, i) => {
+      const max = db.prepare('SELECT MAX(code_no) m FROM vendors').get().m || 0;
+      db.prepare('UPDATE vendors SET code_no=? WHERE id=?').run(max + 1, v.id);
+    });
+  // material codes per category
+  ['material', 'plant', 'overhead'].forEach(cat => {
+    db.prepare('SELECT id FROM materials WHERE code_no IS NULL AND category=? ORDER BY created_at, name').all(cat)
+      .forEach(m => {
+        const max = db.prepare('SELECT MAX(code_no) m FROM materials WHERE category=?').get(cat).m || 0;
+        db.prepare('UPDATE materials SET code_no=? WHERE id=?').run(max + 1, m.id);
+      });
+  });
+  // seed overhead items (monthly)
+  if (!db.prepare("SELECT id FROM materials WHERE category='overhead'").get()) {
+    const io = db.prepare("INSERT INTO materials (id,name,unit,category,monthly_cost,code_no) VALUES (?,?,?,'overhead',?,?)");
+    io.run(uid2(), 'Supervision & site insurances', 'month', 2400, 1);
+    io.run(uid2(), 'Vehicles & fuel', 'month', 3100, 2);
+    io.run(uid2(), 'Office & admin', 'month', 4200, 3);
+  }
+  settingSet2('work_days_per_month', settingGet2('work_days_per_month') || '21');
+  // default scope descriptions
+  const DESC = {
+    PL: 'Site establishment, ongoing supervision, public liability and works insurances for the duration of the project.',
+    EW: 'General earthworks including cut, fill, levelling and site trim to design levels; removal of spoil off site.',
+    GT: 'Supply and install turf to prepared areas including turf underlay sand, starter fertiliser, rolling and consolidation.',
+    GM: 'Supply and place organic garden mix and decorative mulch to garden beds, cultivated and edged.',
+    ST: 'Supply and plant selected stock incl. staking and initial watering-in.',
+    RW: 'Construct retaining wall to engineering requirements including footings, drainage line and gravel backfill.',
+    CP: 'Form, pour and finish concrete to driveways/paths including mesh reinforcement and expansion joints.',
+    PW: 'Lay weedmat and decorative rock/pebble to designated areas, edged and consolidated.',
+    FC: 'Supply and install 1.8m Colorbond fence including posts, rails, footings and gates as scheduled.',
+    FA: 'Supply and fit aluminium slat/feature panels as scheduled.',
+    FG: 'Supply and hang gates including hinges, latch and lock as scheduled.'
+  };
+  Object.entries(DESC).forEach(([code, txt]) => {
+    db.prepare('UPDATE price_items SET description=COALESCE(description, ?) WHERE code=?').run(txt, code);
+  });
+ } catch (e) { console.error('[seed v12] skipped:', e.message); }
+ settingSet2('seed_v12', '1');
 }
 
 module.exports = { db, settingGet, settingSet };

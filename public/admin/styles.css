@@ -25,7 +25,7 @@ tr:last-child td{border-bottom:none;}
 .btn-ghost{background:#fff;border:1px solid var(--line);color:var(--ink);}
 .btn-sm{padding:5px 10px;font-size:10px;}
 .btn-danger{background:#fff;border:1px solid #E9C9C9;color:var(--red);}
-.tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:9px;font-weight:700;text-transform:uppercase;white-space:nowrap;}
+.tag{line-height:1.7;white-space:nowrap;overflow:visible;display:inline-block;padding:2px 8px;border-radius:20px;font-size:9px;font-weight:700;text-transform:uppercase;white-space:nowrap;}
 .tag-draft{background:#EEE;color:#666;} .tag-viewed{background:#FFF3D6;color:#8A6A1E;}
 .tag-accepted{background:#DEEBE2;color:var(--green);} .tag-superseded{background:#F1DAD6;color:var(--red);}
 .tag-tier{background:var(--blue-soft);color:var(--blue-deep);} .tag-rem{background:#FFF3D6;color:#8A6A1E;}
@@ -125,3 +125,38 @@ textarea{resize:vertical;line-height:1.5;}
 .t-matm{background:#E4EDFB;color:#143FB0;}
 .t-plantm{background:#F1E9D8;color:#B08D3E;}
 .t-mix{background:#FFF3D6;color:#8A6A1E;}
+
+/* ---- status tag: never clip its text ---- */
+.tag{display:inline-block;line-height:1.75 !important;white-space:nowrap;overflow:visible;text-overflow:clip;vertical-align:middle;padding:3px 10px;height:auto;min-height:0;}
+.t-oh{background:#EFE6F7;color:#6A3E9C;}
+
+/* ---- MOBILE ---- */
+@media (max-width: 760px){
+  body{font-size:13px;}
+  .wrap{padding:10px 8px 70px;}
+  .nav{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 2px 8px;flex-wrap:nowrap;scrollbar-width:none;}
+  .nav::-webkit-scrollbar{display:none;}
+  .nav button{flex:0 0 auto;white-space:nowrap;border-radius:16px;padding:8px 13px;}
+  .navsep{display:none;}
+  .card{padding:12px 11px;border-radius:10px;}
+  .grid2,.grid3,.grid4{grid-template-columns:1fr !important;}
+  /* tables become stacked cards */
+  table.resp thead{display:none;}
+  table.resp tr{display:block;border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px;background:#fff;}
+  table.resp td{display:flex;justify-content:space-between;gap:10px;border:none;padding:4px 0;text-align:left !important;}
+  table.resp td:before{content:attr(data-l);font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--grey);font-weight:700;flex:0 0 40%;}
+  table.resp td:empty{display:none;}
+  /* any table that isn't card-ified scrolls inside its own box, never the page */
+  .card table:not(.resp){display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;}
+  .linkbar{flex-direction:column;align-items:stretch;gap:6px;}
+  .linkbar input{width:100%;}
+  input,select,textarea{font-size:16px;} /* stops iOS zooming on focus */
+  .btn{padding:10px 13px;}
+  .stat .v{font-size:16px;}
+  .pickitem{font-size:11px;}
+  .modal{width:96vw;max-width:none;padding:14px;}
+}
+@media (max-width: 420px){
+  .brand b{font-size:11px;}
+  .card h2{font-size:12.5px;}
+}

@@ -14,29 +14,76 @@ function fyOf(dateStr) {
   const endYear = m >= 7 ? y + 1 : y;
   return 'FY' + String(endYear).slice(2);
 }
+// FORECAST = the full current PO (the locked Selections plan).
+// TO DATE   = only lines actually Delivered or Invoiced, plus any misc cost lines added on the job.
+// Ordered-but-not-delivered is reported separately as "committed".
+// Only the current (non-superseded) PO counts, so revisions never double-count.
+const COST_KINDS = "('material','labour','sub','delivery','plant')";
 function actualCostOf(quoteId) {
-  const po = db.prepare('SELECT id FROM purchase_orders WHERE quote_id=?').get(quoteId);
+  const po = db.prepare('SELECT id FROM purchase_orders WHERE quote_id=? AND superseded=0').get(quoteId);
   if (!po) return null;
-  const r = db.prepare("SELECT SUM(qty*unit_cost) s FROM po_items WHERE po_id=? AND removed=0 AND kind IN ('material','labour','sub','delivery','plant')").get(po.id);
-  return { poId: po.id, cost: r.s || 0 };
+  const sum = (where, args = []) => db.prepare(
+    `SELECT COALESCE(SUM(qty*unit_cost),0) s FROM po_items WHERE po_id=? AND removed=0 AND kind IN ${COST_KINDS} ${where}`
+  ).get(po.id, ...args).s || 0;
+  const forecast = sum('');                                     // whole plan
+  const toDate = sum("AND po_status IN ('delivered','invoiced')"); // actually landed
+  const committed = sum("AND po_status='ordered'");             // ordered, not yet in
+  const remaining = sum("AND (po_status IS NULL OR po_status='pending')"); // still to come, at plan rates
+  // Projected final cost = what has landed + what's committed + what's still to come at plan.
+  // This is the honest "where will this job end up" figure — a raw cost-to-date margin
+  // looks great at 10% spent and means nothing.
+  const projected = toDate + committed + remaining;
+  return { poId: po.id, cost: forecast, forecast, toDate, committed, remaining, projected };
+}
+// Business overheads (supervisor, office, vehicles, insurances — NOT direct site labour),
+// entered monthly in Costs and spread across working days, then allocated by the job's crew-days.
+function overheadDailyRate() {
+  const { settingGet } = require('../db');
+  const wd = Math.max(1, parseFloat(settingGet('work_days_per_month') || '21'));
+  const pool = db.prepare(`SELECT COALESCE(SUM(monthly_cost),0) s FROM materials
+    WHERE category='overhead' AND id NOT IN (SELECT material_id FROM recipe_component WHERE kind='overhead' AND material_id IS NOT NULL)`).get().s;
+  return pool / wd;
 }
 router.get('/', (req, res) => {
   const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' ORDER BY accepted_at DESC").all();
+  const ohDaily = overheadDailyRate();
   const jobs = rows.map(q => {
     const fy = fyOf(q.accepted_at);
     const act = actualCostOf(q.id);
     const po = act ? db.prepare('SELECT status, closed_at FROM purchase_orders WHERE id=?').get(act.poId) : null;
+    const po2 = act ? db.prepare('SELECT site_hours, crew_size FROM purchase_orders WHERE id=?').get(act.poId) : null;
     const sell = q.quoted_sell || 0, qc = q.quoted_cost || 0;
     const ac = act ? act.cost : null;
+    const pct = c => sell > 0 ? Math.round((sell - c) / sell * 1000) / 10 : null;
+    const crewDays = po2 && po2.site_hours ? po2.site_hours / Math.max(1, po2.crew_size || 2) / 8 : 0;
+    const ohAlloc = ohDaily * crewDays;
+    const fcPct = act ? pct(act.forecast) : null;
+    const projPct = act ? pct(act.projected) : null;
     return { id: q.id, quoteNumber: q.quote_number, client: q.client_name, address: q.address,
       acceptedAt: q.accepted_at, fy, tier: q.accepted_package, mixed: !!(q.accepted_mixed && q.accepted_mixed !== '[]'),
       sellExGst: sell, quotedCost: qc, quotedGM: sell - qc, quotedGMPct: sell > 0 ? Math.round((sell - qc) / sell * 1000) / 10 : 0,
-      actualCost: ac, actualGM: ac != null ? sell - ac : null, actualGMPct: ac != null && sell > 0 ? Math.round((sell - ac) / sell * 1000) / 10 : null,
+      actualCost: ac, actualGM: ac != null ? sell - ac : null, actualGMPct: pct(ac),
+      forecastCost: act ? Math.round(act.forecast) : null, forecastGMPct: fcPct,
+      costToDate: act ? Math.round(act.toDate) : null,
+      committed: act ? Math.round(act.committed) : 0,
+      remainingCost: act ? Math.round(act.remaining) : 0,
+      projectedCost: act ? Math.round(act.projected) : null, projectedGMPct: projPct,
+      spentPct: act && act.forecast > 0 ? Math.round(act.toDate / act.forecast * 100) : 0,
+      driftPts: (fcPct != null && projPct != null) ? Math.round((projPct - fcPct) * 10) / 10 : null,
+      ohAllocated: Math.round(ohAlloc),
+      netGMPct: act && sell > 0 ? Math.round((sell - act.projected - ohAlloc) / sell * 1000) / 10 : null,
       poId: act ? act.poId : null, jobStatus: po && po.status === 'closed' ? 'complete' : 'open' };
   });
   const fys = [...new Set(jobs.map(j => j.fy).filter(Boolean))].sort().reverse();
   const fy = req.query.fy && req.query.fy !== 'all' ? req.query.fy : null;
-  res.json({ fys, jobs: fy ? jobs.filter(j => j.fy === fy) : jobs });
+  const list = fy ? jobs.filter(j => j.fy === fy) : jobs;
+  const totSell = list.reduce((a, j) => a + j.sellExGst, 0);
+  const totCost = list.reduce((a, j) => a + (j.projectedCost || 0), 0);
+  const totOh = list.reduce((a, j) => a + (j.ohAllocated || 0), 0);
+  res.json({ fys, jobs: list, overheadDailyRate: Math.round(ohDaily),
+    summary: { grossPct: totSell > 0 ? Math.round((totSell - totCost) / totSell * 1000) / 10 : 0,
+      overhead: Math.round(totOh),
+      netPct: totSell > 0 ? Math.round((totSell - totCost - totOh) / totSell * 1000) / 10 : 0 } });
 });
 // Year-end: totals for an FY + overheads -> NET margin. Gross margin figures throughout are pre-overheads.
 router.get('/yearend/:fy', (req, res) => {

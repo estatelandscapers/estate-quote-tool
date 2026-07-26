@@ -2,7 +2,7 @@
 const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId } = require('../utils/ids');
-const { TIERS, resolveItem, lineTotal, surchargeAmount } = require('../utils/pricing');
+const { TIERS, resolveItem, lineTotal, surchargeAmount, surchargeList } = require('../utils/pricing');
 const { sendMail } = require('../utils/email');
 const { buildSignedPdf } = require('../utils/signedPdf');
 const { costQuote } = require('../utils/costing');
@@ -28,12 +28,15 @@ function clientView(q) {
     const anyR = resolveItem(it, pi, 'Standard');
     const row = {
       code: anyR.code, name: anyR.name, unit: anyR.unit, behaviour: anyR.behaviour,
+      description: it.desc_override || (pi ? pi.description : '') || '',
       qty: it.qty, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct, perTier, tierOverride: it.tier_override || null,
+      changes: (() => { const a = perTier.Basic, b = perTier.Premium; return a.spec !== b.spec || a.price !== b.price; })(),
+      alternates: (() => { const o = {}; TIERS.forEach(t => o[t] = perTier[t].spec); return o; })(),
     };
     if (it.scope === 2) { s2 += perTier.Standard.price; scope2.push(row); }
     else { TIERS.forEach(t => tierTotals[t] += perTier[t].price); scope1.push(row); }
   });
-  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, tierTotals[t]));
+  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, tierTotals[t] + s2));
 
   return {
     quoteNumber: q.quote_number, projectTitle: q.project_title, client: q.client_name, address: q.address,
@@ -43,7 +46,7 @@ function clientView(q) {
     mixed: (() => { try { const c = costQuote(q); return c.mixed ? { base: c.base, changes: c.changes.map(x => ({ code: x.code, name: x.name, to: x.to, delta: Math.round(x.delta), up: x.up })), sellExGst: Math.round(c.selected.sell) } : null; } catch { return null; } })(),
     paymentScheduleText: settingGet(q.payment_schedule === 'small' ? 'pay_sched_small' : 'pay_sched_standard'),
     siteNotes: q.site_notes, hasSiteplan: !!q.siteplan_data,
-    surcharges: applied.map(s => ({ name: s.name, kind: s.kind, rate: s.rate })),
+    surcharges: surchargeList(applied),
     surchargePerTier: surPerTier,
     scope1, scope2, tierTotals, scope2Total: s2,
     company: {
@@ -93,18 +96,18 @@ function pdfPayload(q, tier) {
   (cv.scope1 || []).forEach(d => {
     const lt = (cv.mixed && d.tierOverride) ? d.tierOverride : acc;
     const pt = d.perTier[lt] || d.perTier[acc];
-    deliverables.push({ code: d.code, name: d.name, spec: pt.spec, qty: d.qty, unit: d.unit,
-      price: pt.price, showQty: d.behaviour === 'remeasurable' });
+    deliverables.push({ code: d.code, name: d.name, spec: pt.spec, description: d.description,
+      qty: d.qty, unit: d.unit, price: pt.price, showQty: d.behaviour === 'remeasurable' });
   });
   (cv.scope2 || []).forEach(d => {
     const pt = d.perTier[acc];
     deliverables.push({ code: d.code, name: d.name + ' (remeasurable — cost + 15%)', spec: pt.spec,
-      qty: d.qty, unit: d.unit, price: pt.price, showQty: true });
+      description: d.description, qty: d.qty, unit: d.unit, price: pt.price, showQty: true });
   });
-  (cv.surcharges || []).forEach(s => {
-    deliverables.push({ code: 'SC', name: 'Site condition — ' + s.name, spec: '', qty: 1, unit: '', price: 0, showQty: false });
-  });
-  return { deliverables, payment: cv.paymentScheduleText || '',
+  // Site-specific surcharges: their own coded section (SS1, SS2...), separate from Scope 2
+  const surcharges = (cv.surcharges || []).map(s => ({ code: s.code, name: s.name,
+    detail: s.kind === 'percent' ? `+${s.rate}% of works subtotal` : `+$${Number(s.rate).toLocaleString()} fixed` }));
+  return { deliverables, surcharges, payment: cv.paymentScheduleText || '',
     sitePlan: q.siteplan_data ? { data: q.siteplan_data } : null };
 }
 

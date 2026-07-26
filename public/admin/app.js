@@ -10,7 +10,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', matCat: 'all', recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', matCat: 'material', recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -23,7 +23,7 @@ async function boot() {
 }
 function shell() {
   // Order: Leads | Quotes Pricing Recipes Vendors Editor | Projects Purchase Orders
-  const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Materials & Plant'],
+  const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
                ['recipes', 'Recipes'], ['vendors', 'Vendors'], ['editor', 'Editor'],
                ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders']];
   const adminOnlyTabs = ['editor', 'jobs', 'selections', 'po'];
@@ -69,8 +69,8 @@ async function leadsTab(v) {
   $('#addLead').addEventListener('click', () => editLead(null, v));
   const data = await api('/leads');
   const rows = data.leads || [];
-  $('#leadTable').innerHTML = rows.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th>Site</th><th>Source</th><th>Age</th><th>Status</th><th>Quote</th><th></th></tr></thead><tbody>
-    ${rows.map(l => `<tr><td><b>${esc(l.name || '—')}</b>${l.notes ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.notes.slice(0, 60))}</span>` : ''}</td>
+  $('#leadTable').innerHTML = rows.length ? `<table class="resp"><thead><tr><th>Name</th><th>Contact</th><th>Site</th><th>Source</th><th>Age</th><th>Status</th><th>Quote</th><th></th></tr></thead><tbody>
+    ${rows.map(l => `<tr><td data-l="Name"><b>${esc(l.name || '—')}</b>${l.notes ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.notes.slice(0, 60))}</span>` : ''}</td>
       <td>${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
       <td>${esc(l.address || '')}</td><td>${esc(l.source || '')}</td>
       <td><span class="tag ${l.ageDays >= 7 ? 'age-flag' : 'age-fresh'}">${l.ageDays}d</span></td>
@@ -350,6 +350,8 @@ async function quoteEditor(v) {
         <td><b>${esc(it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
         <td>${esc(it.name)}
           ${behav ? `<br><span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${behav}</span>` : ''}
+          <textarea data-desc="${it.id}" rows="2" placeholder="Scope description shown to the client…" style="font-size:10.5px;margin-top:4px;width:100%;">${esc(it.description || '')}</textarea>
+          ${it.descIsCustom ? '<span class="muted" style="font-size:9.5px;">edited for this quote</span>' : ''}
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;align-items:center;">
             <select data-method="${it.id}" style="width:104px;font-size:10.5px;" title="How this deliverable is done">
               <option value="" ${!it.method ? 'selected' : ''}>Default</option>
@@ -385,6 +387,10 @@ async function quoteEditor(v) {
     v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
     v.querySelectorAll('[data-method]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.method}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: s.value || null }) }); reload(); }));
     v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); toast('Wastage updated'); }));
+    v.querySelectorAll('[data-desc]').forEach(t => t.addEventListener('change', async () => {
+      await api(`/quotes/${q.id}/items/${t.dataset.desc}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: t.value }) });
+      toast('Description saved');
+    }));
     v.querySelectorAll('[data-subdays]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.subdays}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subDays: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); }));
   }
 
@@ -438,7 +444,7 @@ async function jobsTab(v) {
   const fys = data.fys || [];
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>Jobs won — register</h2><div class="sub">Quoted vs ACTUAL gross margin. Actuals come from the final (edited) PO for each job. Net margin is a year-end figure after overheads.</div></div>
+      <div><h2>Projects</h2><div class="sub"><b>Forecast</b> = the locked Selections plan. <b>Cost to date</b> = lines actually delivered or invoiced. <b>Projected final</b> = landed + committed + still-to-come at plan rates — the honest "where will this end up". Drift compares projected against forecast.</div></div>
       <div style="display:flex;gap:10px;align-items:flex-end;">
         <label style="font-size:11px;display:flex;align-items:center;gap:7px;padding-bottom:8px;"><input type="checkbox" id="gstTog" ${state.incGst ? 'checked' : ''} style="width:auto;"> Show inc. GST</label>
         <div class="field" style="margin:0;"><label>Financial year</label><select id="fySel"><option value="all">All years</option>${fys.map(f => `<option value="${f}" ${state.jobsFy === f ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
@@ -446,18 +452,26 @@ async function jobsTab(v) {
     </div>
     <div class="rule"></div>
     <div class="legend" style="margin-bottom:6px;">Showing <b>${state.incGst ? 'INCLUDING' : 'EXCLUDING'} GST</b>. Margins are calculated ex-GST either way.</div>
-    <table><thead><tr><th>Quote</th><th>Client</th><th>FY</th><th>Package</th><th class="right">Sell ${state.incGst ? 'inc' : 'ex'} GST</th><th class="right">Quoted cost</th><th class="right">Quoted GM</th><th class="right">Actual cost (final PO)</th><th class="right">Actual GM</th><th>Status</th><th></th></tr></thead><tbody>
+    <table class="resp"><thead><tr><th>Quote</th><th>Client</th><th>FY</th><th>Package</th><th class="right">Sell ${state.incGst ? 'inc' : 'ex'} GST</th><th class="right">Forecast cost</th><th class="right">Forecast GM</th><th class="right">Cost to date</th><th class="right">Projected final</th><th class="right">Projected GM</th><th>Drift</th><th>Status</th><th></th></tr></thead><tbody>
     ${(data.jobs || []).map(jb => {
-      const aC = jb.actualGMPct == null ? 'var(--grey)' : (jb.actualGMPct >= jb.quotedGMPct ? 'var(--green)' : 'var(--red)');
-      return `<tr><td><b>${esc(jb.quoteNumber)}</b></td><td>${esc(jb.client || '')}</td><td>${esc(jb.fy || '')}</td><td>${esc(jb.tier || '')}${jb.mixed ? ' <span class="tag t-up">mixed</span>' : ''}</td>
-      <td class="right">${money(jb.sellExGst * (state.incGst ? 1.1 : 1))}</td><td class="right">${money(jb.quotedCost * (state.incGst ? 1.1 : 1))}</td>
-      <td class="right"><b>${money(jb.quotedGM)} · ${jb.quotedGMPct}%</b></td>
-      <td class="right">${jb.actualCost != null ? money(jb.actualCost * (state.incGst ? 1.1 : 1)) : '—'}</td>
-      <td class="right"><b style="color:${aC};">${jb.actualGM != null ? money(jb.actualGM) + ' · ' + jb.actualGMPct + '%' : '—'}</b></td>
+      return `<tr><td data-l="Quote"><b>${esc(jb.quoteNumber)}</b></td><td data-l="Client">${esc(jb.client || '')}</td><td data-l="FY">${esc(jb.fy || '')}</td><td>${esc(jb.tier || '')}${jb.mixed ? ' <span class="tag t-up">mixed</span>' : ''}</td>
+      <td class="right">${money(jb.sellExGst * (state.incGst ? 1.1 : 1))}</td>
+      <td class="right">${jb.forecastCost != null ? money(jb.forecastCost * (state.incGst ? 1.1 : 1)) : '—'}</td>
+      <td class="right"><b>${jb.forecastGMPct != null ? jb.forecastGMPct + '%' : '—'}</b></td>
+      <td class="right">${jb.costToDate != null ? money(jb.costToDate * (state.incGst ? 1.1 : 1)) + (jb.spentPct ? ` <span class="muted">(${jb.spentPct}%)</span>` : '') : '—'}${jb.committed ? `<br><span class="muted" style="font-size:10px;" title="Ordered but not yet delivered">+${money(jb.committed)} committed</span>` : ''}</td>
+      <td class="right">${jb.projectedCost != null ? money(jb.projectedCost * (state.incGst ? 1.1 : 1)) : '—'}</td>
+      <td class="right"><b style="color:${jb.projectedGMPct == null ? 'var(--grey)' : jb.projectedGMPct >= (jb.forecastGMPct || 0) ? 'var(--green)' : 'var(--red)'};">${jb.projectedGMPct != null ? jb.projectedGMPct + '%' : '—'}</b></td>
+      <td>${jb.driftPts == null ? '<span class="muted">—</span>' : `<span class="tag ${jb.driftPts >= 0 ? 'tag-accepted' : 'tag-superseded'}">${jb.driftPts > 0 ? '+' : ''}${jb.driftPts} pts</span>`}</td>
       <td><span class="tag ${jb.jobStatus === 'complete' ? 'tag-closed' : 'tag-open'}">${jb.jobStatus}</span></td>
       <td class="right">${jb.poId ? `<button class="btn btn-ghost btn-sm" data-po="${jb.poId}">PO</button>` : ''}</td></tr>`;
-    }).join('') || '<tr><td colspan="11" class="muted">No jobs won yet.</td></tr>'}</tbody></table>
-    <div class="legend">All figures here are <b>GROSS margin</b> (before overheads). Edit a job's PO to update its actual cost.</div>
+    }).join('') || '<tr><td colspan="12" class="muted">No jobs won yet.</td></tr>'}</tbody></table>
+    <div class="grid4" style="margin-top:12px;">
+      <div class="stat"><div class="k">Gross margin (before overheads)</div><div class="v">${(data.summary || {}).grossPct || 0}%</div></div>
+      <div class="stat"><div class="k">Overhead allocated</div><div class="v">${money((data.summary || {}).overhead || 0)}</div><div style="font-size:10px;color:#999;">${money(data.overheadDailyRate || 0)} per crew-day</div></div>
+      <div class="stat hero"><div class="k">Net-of-overhead margin</div><div class="v">${(data.summary || {}).netPct || 0}%</div></div>
+      <div class="stat"><div class="k">Jobs shown</div><div class="v">${(data.jobs || []).length}</div></div>
+    </div>
+    <div class="legend">Gross margin is before overheads. The net figure allocates business overheads (supervisor, office, vehicles, insurances — not site labour) by crew-days. Year-end close still uses your real annual figures.</div>
   </div>
   <div class="card"><h2>Year-end close — net margin</h2><div class="sub">Enter the year's overheads (office, insurance, vehicles…) once actual costs are known, then close the year.</div><div class="rule"></div>
     <div id="yearend">${fys.length ? '' : '<p class="muted">No completed financial years yet.</p>'}</div></div>`;
@@ -619,7 +633,7 @@ async function poEditor(v) {
 async function vendorsTab(v) {
   const list = await api('/vendors');
   v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Vendors</h2><div class="sub">One combined list — tag each Supplier, Subcontractor or both. Compliance fields appear for subcontractors.</div></div><button class="btn btn-blue" id="addV">+ Add vendor</button></div><div class="rule"></div>
-  <table><thead><tr><th>Vendor</th><th>Type</th><th>Area</th><th>Contact</th><th>Terms</th><th>Compliance</th><th>Materials</th><th></th></tr></thead><tbody>
+  <table class="resp"><thead><tr><th>Vendor</th><th>Type</th><th>Area</th><th>Contact</th><th>Terms</th><th>Compliance</th><th>Materials</th><th></th></tr></thead><tbody>
   ${list.map(x => `<tr><td><b>${esc(x.name)}</b></td>
     <td>${x.isSupplier ? '<span class="tag t-sup">Supplier</span>' : ''} ${x.isSubcontractor ? '<span class="tag t-subv">Subcontractor</span>' : ''}</td>
     <td>${esc(x.area || '')}</td><td>${esc(x.contact || '')} ${esc(x.phone || '')}</td><td>${esc(x.terms || '')}</td>
@@ -682,69 +696,120 @@ async function vendorsTab(v) {
   }
 }
 
-// ---------------- MATERIALS & PLANT ----------------
+// ---------------- COSTS (Materials · Plant · Overheads) ----------------
 async function materialsTab(v) {
   const [mats, vendors] = await Promise.all([api('/materials'), api('/vendors')]);
-  const cat = state.matCat || 'all';
-  const rows = mats.filter(m => cat === 'all' || m.category === cat);
+  const cat = state.matCat || 'material';
+  const rows = mats.filter(m => m.category === cat);
+  const isOh = cat === 'overhead';
+  const wdm = 21;
+  const ohTotal = mats.filter(m => m.category === 'overhead').reduce((a, m) => a + (m.monthlyCost || 0), 0);
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>Materials &amp; Plant</h2><div class="sub">The master list. Each item has a default vendor; recipes reference these items, so a price change flows everywhere at once.</div></div>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <div class="seg" id="matSeg"><button data-v="all" class="${cat === 'all' ? 'on' : ''}">All</button><button data-v="material" class="${cat === 'material' ? 'on' : ''}">Materials</button><button data-v="plant" class="${cat === 'plant' ? 'on' : ''}">Plant</button></div>
-        ${isAdmin() ? '<button class="btn btn-blue" id="addMat">+ Add item</button>' : ''}</div>
-    </div><div class="rule"></div>
-    <table><thead><tr><th>Item</th><th>Type</th><th>Unit</th><th>Default vendor</th>${isAdmin() ? '<th class="right">Cost</th>' : ''}<th>Used in recipes</th><th></th></tr></thead><tbody>
-    ${rows.map(m => `<tr><td><b>${esc(m.name)}</b></td>
-      <td><span class="tag ${m.category === 'plant' ? 't-plantm' : 't-matm'}">${m.category}</span></td><td>${esc(m.unit || '')}</td>
-      <td>${m.defaultVendor ? esc(m.defaultVendor) : '<span class="tag tag-superseded">none set</span>'}</td>
-      ${isAdmin() ? `<td class="right">${money2(m.defaultCost || 0)}</td>` : ''}
-      <td>${m.usedIn.length ? m.usedIn.map(u => `<span class="tag t-def">${esc(u)}</span>`).join(' ') : '<span class="muted">not used</span>'}</td>
-      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-em="${m.id}">Open</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No items.</td></tr>'}
-    </tbody></table></div><div id="matDetail"></div>`;
+      <div><h2>Costs</h2><div class="sub">Materials, plant and business overheads. Every item is coded and linked to vendors and recipes — change a price once and it flows everywhere.</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        ${isAdmin() ? `<a class="btn btn-ghost btn-sm" href="/api/materials/export.xlsx" style="text-decoration:none;display:inline-block;">⬇ Excel</a>
+        <button class="btn btn-ghost btn-sm" id="upXl">⬆ Upload Excel</button>
+        <input type="file" id="xlFile" accept=".xlsx" style="display:none;">` : ''}
+        ${isAdmin() ? '<button class="btn btn-blue btn-sm" id="addMat">+ Add item</button>' : ''}</div>
+    </div>
+    <div class="seg" id="matSeg" style="margin:4px 0 10px;">
+      <button data-v="material" class="${cat === 'material' ? 'on' : ''}">Materials</button>
+      <button data-v="plant" class="${cat === 'plant' ? 'on' : ''}">Plant</button>
+      <button data-v="overhead" class="${cat === 'overhead' ? 'on' : ''}">Overheads</button>
+    </div>
+    <div class="rule"></div>
+    ${isOh ? `<div class="legend" style="margin:0 0 10px;">Business overheads only — supervisor and office staff, vehicles, insurances and the like. <b>Not</b> direct site labour, which is already costed through crew hours in recipes. Enter the monthly figure; the tool spreads it across ${wdm} working days and allocates it to jobs by the days they take.</div>` : ''}
+    <table class="resp"><thead><tr><th>Code</th><th>Item</th><th>Unit</th>${isOh ? '<th class="right">Monthly cost</th><th class="right">Per crew-day</th>' : `<th>Default vendor</th>${isAdmin() ? '<th class="right">Cost</th>' : ''}`}<th>Used in</th><th></th></tr></thead><tbody>
+    ${rows.map(m => `<tr><td data-l="Code"><b>${esc(m.code)}</b></td><td data-l="Item">${esc(m.name)}</td><td data-l="Unit">${esc(m.unit || '')}</td>
+      ${isOh ? `<td class="right">${isAdmin() ? `<input type="number" step="10" value="${m.monthlyCost || 0}" data-ohc="${m.id}" style="width:100px;text-align:right;">` : money(m.monthlyCost || 0)}</td>
+                <td class="right muted">${money2((m.monthlyCost || 0) / wdm)}</td>`
+             : `<td>${m.defaultVendor ? `<span class="muted">${esc(m.defaultVendorCode || '')}</span> ${esc(m.defaultVendor)}` : '<span class="tag tag-superseded">none set</span>'}</td>
+                ${isAdmin() ? `<td class="right">${money2(m.defaultCost || 0)}</td>` : ''}`}
+      <td>${m.usedIn.length ? m.usedIn.map(u => `<span class="tag t-def">${esc(u)}</span>`).join(' ') : '<span class="muted">—</span>'}</td>
+      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-em="${m.id}">Open</button>` : ''}</td></tr>`).join('') || `<tr><td colspan="7" class="muted">No ${cat} items yet.</td></tr>`}
+    </tbody></table>
+    ${isOh ? `<div class="grid3" style="margin-top:12px;">
+      <div class="stat"><div class="k">Total monthly overheads</div><div class="v">${money(ohTotal)}</div></div>
+      <div class="stat"><div class="k">Working days / month</div><div class="v">${wdm}</div></div>
+      <div class="stat hero"><div class="k">Allocated per crew-day</div><div class="v">${money2(ohTotal / wdm)}</div></div>
+    </div>
+    <div class="legend">A job needing 6.8 crew-days carries ${money((ohTotal / wdm) * 6.8)} of overhead — that's what turns gross margin into the net-of-overhead figure in Projects. Items referenced directly by a recipe (like PL) are excluded from this pool so they aren't counted twice.</div>` : ''}
+    </div><div id="matDetail"></div><div id="xlPreview"></div>`;
   $('#matSeg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.matCat = b.dataset.v; materialsTab(v); }));
+  v.querySelectorAll('[data-ohc]').forEach(i => i.addEventListener('change', async () => {
+    await api('/materials/' + i.dataset.ohc, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ monthlyCost: parseFloat(i.value) || 0 }) });
+    toast('Overhead updated'); materialsTab(v);
+  }));
   const add = $('#addMat'); if (add) add.addEventListener('click', async () => {
-    const r = await api('/materials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New item', category: cat === 'plant' ? 'plant' : 'material' }) });
-    await materialsTab(v); openMat(r.id);
+    const r = await api('/materials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New item', category: cat }) });
+    await materialsTab(v); if (cat !== 'overhead') openMat(r.id);
   });
+  const up = $('#upXl'); if (up) {
+    up.addEventListener('click', () => $('#xlFile').click());
+    $('#xlFile').addEventListener('change', async e => {
+      const f = e.target.files[0]; if (!f) return;
+      const buf = await f.arrayBuffer();
+      const pv = await fetch('/api/materials/import?dryRun=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buf }).then(r => r.json());
+      $('#xlPreview').innerHTML = `<div class="card"><h2>Review changes before saving</h2>
+        <div class="sub">Nothing has been saved yet. ${pv.changes.length} change(s) found${pv.errors.length ? `, ${pv.errors.length} problem(s)` : ''}.</div><div class="rule"></div>
+        ${pv.errors.length ? `<div class="emailbar failed">${pv.errors.map(esc).join('<br>')}</div>` : ''}
+        ${pv.changes.length ? `<table><thead><tr><th>Change</th><th>Code</th><th>Item</th><th>Vendor</th><th class="right">From</th><th class="right">To</th></tr></thead><tbody>
+        ${pv.changes.map(c => `<tr><td>${esc(c.type.replace(/-/g, ' '))}</td><td><b>${esc(c.code || '')}</b></td><td>${esc(c.item || '')}</td><td>${esc(c.vendor || '')}</td>
+          <td class="right muted">${c.from !== undefined ? money2(c.from) : '—'}</td><td class="right"><b>${c.to !== undefined ? money2(c.to) : '—'}</b></td></tr>`).join('')}
+        </tbody></table>` : '<p class="muted">Nothing to change — the file matches what\'s already here.</p>'}
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+          <button class="btn btn-ghost" id="xlCancel">Cancel</button>
+          ${pv.changes.length ? '<button class="btn btn-blue" id="xlApply">Apply these changes</button>' : ''}</div></div>`;
+      $('#xlPreview').scrollIntoView({ behavior: 'smooth' });
+      $('#xlCancel').addEventListener('click', () => { $('#xlPreview').innerHTML = ''; $('#xlFile').value = ''; });
+      const ap = $('#xlApply'); if (ap) ap.addEventListener('click', async () => {
+        const r = await fetch('/api/materials/import', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buf }).then(x => x.json());
+        toast(r.applied + ' change(s) applied'); $('#xlFile').value = ''; materialsTab(v);
+      });
+    });
+  }
   v.querySelectorAll('[data-em]').forEach(b => b.addEventListener('click', () => openMat(b.dataset.em)));
   async function openMat(id) {
     const all = await api('/materials'); const m = all.find(x => x.id === id); if (!m) return;
-    $('#matDetail').innerHTML = `<div class="card"><h2>${esc(m.name)}</h2><div class="rule"></div>
+    $('#matDetail').innerHTML = `<div class="card"><h2>${esc(m.code)} — ${esc(m.name)}</h2><div class="rule"></div>
       <div class="grid4">
         <div class="field"><label>Name</label><input id="m_name" value="${esc(m.name)}"></div>
         <div class="field"><label>Unit</label><input id="m_unit" value="${esc(m.unit || '')}"></div>
-        <div class="field"><label>Type</label><select id="m_cat"><option value="material" ${m.category === 'material' ? 'selected' : ''}>Material</option><option value="plant" ${m.category === 'plant' ? 'selected' : ''}>Plant</option></select></div>
-        <div class="field"><label>Default vendor</label><select id="m_def"><option value="">— none —</option>${(m.vendors || []).map(x => `<option value="${x.vendorId}" ${x.isDefault ? 'selected' : ''}>${esc(x.vendor)}</option>`).join('')}</select></div>
+        <div class="field"><label>Type</label><select id="m_cat"><option value="material" ${m.category === 'material' ? 'selected' : ''}>Material</option><option value="plant" ${m.category === 'plant' ? 'selected' : ''}>Plant</option><option value="overhead" ${m.category === 'overhead' ? 'selected' : ''}>Overhead</option></select></div>
+        ${m.category === 'overhead'
+          ? `<div class="field"><label>Monthly cost $</label><input id="m_mc" type="number" step="10" value="${m.monthlyCost || 0}"></div>`
+          : `<div class="field"><label>Default vendor</label><select id="m_def"><option value="">— none —</option>${(m.vendors || []).map(x => `<option value="${x.vendorId}" ${x.isDefault ? 'selected' : ''}>${esc(x.vendorCode || '')} ${esc(x.vendor)}</option>`).join('')}</select></div>`}
       </div>
       <button class="btn btn-blue" id="m_save">Save item</button>
-      <div class="rule" style="margin-top:16px;"></div>
+      ${m.category !== 'overhead' ? `<div class="rule" style="margin-top:16px;"></div>
       <h2 style="font-size:12px;">Vendors &amp; prices</h2>
-      <div class="sub">Add alternates so you can switch on proximity, price or availability — at quote time or at Selections.</div>
-      <table><thead><tr><th>Vendor</th><th class="right">Cost</th><th>Delivery rule</th><th>Review by</th><th>Default</th><th></th></tr></thead><tbody>
-      ${(m.vendors || []).map(x => `<tr><td><b>${esc(x.vendor)}</b></td>
+      <div class="sub">Alternates let you switch on proximity, price or availability — at quote time or at Selections.</div>
+      <table><thead><tr><th>Code</th><th>Vendor</th><th class="right">Cost</th><th>Delivery rule</th><th>Review by</th><th>Default</th><th></th></tr></thead><tbody>
+      ${(m.vendors || []).map(x => `<tr><td><b>${esc(x.code)}</b></td><td>${esc(x.vendor)}</td>
         <td class="right"><input type="number" step="0.01" value="${x.cost}" data-mvc="${x.id}" style="width:90px;text-align:right;"></td>
-        <td><input value="${esc(x.deliveryRule || '')}" data-mvd="${x.id}" placeholder="e.g. $180/load, free over $1k"></td>
-        <td><input type="date" value="${esc(x.reviewBy || '')}" data-mvr="${x.id}" style="width:135px;"> ${x.reviewBy && x.reviewBy < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">stale</span>' : ''}</td>
+        <td><input value="${esc(x.deliveryRule || '')}" data-mvd="${x.id}" placeholder="e.g. $180/load"></td>
+        <td><input type="date" value="${esc(x.reviewBy || '')}" data-mvr="${x.id}" style="width:135px;"></td>
         <td>${x.isDefault ? '<span class="tag tag-accepted">Default</span>' : `<button class="btn btn-ghost btn-sm" data-mvdef="${x.id}">Make default</button>`}</td>
         <td class="right"><button class="btn btn-danger btn-sm" data-mvdel="${x.id}">✕</button></td></tr>`).join('')}
       </tbody></table>
       <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-        <select id="m_newv" style="max-width:220px;"><option value="">+ Add a vendor for this item…</option>${vendors.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
+        <select id="m_newv" style="max-width:220px;"><option value="">+ Add a vendor for this item…</option>${vendors.map(x => `<option value="${x.id}">${esc(x.code || '')} ${esc(x.name)}</option>`).join('')}</select>
         <input id="m_newc" type="number" step="0.01" placeholder="cost" style="width:100px;">
         <button class="btn btn-ghost btn-sm" id="m_addv">Add</button>
-      </div>
-      <div class="legend">Used in: ${m.usedIn.length ? m.usedIn.join(', ') : 'no recipes yet'}. Items in use can\'t be deleted.</div>
+      </div>` : ''}
+      <div class="legend">Used in: ${m.usedIn.length ? m.usedIn.join(', ') : 'no recipes yet'}.</div>
     </div>`;
     $('#m_save').addEventListener('click', async () => {
-      await api('/materials/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: $('#m_name').value, unit: $('#m_unit').value, category: $('#m_cat').value, defaultVendorId: $('#m_def').value || null }) });
+      const body = { name: $('#m_name').value, unit: $('#m_unit').value, category: $('#m_cat').value };
+      if ($('#m_mc')) body.monthlyCost = parseFloat($('#m_mc').value) || 0;
+      if ($('#m_def')) body.defaultVendorId = $('#m_def').value || null;
+      await api('/materials/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       toast('Saved'); materialsTab(v);
     });
-    $('#m_addv').addEventListener('click', async () => {
+    const av = $('#m_addv'); if (av) av.addEventListener('click', async () => {
       if (!$('#m_newv').value) return;
-      await api(`/materials/${id}/vendors`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vendorId: $('#m_newv').value, cost: parseFloat($('#m_newc').value) || 0 }) });
+      await api(`/materials/${id}/vendors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vendorId: $('#m_newv').value, cost: parseFloat($('#m_newc').value) || 0 }) });
       openMat(id);
     });
     const upd = (mvId, body) => api(`/materials/${id}/vendors/${mvId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -793,6 +858,12 @@ async function recipesTab(v) {
       if (c.kind === 'labour') return `<tr><td><span class="tag t-in">Our labour</span></td><td class="muted">Own crew · person-hrs per ${esc(cur.unit)}</td><td>—</td><td>—</td>
         ${['Basic', 'Standard', 'Premium'].map(t => `<td class="center"><input type="number" step="0.01" value="${c.hrs[t] || 0}" data-rh="${R.id}|${c.id}|${t}" style="width:70px;text-align:center;"></td>`).join('')}
         <td>—</td><td class="right"><button class="btn btn-danger btn-sm" data-rcdel="${R.id}|${c.id}">✕</button></td></tr>`;
+      if (c.kind === 'overhead') return `<tr><td><span class="tag t-oh">Overhead</span></td>
+        <td><select data-rmm="${R.id}|${c.id}">${matOpts(c.materialId)}</select><br><span class="muted" style="font-size:10px;">from Costs → Overheads</span></td>
+        <td><input type="number" step="0.1" value="${c.ratio}" data-rr="${R.id}|${c.id}" style="width:74px;" title="crew-days this deliverable occupies"></td>
+        <td class="muted">days</td>
+        <td class="center muted" colspan="3">${isAdmin() ? money2(c.unitCost || 0) + ' / day' : '—'}</td>
+        <td>—</td><td class="right"><button class="btn btn-danger btn-sm" data-rcdel="${R.id}|${c.id}">✕</button></td></tr>`;
       if (c.kind === 'sub') return `<tr><td><span class="tag t-subv">Subcontractor</span></td>
         <td><input value="${esc(c.label || '')}" data-rl="${R.id}|${c.id}" style="min-width:130px;">
           <select data-rv="${R.id}|${c.id}" style="margin-top:3px;font-size:10.5px;"><option value="">— vendor —</option>${vendors.map(x => `<option value="${x.id}" ${c.vendorId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
@@ -819,6 +890,7 @@ async function recipesTab(v) {
       <button class="btn btn-ghost btn-sm" data-addc="plant">+ Plant</button>
       <button class="btn btn-ghost btn-sm" data-addc="labour">+ Our labour</button>
       <button class="btn btn-ghost btn-sm" data-addc="sub">+ Subcontractor</button>
+      <button class="btn btn-ghost btn-sm" data-addc="overhead">+ Overhead</button>
       <button class="btn btn-danger btn-sm" id="delRec" style="margin-left:auto;">Delete this recipe</button></div>` : ''}
     <div class="legend">Material prices come from the library — change one there and every recipe using it follows. Wastage here is the standard; each quote can override it for odd-shaped sites.</div>`;
   const rput = (rid, body) => api('/recipes/' + rid, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -850,7 +922,7 @@ async function selectionsTab(v) {
   const rows = await api('/selections');
   v.innerHTML = `<div class="card"><h2>Selections</h2>
     <div class="sub">Every won job lands here first. Confirm how each deliverable will actually be done and who supplies it — then lock it and the PO is raised from those decisions.</div><div class="rule"></div>
-    <table><thead><tr><th>Quote</th><th>Client / site</th><th>Package</th><th>Stage</th><th>PO</th><th></th></tr></thead><tbody>
+    <table class="resp"><thead><tr><th>Quote</th><th>Client / site</th><th>Package</th><th>Stage</th><th>PO</th><th></th></tr></thead><tbody>
     ${rows.map(r => `<tr><td><b>${esc(r.quoteNumber)}</b></td><td>${esc(r.client || '')}<br><span class="muted" style="font-size:10.5px;">${esc(r.address || '')}</span></td>
       <td>${esc(r.acceptedPackage || '')}</td>
       <td><span class="tag ${r.locked ? 'tag-accepted' : 'tag-incomplete'}">${esc(r.stage)}</span></td>
@@ -893,6 +965,7 @@ async function selectionDetail(v) {
   v.querySelectorAll('[data-sm]').forEach(s => s.addEventListener('change', () => put(s.dataset.sm, { method: s.value })));
   v.querySelectorAll('[data-sv]').forEach(s => s.addEventListener('change', () => put(s.dataset.sv, { vendorId: s.value || null })));
   v.querySelectorAll('[data-sd]').forEach(i => i.addEventListener('change', () => put(i.dataset.sd, { subDays: i.value === '' ? null : parseFloat(i.value) })));
+  v.querySelectorAll('[data-sdesc]').forEach(t => t.addEventListener('change', () => put(t.dataset.sdesc, { description: t.value })));
   const lock = $('#lockSel'); if (lock) lock.addEventListener('click', async () => {
     if (!confirm('Lock these selections and raise the PO?')) return;
     const r = await api(`/selections/${state.selQuoteId}/lock`, { method: 'POST' });
@@ -907,7 +980,7 @@ async function pricingSheet(v) {
   const items = await api('/price-list');
   const canEdit = isAdmin();
   v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Standard Pricing Sheet</h2><div class="sub">Sell rates. Editing never changes quotes already built (rate-locked).</div></div>${canEdit ? '<button class="btn btn-blue" id="addItem">+ Add deliverable</button>' : ''}</div><div class="rule"></div>
-    <table><thead><tr><th>Code</th><th>Item</th><th>Unit</th><th>Basic</th><th>Standard</th><th>Premium</th><th>Flag</th><th></th></tr></thead><tbody>
+    <table class="resp"><thead><tr><th>Code</th><th>Item</th><th>Unit</th><th>Basic</th><th>Standard</th><th>Premium</th><th>Flag</th><th></th></tr></thead><tbody>
     ${items.map(p => `<tr><td><b>${esc(p.code)}</b></td><td>${esc(p.name)}</td><td>${esc(p.unit)}</td>
       <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Basic.spec)}</span><br>${money(p.tiers.Basic.sell)}</td>
       <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Standard.spec)}</span><br>${money(p.tiers.Standard.sell)}</td>
@@ -922,12 +995,15 @@ function editPriceItem(item) {
   bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${item ? 'Edit' : 'Add'} deliverable</h2>
     <div class="grid3"><div class="field"><label>Code</label><input id="p_code" value="${esc(item?.code || '')}"></div><div class="field"><label>Unit</label><input id="p_unit" value="${esc(item?.unit || 'ea')}"></div><div class="field"><label>Behaviour</label><select id="p_behav">${Object.entries(BEHAV).map(([k, val]) => `<option value="${k}" ${item?.behaviour === k ? 'selected' : ''}>${val || 'Standard'}</option>`).join('')}</select></div></div>
     <div class="field"><label>Name</label><input id="p_name" value="${esc(item?.name || '')}"></div>
+    <div class="field"><label>Scope description — shown to the client, on the contract and the site PO</label>
+      <textarea id="p_desc" rows="3" placeholder="e.g. Supply and install turf to prepared areas including underlay sand, starter fertiliser and consolidation.">${esc(item?.description || '')}</textarea>
+      <span class="muted" style="font-size:10px;">This is the default. It can be tailored per quote in the builder, and again at Selections for the site team.</span></div>
     ${TIERS.map(tt => `<div class="grid2"><div class="field"><label>${tt} spec</label><input id="p_${tt}_spec" value="${esc(t[tt].spec || '')}"></div><div class="field"><label>${tt} sell $</label><input id="p_${tt}_sell" type="number" value="${t[tt].sell || 0}"></div></div>`).join('')}
     <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px;">${item ? '<button class="btn btn-danger" id="p_del">Delete</button>' : '<span></span>'}<div style="display:flex;gap:8px;"><button class="btn btn-ghost" id="p_cancel">Cancel</button><button class="btn btn-blue" id="p_save">Save</button></div></div></div>`;
   document.body.appendChild(bg);
   $('#p_cancel').addEventListener('click', () => bg.remove());
   $('#p_save').addEventListener('click', async () => {
-    const body = { code: $('#p_code').value, name: $('#p_name').value, unit: $('#p_unit').value, behaviour: $('#p_behav').value, tiers: { Basic: { spec: $('#p_Basic_spec').value, sell: +$('#p_Basic_sell').value }, Standard: { spec: $('#p_Standard_spec').value, sell: +$('#p_Standard_sell').value }, Premium: { spec: $('#p_Premium_spec').value, sell: +$('#p_Premium_sell').value } } };
+    const body = { code: $('#p_code').value, name: $('#p_name').value, unit: $('#p_unit').value, behaviour: $('#p_behav').value, description: $('#p_desc').value, tiers: { Basic: { spec: $('#p_Basic_spec').value, sell: +$('#p_Basic_sell').value }, Standard: { spec: $('#p_Standard_spec').value, sell: +$('#p_Standard_sell').value }, Premium: { spec: $('#p_Premium_spec').value, sell: +$('#p_Premium_sell').value } } };
     if (item) await api('/price-list/' + item.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); else await api('/price-list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     bg.remove(); toast('Saved'); pricingSheet($('#view'));
   });

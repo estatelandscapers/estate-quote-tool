@@ -1,7 +1,7 @@
 const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId, newToken } = require('../utils/ids');
-const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount } = require('../utils/pricing');
+const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeList } = require('../utils/pricing');
 const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
@@ -23,7 +23,9 @@ function computeQuote(q) {
     const row = {
       id: it.id, scope: it.scope, code: rEff.code, name: rEff.name, unit: rEff.unit,
       qty: it.qty, behaviour: rEff.behaviour, tierOverride: it.tier_override,
-      method: it.method || null, subDays: it.sub_days, wastageOverride: it.wastage_override, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct,
+      method: it.method || null, subDays: it.sub_days, wastageOverride: it.wastage_override,
+      description: it.desc_override || (pi ? pi.description : '') || '', descIsCustom: !!it.desc_override,
+      sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct,
       priceItemId: it.price_item_id, customRate: it.custom_rate,
       perTier, effectiveTier: eff, effectiveTotal: lineTotal(it, rEff), effectiveRate: rEff.rate, effectiveSpec: rEff.spec,
     };
@@ -32,12 +34,12 @@ function computeQuote(q) {
   });
 
   const s1 = scope1TierTotals[q.default_package];
-  const sur = surchargeAmount(applied, s1);
-  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, scope1TierTotals[t]));
-  const grandExGst = s1 + sur + scope2Total;
+  const sur = surchargeAmount(applied, s1 + scope2Total);
+  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, scope1TierTotals[t] + scope2Total));
+  const grandExGst = s1 + scope2Total + sur;
   return {
     items: out, appliedSurcharges: applied,
-    scope1TierTotals, scope2Total, surcharge: sur, surchargePerTier: surPerTier,
+    scope1TierTotals, scope2Total, surcharge: sur, surchargePerTier: surPerTier, surchargeList: surchargeList(applied),
     grandExGst, gst: grandExGst * 0.1, grandIncGst: grandExGst * 1.1,
   };
 }
@@ -186,6 +188,7 @@ router.put('/:id/items/:itemId', (req, res) => {
       b.scope ?? e.scope, b.method !== undefined ? b.method : e.method,
       b.wastageOverride !== undefined ? b.wastageOverride : e.wastage_override, req.params.itemId);
   if (b.subDays !== undefined) db.prepare('UPDATE quote_items SET sub_days=? WHERE id=?').run(b.subDays, req.params.itemId);
+  if (b.description !== undefined) db.prepare('UPDATE quote_items SET desc_override=? WHERE id=?').run(b.description || null, req.params.itemId);
   res.json({ ok: true });
 });
 router.delete('/:id/items/:itemId', (req, res) => { db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
