@@ -42,6 +42,24 @@ function recipeView(r, admin) {
     isDefault: !!r.is_default, deliveryCost: admin ? r.delivery_cost : undefined, notes: r.notes,
     components: comps.map(c => compView(c, admin)) };
 }
+
+// Deliverables added to Pricing from a custom line that still have no recipe.
+// Until one exists they cost at the figure typed on the original quote.
+router.get('/pending', (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  const rows = db.prepare(`SELECT * FROM price_items WHERE recipe_status='pending'
+    AND id NOT IN (SELECT price_item_id FROM recipe_v2 WHERE price_item_id IS NOT NULL) ORDER BY sort_order`).all();
+  res.json(rows.map(p => ({ priceItemId: p.id, code: p.code, name: p.name, unit: p.unit,
+    description: p.description, originQuote: p.origin_quote,
+    enteredCost: { Basic: p.entered_cost_basic, Standard: p.entered_cost_standard, Premium: p.entered_cost_premium },
+    sell: { Basic: p.basic_sell, Standard: p.standard_sell, Premium: p.premium_sell } })));
+});
+router.post('/pending/:priceItemId/keep-entered-cost', (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  db.prepare("UPDATE price_items SET recipe_status='entered' WHERE id=?").run(req.params.priceItemId);
+  res.json({ ok: true });
+});
+
 router.get('/', (req, res) => {
   const admin = isAdmin(req);
   const items = db.prepare('SELECT * FROM price_items ORDER BY sort_order').all();
@@ -55,7 +73,15 @@ router.get('/', (req, res) => {
       // indicative cost of each variant for 1 unit at Standard
       out.indicative = {};
       const full = recipesFor(p.id);
-      VARIANTS.forEach(v => { if (full[v]) out.indicative[v] = Math.round(costVariant({ qty: 1 }, full[v], 'Standard').cost * 100) / 100; });
+      // Cost at 1 unit and at 2 units: the difference is the true variable rate, and
+      // what's left over is the once-per-job fixed portion.
+      VARIANTS.forEach(v => {
+        if (!full[v]) return;
+        const c1 = costVariant({ qty: 1 }, full[v], 'Standard').cost;
+        const c2 = costVariant({ qty: 2 }, full[v], 'Standard').cost;
+        const variable = Math.max(0, c2 - c1);
+        out.indicative[v] = { variable: Math.round(variable * 100) / 100, fixed: Math.round((c1 - variable) * 100) / 100 };
+      });
     }
     return out;
   }));
@@ -68,6 +94,7 @@ router.post('/', (req, res) => {
   const id = newId();
   const any = db.prepare('SELECT COUNT(*) c FROM recipe_v2 WHERE price_item_id=?').get(priceItemId).c;
   db.prepare('INSERT INTO recipe_v2 (id,price_item_id,variant,is_default) VALUES (?,?,?,?)').run(id, priceItemId, variant, any === 0 ? 1 : 0);
+  db.prepare("UPDATE price_items SET recipe_status='none' WHERE id=? AND recipe_status='pending'").run(priceItemId);
   res.status(201).json({ id });
 });
 router.put('/:id', (req, res) => {

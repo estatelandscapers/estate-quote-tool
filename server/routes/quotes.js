@@ -17,7 +17,7 @@ function computeQuote(q) {
   items.forEach(it => {
     const pi = getPI(it.price_item_id);
     const perTier = {};
-    TIERS.forEach(t => { const r = resolveItem(it, pi, t); perTier[t] = { spec: r.spec, rate: r.rate, total: lineTotal(it, r) }; });
+    TIERS.forEach(t => { const r = resolveItem(it, pi, t); perTier[t] = { spec: r.spec, rate: r.rate, total: lineTotal(it, r, t) }; });
     const eff = it.tier_override || q.default_package;
     const rEff = resolveItem(it, pi, eff);
     const row = {
@@ -25,9 +25,17 @@ function computeQuote(q) {
       qty: it.qty, behaviour: rEff.behaviour, tierOverride: it.tier_override,
       method: it.method || null, subDays: it.sub_days, wastageOverride: it.wastage_override,
       description: it.desc_override || (pi ? pi.description : '') || '', descIsCustom: !!it.desc_override,
+      valueOverride: !!it.value_override,
+      value: { Basic: it.val_basic, Standard: it.val_standard, Premium: it.val_premium },
+      lineCost: { Basic: it.cost_basic, Standard: it.cost_standard, Premium: it.cost_premium },
+      isCustom: !it.price_item_id,
+      customBehaviour: it.custom_behaviour || 'none', customTiered: !!it.custom_tiered,
+      customDesc: it.custom_desc || '',
+      customSpec: { Basic: it.custom_spec_basic, Standard: it.custom_spec_standard, Premium: it.custom_spec_premium },
+      promoStatus: it.promo_status || 'none', promotedPriceItemId: it.promoted_price_item_id || null,
       sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct,
       priceItemId: it.price_item_id, customRate: it.custom_rate,
-      perTier, effectiveTier: eff, effectiveTotal: lineTotal(it, rEff), effectiveRate: rEff.rate, effectiveSpec: rEff.spec,
+      perTier, effectiveTier: eff, effectiveTotal: lineTotal(it, rEff, eff), effectiveRate: rEff.rate, effectiveSpec: rEff.spec,
     };
     if (it.scope === 2) { scope2Total += row.effectiveTotal; out.scope2.push(row); }
     else { TIERS.forEach(t => scope1TierTotals[t] += perTier[t].total); out.scope1.push(row); }
@@ -100,19 +108,60 @@ router.get('/:id', (req, res) => {
 
 // Reusable so Leads can convert an enquiry straight into a quote.
 function createQuote(b = {}) {
+  // Next number = highest existing, or the configured starting number if none yet.
+  // `quote_number_start` is the FIRST number to be issued (not the last used).
+  const start = parseInt(settingGet('quote_number_start') || '1410', 10);
   const maxNum = db.prepare("SELECT MAX(CAST(parent_number AS INTEGER)) m FROM quotes").get().m;
-  const parent = b.parentNumber || String((maxNum || 1409) + 1);
+  const parent = b.parentNumber || String(maxNum ? maxNum + 1 : start);
   const id = newId();
-  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,default_package,payment_schedule,site_notes,special_clauses,lead_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+  // crew_size is set explicitly: a column DEFAULT only applies to tables created fresh,
+  // so upgraded databases would otherwise leave it null and break the duration maths.
+  const defaultCrew = parseInt(settingGet('default_crew_size') || settingGet('crew_people') || '3', 10) || 3;
+  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,default_package,payment_schedule,site_notes,special_clauses,lead_id,crew_size,customer_tier)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, newToken(), parent, parent, b.projectTitle || 'Landscape Works', b.client || '', b.clientEmail || '',
     b.address || '', b.date || new Date().toISOString().slice(0, 10), b.defaultPackage || 'Standard',
-    b.paymentSchedule || 'standard', '', settingGet('default_special_clauses') || '', b.leadId || null);
+    b.paymentSchedule || 'standard', '', settingGet('default_special_clauses') || '', b.leadId || null,
+    b.crewSize || defaultCrew, b.customerTier || settingGet('default_customer_tier') || 'Silver');
   return db.prepare('SELECT * FROM quotes WHERE id=?').get(id);
 }
 router.post('/', (req, res) => {
   res.status(201).json(fullQuote(createQuote(req.body || {})));
 });
+
+// ---- Renumbering -------------------------------------------------------------
+// Quote numbers are cosmetic identifiers, not keys — the client link uses the token,
+// so renumbering never breaks a link that has already been sent. Revisions of the same
+// job share a parent_number (1413, 1413.1, 1413.2), so renumbering moves the whole family.
+function numberInUse(parentNumber, exceptQuoteId) {
+  const rows = db.prepare('SELECT id FROM quotes WHERE parent_number=?').all(String(parentNumber));
+  return rows.some(r => r.id !== exceptQuoteId);
+}
+router.put('/:id/number', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  const raw = String((req.body || {}).number || '').trim();
+  if (!/^\d+$/.test(raw)) return res.status(400).json({ error: 'Quote number must be digits only, e.g. 1413' });
+
+  const family = db.prepare('SELECT * FROM quotes WHERE parent_number=? ORDER BY created_at').all(q.parent_number);
+  const clash = db.prepare('SELECT id FROM quotes WHERE parent_number=?').all(raw).filter(r => !family.find(f => f.id === r.id));
+  if (clash.length) return res.status(400).json({ error: `Quote ${raw} already exists — pick another number.` });
+
+  // Move the whole revision family, preserving each one's .1 / .2 suffix.
+  family.forEach(f => {
+    const suffix = String(f.quote_number).includes('.') ? '.' + String(f.quote_number).split('.').slice(1).join('.') : '';
+    db.prepare("UPDATE quotes SET parent_number=?, quote_number=?, updated_at=datetime('now') WHERE id=?")
+      .run(raw, raw + suffix, f.id);
+  });
+  // Keep any purchase orders aligned with their quote.
+  family.forEach(f => {
+    db.prepare("UPDATE purchase_orders SET po_number=? WHERE quote_id=?").run(raw, f.id);
+  });
+  console.log(`[renumber] ${q.parent_number} -> ${raw} (${family.length} revision(s)) by ${req.user.username}`);
+  res.json({ ok: true, from: q.parent_number, to: raw, moved: family.length });
+});
+
 
 // New revision: copies everything, next suffix, older ones become superseded automatically
 router.post('/:id/revision', (req, res) => {
@@ -163,6 +212,67 @@ router.post('/:id/siteplan', (req, res) => {
 });
 
 // items
+// Next custom code: C1, C2, C3... across the whole system, so codes never repeat.
+function nextCustomCode() {
+  const fromItems = db.prepare("SELECT custom_code c FROM quote_items WHERE custom_code LIKE 'C%'").all();
+  const fromPrice = db.prepare("SELECT code c FROM price_items WHERE code LIKE 'C%'").all();
+  const n = [...fromItems, ...fromPrice]
+    .map(r => parseInt(String(r.c).replace(/^C/i, ''), 10))
+    .filter(x => !isNaN(x));
+  return 'C' + ((n.length ? Math.max(...n) : 0) + 1);
+}
+
+// ---- Custom line -> Pricing -> Recipe -------------------------------------------
+// A custom line already works on its own quote. Promotion only decides whether it
+// joins the reusable deliverable list.
+router.get('/pending/price-items', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const rows = db.prepare(`SELECT qi.*, q.quote_number, q.client_name, q.created_at qdate
+    FROM quote_items qi JOIN quotes q ON q.id=qi.quote_id
+    WHERE qi.price_item_id IS NULL AND qi.promo_status='pending' ORDER BY q.created_at DESC`).all();
+  res.json(rows.map(r => ({
+    itemId: r.id, quoteId: r.quote_id, quoteNumber: r.quote_number, client: r.client_name, createdAt: r.qdate,
+    code: r.custom_code, name: r.custom_name, unit: r.custom_unit, description: r.custom_desc,
+    behaviour: r.custom_behaviour, tiered: !!r.custom_tiered,
+    spec: { Basic: r.custom_spec_basic, Standard: r.custom_spec_standard, Premium: r.custom_spec_premium },
+    value: { Basic: r.val_basic, Standard: r.val_standard, Premium: r.val_premium },
+    cost: { Basic: r.cost_basic, Standard: r.cost_standard, Premium: r.cost_premium },
+    marginPct: r.val_standard > 0 ? Math.round((r.val_standard - (r.cost_standard || 0)) / r.val_standard * 1000) / 10 : null,
+  })));
+});
+router.post('/pending/:itemId/promote', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const it = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
+  if (!it) return res.status(404).json({ error: 'not found' });
+  if (it.promoted_price_item_id) return res.status(400).json({ error: 'already added to Pricing' });
+  if (db.prepare('SELECT id FROM price_items WHERE code=?').get(it.custom_code))
+    return res.status(400).json({ error: `Code ${it.custom_code} is already in Pricing` });
+  const q = db.prepare('SELECT quote_number FROM quotes WHERE id=?').get(it.quote_id);
+  const maxSort = db.prepare('SELECT MAX(sort_order) m FROM price_items').get().m || 0;
+  const pid = newId();
+  const tiered = !!it.custom_tiered;
+  const v = t => tiered ? it['val_' + t] : it.val_standard;
+  const c = t => tiered ? it['cost_' + t] : it.cost_standard;
+  const sp = t => (tiered ? it['custom_spec_' + t] : it.custom_spec_standard) || it.custom_name;
+  db.prepare(`INSERT INTO price_items (id,code,name,unit,behaviour,description,
+      basic_spec,basic_sell,standard_spec,standard_sell,premium_spec,premium_sell,
+      sort_order,status,from_custom,origin_quote,recipe_status,
+      entered_cost_basic,entered_cost_standard,entered_cost_premium)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    pid, it.custom_code, it.custom_name, it.custom_unit || 'ea', it.custom_behaviour || 'none', it.custom_desc || '',
+    sp('basic'), v('basic') ?? 0, sp('standard'), v('standard') ?? 0, sp('premium'), v('premium') ?? 0,
+    maxSort + 1, 'live', 1, q ? q.quote_number : null, 'pending',
+    c('basic') ?? null, c('standard') ?? null, c('premium') ?? null);
+  db.prepare("UPDATE quote_items SET promoted_price_item_id=?, promo_status='promoted' WHERE id=?").run(pid, it.id);
+  res.status(201).json({ priceItemId: pid, code: it.custom_code });
+});
+router.post('/pending/:itemId/dismiss', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  db.prepare("UPDATE quote_items SET promo_status='declined' WHERE id=?").run(req.params.itemId);
+  res.json({ ok: true });
+});
+
+router.get('/next-custom-code', (req, res) => res.json({ code: nextCustomCode() }));
 router.post('/:id/items', (req, res) => {
   const b = req.body || {};
   const id = newId();
@@ -171,11 +281,24 @@ router.post('/:id/items', (req, res) => {
   db.prepare(`INSERT INTO quote_items (id,quote_id,scope,price_item_id,custom_code,custom_name,custom_unit,custom_rate,qty,tier_override,shared_enabled,shared_pct,
     locked_basic_spec,locked_basic_sell,locked_standard_spec,locked_standard_sell,locked_premium_spec,locked_premium_sell,locked_behaviour)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, req.params.id, b.scope || 1, b.priceItemId || null,
-    b.customCode || null, b.customName || null, b.customUnit || null, b.customRate ?? null,
+    (b.priceItemId ? null : (b.customCode || nextCustomCode())), b.customName || null, b.customUnit || null, b.customRate ?? null,
     b.qty ?? 1, b.tierOverride || null, b.sharedEnabled ? 1 : 0, b.sharedPct ?? 50,
     snap.locked_basic_spec ?? null, snap.locked_basic_sell ?? null, snap.locked_standard_spec ?? null,
     snap.locked_standard_sell ?? null, snap.locked_premium_spec ?? null, snap.locked_premium_sell ?? null, snap.locked_behaviour ?? null);
-  res.status(201).json({ id });
+  // A custom line is effectively a new price item being drafted on a job — record the
+  // extra spec now so it can be promoted to Pricing later without re-typing.
+  if (!b.priceItemId) {
+    db.prepare(`UPDATE quote_items SET custom_desc=?, custom_behaviour=?, custom_tiered=?,
+      custom_spec_basic=?, custom_spec_standard=?, custom_spec_premium=?,
+      val_basic=?, val_standard=?, val_premium=?, cost_basic=?, cost_standard=?, cost_premium=?,
+      value_override=?, promo_status=? WHERE id=?`).run(
+      b.customDesc || '', b.customBehaviour || 'none', b.customTiered ? 1 : 0,
+      (b.customSpec || {}).Basic || null, (b.customSpec || {}).Standard || null, (b.customSpec || {}).Premium || null,
+      (b.value || {}).Basic ?? null, (b.value || {}).Standard ?? null, (b.value || {}).Premium ?? null,
+      (b.cost || {}).Basic ?? null, (b.cost || {}).Standard ?? null, (b.cost || {}).Premium ?? null,
+      1, b.saveToPricing === false ? 'declined' : 'pending', id);
+  }
+  res.status(201).json({ id, code: db.prepare('SELECT custom_code c FROM quote_items WHERE id=?').get(id).c });
 });
 router.put('/:id/items/:itemId', (req, res) => {
   const e = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
@@ -189,6 +312,25 @@ router.put('/:id/items/:itemId', (req, res) => {
       b.wastageOverride !== undefined ? b.wastageOverride : e.wastage_override, req.params.itemId);
   if (b.subDays !== undefined) db.prepare('UPDATE quote_items SET sub_days=? WHERE id=?').run(b.subDays, req.params.itemId);
   if (b.description !== undefined) db.prepare('UPDATE quote_items SET desc_override=? WHERE id=?').run(b.description || null, req.params.itemId);
+  // Site-specific value: sell AND cost together, so margin stays honest.
+  if (b.valueOverride !== undefined)
+    db.prepare('UPDATE quote_items SET value_override=? WHERE id=?').run(b.valueOverride ? 1 : 0, req.params.itemId);
+  ['Basic', 'Standard', 'Premium'].forEach(t => {
+    const k = t.toLowerCase();
+    if (b.value && b.value[t] !== undefined)
+      db.prepare(`UPDATE quote_items SET val_${k}=? WHERE id=?`).run(b.value[t] === '' ? null : Number(b.value[t]), req.params.itemId);
+    if (b.cost && b.cost[t] !== undefined)
+      db.prepare(`UPDATE quote_items SET cost_${k}=? WHERE id=?`).run(b.cost[t] === '' ? null : Number(b.cost[t]), req.params.itemId);
+    if (b.customSpec && b.customSpec[t] !== undefined)
+      db.prepare(`UPDATE quote_items SET custom_spec_${k}=? WHERE id=?`).run(b.customSpec[t], req.params.itemId);
+  });
+  ['customCode:custom_code', 'customName:custom_name', 'customUnit:custom_unit', 'customDesc:custom_desc',
+   'customBehaviour:custom_behaviour'].forEach(pair => {
+    const [key, col] = pair.split(':');
+    if (b[key] !== undefined) db.prepare(`UPDATE quote_items SET ${col}=? WHERE id=?`).run(b[key], req.params.itemId);
+  });
+  if (b.customTiered !== undefined)
+    db.prepare('UPDATE quote_items SET custom_tiered=? WHERE id=?').run(b.customTiered ? 1 : 0, req.params.itemId);
   res.json({ ok: true });
 });
 router.delete('/:id/items/:itemId', (req, res) => { db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });

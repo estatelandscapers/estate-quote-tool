@@ -10,7 +10,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', matCat: 'material', recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -23,6 +23,9 @@ async function boot() {
 }
 function shell() {
   // Order: Leads | Quotes Pricing Recipes Vendors Editor | Projects Purchase Orders
+  const pc = state.pendingCounts || {};
+  const badge = t => (t === 'pricing' && pc.pricing) ? `<span class="navdot">${pc.pricing}</span>`
+    : (t === 'recipes' && pc.recipes) ? `<span class="navdot">${pc.recipes}</span>` : '';
   const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
                ['recipes', 'Recipes'], ['vendors', 'Vendors'], ['editor', 'Editor'],
                ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders']];
@@ -31,8 +34,8 @@ function shell() {
   if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
   $('#app').innerHTML = `
     <div class="top">
-      <div class="brand">${LOGO}<div><b>ESTATE LANDSCAPERS</b><span>Quote Tool</span></div></div>
-      <div class="nav">${tabs.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}">${t[1]}</button>`).join('')}</div>
+      <div class="brand">${LOGO}<div><b>ESTATE LANDSCAPERS</b><span>Business Management Tool</span></div></div>
+      <div class="nav">${tabs.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}" style="position:relative;">${t[1]}${badge(t[0])}</button>`).join('')}</div>
       <div class="spacer"></div>
       <span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}</span>
       <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
@@ -45,6 +48,21 @@ function shell() {
 function route() {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   const v = $('#view');
+  if (isAdmin()) {
+    // keep the little counts on the tabs current, without blocking the render
+    Promise.all([api('/quotes/pending/price-items'), api('/recipes/pending')]).then(([p, r]) => {
+      const next = { pricing: (p || []).length, recipes: (r || []).length };
+      if (next.pricing !== (state.pendingCounts || {}).pricing || next.recipes !== (state.pendingCounts || {}).recipes) {
+        state.pendingCounts = next;
+        const nav = document.querySelector('.nav');
+        if (nav) nav.querySelectorAll('button').forEach(b => {
+          const t = b.dataset.tab; const n = t === 'pricing' ? next.pricing : t === 'recipes' ? next.recipes : 0;
+          b.querySelectorAll('.navdot').forEach(d => d.remove());
+          if (n) b.insertAdjacentHTML('beforeend', `<span class="navdot">${n}</span>`);
+        });
+      }
+    }).catch(() => {});
+  }
   if (state.tab === 'leads') return leadsTab(v);
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
   if (state.tab === 'jobs') return jobsTab(v);
@@ -316,7 +334,74 @@ async function quoteEditor(v) {
     }
     toast(staged.size + ' deliverable(s) added'); reload();
   });
-  $('#addCustom').addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: 1, customCode: 'XX', customName: 'Custom line', customUnit: 'ea', customRate: 0, qty: 1 }) }); reload(); });
+  $('#addCustom').addEventListener('click', async () => {
+    const nc = await api('/quotes/next-custom-code');
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal" style="max-width:860px;">
+      <h2 style="margin:0 0 3px;">New custom deliverable</h2>
+      <div class="sub">This is effectively a new price item being drafted on this job — fill it in once and you can add it to Pricing afterwards.</div>
+      <div class="rule"></div>
+      <div class="grid4">
+        <div class="field"><label>Code</label><input id="cu_code" value="${esc(nc.code || 'C1')}" style="font-weight:800;"><span class="muted" style="font-size:10px;">auto — editable</span></div>
+        <div class="field"><label>Deliverable name</label><input id="cu_name" placeholder="e.g. Feature sandstone boulder set"></div>
+        <div class="field"><label>Unit</label><input id="cu_unit" value="ea"></div>
+        <div class="field"><label>Behaviour</label><select id="cu_behav">
+          <option value="none">Standard — qty × rate</option>
+          <option value="remeasurable">Remeasurable — measured on site</option>
+          <option value="rate_only">Rate only — no value in total</option>
+          <option value="allowance">Allowance — provisional sum</option>
+          <option value="optional">Optional — shown, not counted</option></select></div>
+      </div>
+      <div class="field"><label>Scope description — client link, contract and site PO</label><textarea id="cu_desc" rows="2"></textarea></div>
+      <div class="field"><label>Qty</label><input id="cu_qty" type="number" value="1" style="max-width:120px;"></div>
+      <div style="display:flex;gap:16px;align-items:center;margin:8px 0;flex-wrap:wrap;">
+        <b style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Pricing</b>
+        <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;"><input type="radio" name="cutier" value="flat" checked style="width:auto;"> Same across all packages</label>
+        <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;"><input type="radio" name="cutier" value="tiered" style="width:auto;"> Different per package</label>
+      </div>
+      <table id="cu_table"><thead><tr><th>Package</th><th>Specification shown to client</th><th class="right">Sell $</th><th class="right">Our cost $</th><th class="right">Margin</th></tr></thead><tbody>
+        ${TIERS.map(t => `<tr data-trow="${t}" class="${t === 'Standard' ? '' : 'cu-tieronly'}"><td><b>${t}</b></td>
+          <td><input data-cs="${t}"></td>
+          <td class="right"><input data-cv="${t}" type="number" step="0.01" style="text-align:right;"></td>
+          <td class="right"><input data-cc="${t}" type="number" step="0.01" style="text-align:right;"></td>
+          <td class="right" data-cm="${t}"><span class="muted">—</span></td></tr>`).join('')}
+      </tbody></table>
+      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:14px;">
+        <label style="font-size:11.5px;margin-right:auto;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="cu_save2p" checked style="width:auto;"> Also offer it for the Pricing list afterwards</label>
+        <button class="btn btn-ghost" id="cu_cancel">Cancel</button>
+        <button class="btn btn-blue" id="cu_ok">Add line</button></div></div>`;
+    document.body.appendChild(bg);
+    const rows = () => bg.querySelectorAll('[data-trow]');
+    const applyTierMode = () => {
+      const tiered = bg.querySelector('input[name=cutier]:checked').value === 'tiered';
+      rows().forEach(r => { if (r.dataset.trow !== 'Standard') r.style.display = tiered ? '' : 'none'; });
+      bg.querySelector('[data-trow="Standard"] td b').textContent = tiered ? 'Standard' : 'All packages';
+    };
+    const recalc = () => TIERS.forEach(t => {
+      const s = parseFloat(bg.querySelector(`[data-cv="${t}"]`).value) || 0;
+      const c = parseFloat(bg.querySelector(`[data-cc="${t}"]`).value) || 0;
+      const cell = bg.querySelector(`[data-cm="${t}"]`);
+      cell.innerHTML = s > 0 ? `<b style="color:${(s - c) / s >= 0.25 ? 'var(--green)' : 'var(--red)'};">${Math.round((s - c) / s * 1000) / 10}%</b>` : '<span class="muted">—</span>';
+    });
+    bg.querySelectorAll('input[name=cutier]').forEach(r => r.addEventListener('change', applyTierMode));
+    bg.querySelectorAll('[data-cv],[data-cc]').forEach(i => i.addEventListener('input', recalc));
+    applyTierMode();
+    $('#cu_cancel').addEventListener('click', () => bg.remove());
+    $('#cu_ok').addEventListener('click', async () => {
+      const tiered = bg.querySelector('input[name=cutier]:checked').value === 'tiered';
+      const grab = sel => { const o = {}; TIERS.forEach(t => { const el = bg.querySelector(`[${sel}="${t}"]`); const val = el.value; o[t] = val === '' ? null : (sel === 'data-cs' ? val : Number(val)); }); return o; };
+      const spec = grab('data-cs'), value = grab('data-cv'), cost = grab('data-cc');
+      if (!tiered) TIERS.forEach(t => { spec[t] = spec.Standard; value[t] = value.Standard; cost[t] = cost.Standard; });
+      if (!$('#cu_name').value.trim()) return toast('Give it a name first');
+      await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 1, qty: parseFloat($('#cu_qty').value) || 1,
+          customCode: $('#cu_code').value, customName: $('#cu_name').value, customUnit: $('#cu_unit').value,
+          customDesc: $('#cu_desc').value, customBehaviour: $('#cu_behav').value, customTiered: tiered,
+          customSpec: spec, value, cost, saveToPricing: $('#cu_save2p').checked }) });
+      bg.remove(); toast('Custom line added'); reload();
+    });
+  });
+
   v.querySelectorAll('[data-sur]').forEach(c => c.addEventListener('click', async () => {
     state.scrollY = window.scrollY;
     const id = c.dataset.sur; const s = surcharges.find(x => x.id === id);
@@ -332,6 +417,7 @@ async function quoteEditor(v) {
 
   function renderItemsTiered(q, c) {
     const lineMap = {}; (c.perLine || []).forEach(l => lineMap[l.id] = l);
+    const cTier = q.defaultPackage || 'Standard';   // the package the value fields edit
     const row = it => {
       const cl = lineMap[it.id];
       const behav = BEHAV[it.behaviour] || '';
@@ -351,6 +437,12 @@ async function quoteEditor(v) {
         <td>${esc(it.name)}
           ${behav ? `<br><span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${behav}</span>` : ''}
           <textarea data-desc="${it.id}" rows="2" placeholder="Scope description shown to the client…" style="font-size:10.5px;margin-top:4px;width:100%;">${esc(it.description || '')}</textarea>
+          <label style="font-size:10px;display:flex;align-items:center;gap:6px;margin-top:4px;" title="Price this line from a supplier quote instead of the rate card">
+            <input type="checkbox" data-vo="${it.id}" ${it.valueOverride ? 'checked' : ''} style="width:auto;"> site-specific value</label>
+          ${it.valueOverride ? `<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;">
+            <input data-val="${it.id}" type="number" step="0.01" value="${it.value && it.value[cTier] != null ? it.value[cTier] : ''}" placeholder="sell $" style="width:84px;font-size:10.5px;" title="What the client pays for this line">
+            <input data-lcost="${it.id}" type="number" step="0.01" value="${it.lineCost && it.lineCost[cTier] != null ? it.lineCost[cTier] : ''}" placeholder="our cost $" style="width:84px;font-size:10.5px;" title="What it costs us — keeps margin honest">
+            <span class="muted" style="font-size:9.5px;align-self:center;">rate card <s>${money(it.qty * (it.perTier[cTier] ? it.perTier[cTier].rate : 0))}</s></span></div>` : ''}
           ${it.descIsCustom ? '<span class="muted" style="font-size:9.5px;">edited for this quote</span>' : ''}
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;align-items:center;">
             <select data-method="${it.id}" style="width:104px;font-size:10.5px;" title="How this deliverable is done">
@@ -387,6 +479,18 @@ async function quoteEditor(v) {
     v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
     v.querySelectorAll('[data-method]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.method}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: s.value || null }) }); reload(); }));
     v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); toast('Wastage updated'); }));
+    v.querySelectorAll('[data-vo]').forEach(c => c.addEventListener('change', async () => {
+      await api(`/quotes/${q.id}/items/${c.dataset.vo}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ valueOverride: c.checked }) });
+      reload();
+    }));
+    v.querySelectorAll('[data-val]').forEach(i => i.addEventListener('change', async () => {
+      await api(`/quotes/${q.id}/items/${i.dataset.val}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: { [cTier]: i.value } }) });
+      refreshCosting(); toast('Value updated');
+    }));
+    v.querySelectorAll('[data-lcost]').forEach(i => i.addEventListener('change', async () => {
+      await api(`/quotes/${q.id}/items/${i.dataset.lcost}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cost: { [cTier]: i.value } }) });
+      refreshCosting(); toast('Cost updated');
+    }));
     v.querySelectorAll('[data-desc]').forEach(t => t.addEventListener('change', async () => {
       await api(`/quotes/${q.id}/items/${t.dataset.desc}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: t.value }) });
       toast('Description saved');
@@ -638,7 +742,7 @@ async function vendorsTab(v) {
     <td>${x.isSupplier ? '<span class="tag t-sup">Supplier</span>' : ''} ${x.isSubcontractor ? '<span class="tag t-subv">Subcontractor</span>' : ''}</td>
     <td>${esc(x.area || '')}</td><td>${esc(x.contact || '')} ${esc(x.phone || '')}</td><td>${esc(x.terms || '')}</td>
     <td>${x.isSubcontractor ? (x.insuranceExpiry && x.insuranceExpiry < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">Insurance expired</span>' : '<span class="tag tag-accepted">OK</span>') : '—'}</td>
-    <td>${(x.materials || []).length}</td>
+    <td>${(x.supplies || []).length}</td>
     <td class="right"><button class="btn btn-ghost btn-sm" data-ev="${x.id}">Open</button> <button class="btn btn-danger btn-sm" data-dv="${x.id}">✕</button></td></tr>`).join('')}
   </tbody></table></div><div id="vDetail"></div>`;
   $('#addV').addEventListener('click', async () => { const r = await api('/vendors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New vendor' }) }); vendorsTab(v).then(() => openVendor(r.id)); });
@@ -666,32 +770,18 @@ async function vendorsTab(v) {
       </div>
       <button class="btn btn-blue" id="v_save">Save vendor</button>
       <div class="rule" style="margin-top:16px;"></div>
-      <h2 style="font-size:12px;">Materials & rates</h2>
-      <table><thead><tr><th>Material</th><th>Unit</th><th>Cost $</th><th>Delivery rule</th><th>Review by</th><th></th></tr></thead><tbody>
-      ${(x.materials || []).map(m => `<tr>
-        <td><input value="${esc(m.name)}" data-mn="${m.id}"></td><td><input value="${esc(m.unit || '')}" data-mu="${m.id}" style="width:60px;"></td>
-        <td><input type="number" step="0.01" value="${m.cost}" data-mc="${m.id}" style="width:86px;"></td>
-        <td><input value="${esc(m.deliveryRule || '')}" data-md="${m.id}" placeholder="e.g. $180/load, free over $1k"></td>
-        <td><input type="date" value="${esc(m.reviewBy || '')}" data-mr="${m.id}" style="width:130px;"> ${m.reviewBy && m.reviewBy < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">Stale</span>' : ''}</td>
-        <td class="right"><button class="btn btn-danger btn-sm" data-mdel="${m.id}">✕</button></td></tr>`).join('')}
-      </tbody></table>
-      <button class="btn btn-ghost btn-sm" id="v_addm" style="margin-top:8px;">+ Add material</button></div>`;
-    $('#v_sub').addEventListener('change', e => { $('#compliance').style.display = e.target.checked ? '' : 'none'; });
-    $('#v_save').addEventListener('click', async () => {
-      await api('/vendors/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-        name: $('#v_name').value, contact: $('#v_contact').value, phone: $('#v_phone').value, email: $('#v_email').value,
-        area: $('#v_area').value, terms: $('#v_terms').value, isSupplier: $('#v_sup').checked, isSubcontractor: $('#v_sub').checked,
-        licence: $('#v_lic') ? $('#v_lic').value : '', insuranceExpiry: $('#v_ins') ? $('#v_ins').value : '', swms: $('#v_swms') ? $('#v_swms').checked : false }) });
-      toast('Vendor saved'); vendorsTab(v);
-    });
-    $('#v_addm').addEventListener('click', async () => { await api(`/vendors/${id}/materials`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New material' }) }); openVendor(id); });
-    const mupd = (mid, body) => api(`/vendors/${id}/materials/${mid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    v.querySelectorAll('[data-mn]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mn, { name: i.value })));
-    v.querySelectorAll('[data-mu]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mu, { unit: i.value })));
-    v.querySelectorAll('[data-mc]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mc, { cost: parseFloat(i.value) || 0 })));
-    v.querySelectorAll('[data-md]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.md, { deliveryRule: i.value })));
-    v.querySelectorAll('[data-mr]').forEach(i => i.addEventListener('change', () => mupd(i.dataset.mr, { reviewBy: i.value })));
-    v.querySelectorAll('[data-mdel]').forEach(b => b.addEventListener('click', async () => { await api(`/vendors/${id}/materials/${b.dataset.mdel}`, { method: 'DELETE' }); openVendor(id); }));
+      <h2 style="font-size:12px;">Supplies — from the Costs tab</h2>
+      <div class="sub">Generated from the items linked to this vendor in Costs. Add or price items there, not here, so the two can never disagree.</div>
+      ${(x.supplies || []).length ? `<table><thead><tr><th>Code</th><th>Item</th><th>Unit</th><th class="right">Cost</th><th>Delivery rule</th><th>Review by</th><th>Default</th></tr></thead><tbody>
+        ${x.supplies.map(s => `<tr><td><b>${esc(s.code)}</b></td><td>${esc(s.name)}</td><td>${esc(s.unit || '')}</td>
+          <td class="right">${s.cost != null ? money2(s.cost) : '—'}</td><td>${esc(s.deliveryRule || '—')}</td>
+          <td>${esc(s.reviewBy || '—')}${s.reviewBy && s.reviewBy < new Date().toISOString().slice(0, 10) ? ' <span class="tag tag-superseded">stale</span>' : ''}</td>
+          <td>${s.isDefault ? '<span class="tag tag-accepted">Default</span>' : ''}</td></tr>`).join('')}
+        </tbody></table>` : '<p class="muted">Nothing linked yet.</p>'}
+      ${(x.usedInRecipes || []).length ? `<div class="legend">Used in recipes: ${x.usedInRecipes.map(esc).join(', ')}</div>` : ''}
+      <button class="btn btn-ghost btn-sm" id="v_gocosts" style="margin-top:8px;">Manage items in Costs →</button>
+    </div>`;
+    const gc = $('#v_gocosts'); if (gc) gc.addEventListener('click', () => { state.tab = 'materials'; state.matCat = 'material'; shell(); });
     $('#vDetail').scrollIntoView({ behavior: 'smooth' });
   }
 }
@@ -741,10 +831,62 @@ async function materialsTab(v) {
     await api('/materials/' + i.dataset.ohc, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ monthlyCost: parseFloat(i.value) || 0 }) });
     toast('Overhead updated'); materialsTab(v);
   }));
-  const add = $('#addMat'); if (add) add.addEventListener('click', async () => {
-    const r = await api('/materials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New item', category: cat }) });
-    await materialsTab(v); if (cat !== 'overhead') openMat(r.id);
-  });
+  const add = $('#addMat'); if (add) add.addEventListener('click', () => newItemForm());
+  // New items open as a form and STAY OPEN — nothing is written until Save, so you can
+  // fill in the vendors and prices in one pass instead of the tab reloading under you.
+  function newItemForm() {
+    const draftVendors = [];
+    const paint = () => {
+      $('#matDetail').innerHTML = `<div class="card"><h2>New ${cat === 'overhead' ? 'overhead' : cat}</h2>
+        <div class="sub">Nothing is saved until you press Save at the bottom.</div><div class="rule"></div>
+        <div class="grid4">
+          <div class="field"><label>Item name</label><input id="n_name" value="${esc(state.draftName || '')}"></div>
+          <div class="field"><label>Unit</label><input id="n_unit" value="${esc(state.draftUnit || (cat === 'overhead' ? 'month' : 'ea'))}"></div>
+          <div class="field"><label>Type</label><select id="n_cat">${['material', 'plant', 'overhead'].map(x => `<option value="${x}" ${x === cat ? 'selected' : ''}>${x[0].toUpperCase() + x.slice(1)}</option>`).join('')}</select></div>
+          ${cat === 'overhead' ? `<div class="field"><label>Monthly cost $</label><input id="n_mc" type="number" step="10" value="${state.draftMc || 0}"></div>` : '<div></div>'}
+        </div>
+        ${cat !== 'overhead' ? `<b style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Vendors &amp; prices</b>
+        <table style="margin-top:6px;"><thead><tr><th>Vendor</th><th class="right">Cost $</th><th>Delivery rule</th><th>Review by</th><th>Default</th><th></th></tr></thead><tbody>
+        ${draftVendors.map((d, i) => `<tr><td><select data-dv="${i}">${vendors.map(x => `<option value="${x.id}" ${d.vendorId === x.id ? 'selected' : ''}>${esc(x.code || '')} ${esc(x.name)}</option>`).join('')}</select></td>
+          <td class="right"><input data-dc="${i}" type="number" step="0.01" value="${d.cost}" style="text-align:right;"></td>
+          <td><input data-dd="${i}" value="${esc(d.deliveryRule || '')}" placeholder="e.g. $180 / load · 80 per load"></td>
+          <td><input data-dr="${i}" type="date" value="${esc(d.reviewBy || '')}"></td>
+          <td class="center"><input type="radio" name="ndef" data-df="${i}" ${d.isDefault ? 'checked' : ''} style="width:auto;"></td>
+          <td><button class="btn btn-ghost btn-sm" data-dx="${i}">✕</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No vendors added yet.</td></tr>'}
+        </tbody></table>
+        <button class="btn btn-ghost btn-sm" id="n_addv" style="margin-top:8px;">+ Add a vendor</button>` : ''}
+        <div class="savebar"><span class="muted" style="margin-right:auto;font-size:11px;">Nothing saved until you press Save.</span>
+          <button class="btn btn-ghost" id="n_cancel">Cancel</button><button class="btn btn-blue" id="n_save">Save item</button></div></div>`;
+      const keep = () => { state.draftName = $('#n_name').value; state.draftUnit = $('#n_unit').value; if ($('#n_mc')) state.draftMc = $('#n_mc').value; };
+      ['#n_name', '#n_unit', '#n_mc'].forEach(s => { const el = $(s); if (el) el.addEventListener('input', keep); });
+      const av = $('#n_addv'); if (av) av.addEventListener('click', () => { keep(); draftVendors.push({ vendorId: (vendors[0] || {}).id, cost: 0, deliveryRule: '', reviewBy: '', isDefault: draftVendors.length === 0 }); paint(); });
+      v.querySelectorAll('[data-dv]').forEach(s => s.addEventListener('change', () => draftVendors[+s.dataset.dv].vendorId = s.value));
+      v.querySelectorAll('[data-dc]').forEach(i => i.addEventListener('change', () => draftVendors[+i.dataset.dc].cost = parseFloat(i.value) || 0));
+      v.querySelectorAll('[data-dd]').forEach(i => i.addEventListener('change', () => draftVendors[+i.dataset.dd].deliveryRule = i.value));
+      v.querySelectorAll('[data-dr]').forEach(i => i.addEventListener('change', () => draftVendors[+i.dataset.dr].reviewBy = i.value));
+      v.querySelectorAll('[data-df]').forEach(r => r.addEventListener('change', () => draftVendors.forEach((d, i) => d.isDefault = i === +r.dataset.df)));
+      v.querySelectorAll('[data-dx]').forEach(b => b.addEventListener('click', () => { keep(); draftVendors.splice(+b.dataset.dx, 1); paint(); }));
+      $('#n_cancel').addEventListener('click', () => { state.draftName = state.draftUnit = state.draftMc = null; $('#matDetail').innerHTML = ''; });
+      $('#n_save').addEventListener('click', async () => {
+        const name = $('#n_name').value.trim();
+        if (!name) return toast('Give the item a name first');
+        const body = { name, unit: $('#n_unit').value, category: $('#n_cat').value };
+        if ($('#n_mc')) body.monthlyCost = parseFloat($('#n_mc').value) || 0;
+        const r = await api('/materials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        for (const d of draftVendors) {
+          if (!d.vendorId) continue;
+          await api(`/materials/${r.id}/vendors`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vendorId: d.vendorId, cost: d.cost, deliveryRule: d.deliveryRule, reviewBy: d.reviewBy }) });
+        }
+        const def = draftVendors.find(d => d.isDefault);
+        if (def) await api('/materials/' + r.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ defaultVendorId: def.vendorId }) });
+        state.draftName = state.draftUnit = state.draftMc = null;
+        toast('Saved'); materialsTab(v);
+      });
+      $('#matDetail').scrollIntoView({ behavior: 'smooth' });
+    };
+    paint();
+  }
   const up = $('#upXl'); if (up) {
     up.addEventListener('click', () => $('#xlFile').click());
     $('#xlFile').addEventListener('change', async e => {
@@ -824,19 +966,69 @@ async function materialsTab(v) {
 
 // ---------------- RECIPES (three variants) ----------------
 const VNAME = { in: 'In-house', sub: 'Subcontract', mixed: 'Mixed' };
+// Costing one unit puts every once-per-job cost (plant hire, delivery) on that single
+// unit, which made In-house look many times dearer than Subcontract. Split them out.
+function indicativeLine(cur) {
+  const parts = ['in', 'sub', 'mixed'].filter(k => cur.indicative && cur.indicative[k] != null).map(k => {
+    const d = cur.indicative[k];
+    const variable = typeof d === 'object' ? d.variable : d;
+    const fixed = typeof d === 'object' ? d.fixed : 0;
+    return `<b>${VNAME[k]}</b> ${money2(variable)}/${esc(cur.unit)}${fixed ? ` + ${money(fixed)} per job` : ''}`;
+  });
+  return 'Indicative cost at Standard — ' + parts.join(' &nbsp;·&nbsp; ') +
+    '<br><span style="color:#aaa;">Variable is per ' + esc(cur.unit) + '; fixed costs (plant hire, delivery) are charged once per job, so compare the two separately.</span>';
+}
 async function recipesTab(v) {
-  const [recs, mats, vendors] = await Promise.all([api('/recipes'), api('/materials'), api('/vendors')]);
+  const sub = state.recipesSub || 'live';
+  const [recs, mats, vendors, pending] = await Promise.all([api('/recipes'), api('/materials'), api('/vendors'),
+    isAdmin() ? api('/recipes/pending') : Promise.resolve([])]);
+  const pendCount = (pending || []).length;
+  if (sub === 'pending') {
+    v.innerHTML = `<div class="card"><h2>Cost recipes</h2>
+      <div class="seg" id="recSubSeg" style="margin:4px 0 10px;">
+        <button data-v="live">Recipes <span style="opacity:.6;">${recs.filter(r => Object.keys(r.variants).length).length}</span></button>
+        <button data-v="pending" class="on">Pending <span class="cnt">${pendCount}</span></button>
+      </div><div class="rule"></div>
+      <div class="sub">Deliverables added to Pricing from a custom line that don't have a recipe yet. Until one exists they cost at the figure typed on the original quote, so quotes stay accurate in the meantime.</div>
+      <table class="resp"><thead><tr><th>Code</th><th>Deliverable</th><th>Came from</th><th class="right">Cost in use</th><th class="right">Standard sell</th><th></th></tr></thead><tbody>
+      ${pending.map(p => `<tr><td data-l="Code"><b>${esc(p.code)}</b></td>
+        <td data-l="Deliverable">${esc(p.name)}${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(p.description.slice(0, 90))}</span>` : ''}</td>
+        <td data-l="From">Quote ${esc(p.originQuote || '—')}</td>
+        <td data-l="Cost" class="right">${p.enteredCost.Standard != null ? money(p.enteredCost.Standard) : '—'} <span class="tag tag-incomplete">entered</span></td>
+        <td data-l="Sell" class="right">${money(p.sell.Standard || 0)}</td>
+        <td class="right"><button class="btn btn-blue btn-sm" data-build="${p.priceItemId}">Build recipe</button> <button class="btn btn-ghost btn-sm" data-keep="${p.priceItemId}">Keep entered cost</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">Nothing pending.</td></tr>'}
+      </tbody></table></div>`;
+    $('#recSubSeg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.recipesSub = b.dataset.v; recipesTab(v); }));
+    v.querySelectorAll('[data-build]').forEach(b => b.addEventListener('click', async () => {
+      const p = pending.find(x => x.priceItemId === b.dataset.build);
+      await api('/recipes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priceItemId: p.priceItemId, variant: 'in' }) });
+      state.recipesSub = 'live'; state.recipeCode = p.code; state.recipeVariant = 'in'; toast('Recipe started for ' + p.code); recipesTab(v);
+    }));
+    v.querySelectorAll('[data-keep]').forEach(b => b.addEventListener('click', async () => {
+      await api('/recipes/pending/' + b.dataset.keep + '/keep-entered-cost', { method: 'POST' });
+      toast('Will keep using the entered cost'); recipesTab(v);
+    }));
+    return;
+  }
   const openCode = state.recipeCode || (recs.find(r => Object.keys(r.variants).length) || recs[0] || {}).code;
   const cur = recs.find(r => r.code === openCode) || recs[0];
   const variant = state.recipeVariant || (cur && cur.defaultVariant) || 'in';
   v.innerHTML = `<div class="card">
-      <h2>Cost recipes</h2><div class="sub">Every deliverable has three: In-house, Subcontract and Mixed. One is the default — it can be changed on a quote, and again at Selections before the PO.</div><div class="rule"></div>
+      <h2>Cost recipes</h2>
+      <div class="seg" id="recSubSeg" style="margin:4px 0 10px;">
+        <button data-v="live" class="on">Recipes <span style="opacity:.6;">${recs.filter(r => Object.keys(r.variants).length).length}</span></button>
+        ${pendCount ? `<button data-v="pending">Pending <span class="cnt">${pendCount}</span></button>` : ''}
+      </div>
+      <div class="sub">Every deliverable has three: In-house, Subcontract and Mixed. One is the default — it can be changed on a quote, and again at Selections before the PO.</div><div class="rule"></div>
       <div id="recPick">${recs.map(r => `<span class="pickitem ${r.code === openCode ? 'on' : ''}" data-rc="${esc(r.code)}">${esc(r.code)} ${esc(r.name.split(' ').slice(0, 2).join(' '))}${r.defaultVariant ? ` <span class="muted">· ${VNAME[r.defaultVariant]}</span>` : ' <span class="tag tag-superseded">none</span>'}</span>`).join('')}</div>
     </div>${cur ? `<div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div><h2>${esc(cur.code)} — ${esc(cur.name)}</h2><div class="sub">per ${esc(cur.unit)}${isAdmin() && cur.indicative ? ' · indicative cost per unit at Standard: ' + Object.entries(cur.indicative).map(([k, val]) => `${VNAME[k]} ${money(val)}`).join(' · ') : ''}</div></div>
+        <div><h2>${esc(cur.code)} — ${esc(cur.name)}</h2><div class="sub">per ${esc(cur.unit)}${isAdmin() && cur.indicative ? '' : ''}</div></div>
         <div class="seg" id="varSeg">${['in', 'sub', 'mixed'].map(x => `<button data-v="${x}" class="${variant === x ? 'on' : ''}">${VNAME[x]}${cur.defaultVariant === x ? ' ★' : ''}</button>`).join('')}</div>
-      </div><div class="rule"></div><div id="recBody"></div></div>` : ''}`;
+      </div>
+      ${isAdmin() && cur.indicative ? `<div class="legend" id="indBar" style="margin:2px 0 0;">${indicativeLine(cur)}</div>` : ''}
+      <div class="rule"></div><div id="recBody"></div></div>` : ''}`;
+  const rss = $('#recSubSeg'); if (rss) rss.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.recipesSub = b.dataset.v; recipesTab(v); }));
   v.querySelectorAll('[data-rc]').forEach(c => c.addEventListener('click', () => { state.recipeCode = c.dataset.rc; state.recipeVariant = null; recipesTab(v); }));
   const vs = $('#varSeg'); if (vs) vs.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.recipeVariant = b.dataset.v; recipesTab(v); }));
   if (!cur) return;
@@ -893,11 +1085,18 @@ async function recipesTab(v) {
       <button class="btn btn-ghost btn-sm" data-addc="overhead">+ Overhead</button>
       <button class="btn btn-danger btn-sm" id="delRec" style="margin-left:auto;">Delete this recipe</button></div>` : ''}
     <div class="legend">Material prices come from the library — change one there and every recipe using it follows. Wastage here is the standard; each quote can override it for odd-shaped sites.</div>`;
+  // Keep the indicative line honest as soon as anything changes.
+  async function refreshIndicative() {
+    const bar = $('#indBar'); if (!bar) return;
+    const fresh = await api('/recipes');
+    const c2 = fresh.find(r => r.code === cur.code);
+    if (c2) bar.innerHTML = indicativeLine(c2);
+  }
   const rput = (rid, body) => api('/recipes/' + rid, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const cput = (key, body) => { const [rid, cid] = key.split('|'); return api(`/recipes/${rid}/components/${cid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); };
   const md = $('#mkDef'); if (md) md.addEventListener('click', async () => { await rput(R.id, { makeDefault: true }); toast('Default set'); recipesTab(v); });
-  const rd = $('#r_del'); if (rd) rd.addEventListener('change', () => rput(R.id, { deliveryCost: parseFloat(rd.value) || 0 }).then(() => toast('Saved')));
-  const bind = (sel, fn) => v.querySelectorAll(sel).forEach(i => i.addEventListener('change', () => fn(i)));
+  const rd = $('#r_del'); if (rd) rd.addEventListener('change', () => rput(R.id, { deliveryCost: parseFloat(rd.value) || 0 }).then(() => { toast('Saved'); refreshIndicative(); }));
+  const bind = (sel, fn) => v.querySelectorAll(sel).forEach(i => i.addEventListener('change', () => { const r = fn(i); Promise.resolve(r).then(refreshIndicative); }));
   bind('[data-rr]', i => cput(i.dataset.rr, { ratio: parseFloat(i.value) || 0 }));
   bind('[data-rw]', i => cput(i.dataset.rw, { wastagePct: parseFloat(i.value) || 0 }));
   bind('[data-rd]', i => cput(i.dataset.rd, { subDays: parseFloat(i.value) || 0 }));
@@ -977,19 +1176,58 @@ async function selectionDetail(v) {
 
 // ---------------- PRICING ----------------
 async function pricingSheet(v) {
-  const items = await api('/price-list');
-  const canEdit = isAdmin();
-  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;"><div><h2>Standard Pricing Sheet</h2><div class="sub">Sell rates. Editing never changes quotes already built (rate-locked).</div></div>${canEdit ? '<button class="btn btn-blue" id="addItem">+ Add deliverable</button>' : ''}</div><div class="rule"></div>
-    <table class="resp"><thead><tr><th>Code</th><th>Item</th><th>Unit</th><th>Basic</th><th>Standard</th><th>Premium</th><th>Flag</th><th></th></tr></thead><tbody>
-    ${items.map(p => `<tr><td><b>${esc(p.code)}</b></td><td>${esc(p.name)}</td><td>${esc(p.unit)}</td>
-      <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Basic.spec)}</span><br>${money(p.tiers.Basic.sell)}</td>
-      <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Standard.spec)}</span><br>${money(p.tiers.Standard.sell)}</td>
-      <td><span class="muted" style="font-size:10.5px;">${esc(p.tiers.Premium.spec)}</span><br>${money(p.tiers.Premium.sell)}</td>
-      <td>${p.behaviour !== 'none' ? `<span class="tag tag-${p.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${BEHAV[p.behaviour]}</span>` : ''}</td>
-      <td class="right">${canEdit ? `<button class="btn btn-ghost btn-sm" data-edit="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
-  if (canEdit) { $('#addItem').addEventListener('click', () => editPriceItem(null)); v.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(p => p.id === b.dataset.edit)))); }
+  const sub = state.pricingSub || 'live';
+  const [items, pending] = await Promise.all([api('/price-list'), isAdmin() ? api('/quotes/pending/price-items') : Promise.resolve([])]);
+  const pendCount = (pending || []).length;
+  v.innerHTML = `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div><h2>Pricing</h2><div class="sub">Sell rates per package. Codes and descriptions flow through to the client link, contract and site PO.</div></div>
+        ${isAdmin() && sub === 'live' ? '<button class="btn btn-blue" id="addPi">+ New deliverable</button>' : ''}
+      </div>
+      <div class="seg" id="priceSeg" style="margin:4px 0 10px;">
+        <button data-v="live" class="${sub === 'live' ? 'on' : ''}">Deliverables <span style="opacity:.6;">${items.length}</span></button>
+        ${pendCount ? `<button data-v="pending" class="${sub === 'pending' ? 'on' : ''}">Pending <span class="cnt">${pendCount}</span></button>` : ''}
+      </div>
+      <div class="rule"></div><div id="priceBody"></div></div><div id="piDetail"></div>`;
+  $('#priceSeg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.pricingSub = b.dataset.v; pricingSheet(v); }));
+  const body = $('#priceBody');
+
+  if (sub === 'pending') {
+    body.innerHTML = `<div class="sub" style="margin-bottom:8px;">Custom lines created on quotes. They already work on the quote they came from — this only decides whether they join the reusable list.</div>
+      <table class="resp"><thead><tr><th>Code</th><th>Deliverable</th><th>Created on</th><th>Pricing</th><th class="right">Standard sell</th><th class="right">Our cost</th><th class="right">Margin</th><th></th></tr></thead><tbody>
+      ${pending.map(p => `<tr><td data-l="Code"><b>${esc(p.code)}</b></td>
+        <td data-l="Deliverable"><b>${esc(p.name)}</b>${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(p.description.slice(0, 90))}</span>` : ''}</td>
+        <td data-l="From">${esc(p.quoteNumber || '')} · ${esc(p.client || '')}</td>
+        <td data-l="Pricing">${p.tiered ? 'Tiered' : 'Same all packages'}</td>
+        <td data-l="Sell" class="right">${money(p.value.Standard || 0)}</td>
+        <td data-l="Cost" class="right">${p.cost.Standard != null ? money(p.cost.Standard) : '<span class="muted">not set</span>'}</td>
+        <td data-l="Margin" class="right"><b style="color:${(p.marginPct || 0) >= 25 ? 'var(--green)' : 'var(--red)'};">${p.marginPct != null ? p.marginPct + '%' : '—'}</b></td>
+        <td class="right"><button class="btn btn-blue btn-sm" data-promote="${p.itemId}">Add to list</button> <button class="btn btn-ghost btn-sm" data-dismiss="${p.itemId}">Dismiss</button></td></tr>`).join('')}
+      </tbody></table>`;
+    body.querySelectorAll('[data-promote]').forEach(b => b.addEventListener('click', async () => {
+      const r = await api('/quotes/pending/' + b.dataset.promote + '/promote', { method: 'POST' });
+      if (r.error) return toast(r.error);
+      toast(r.code + ' added to Pricing — build its recipe when you\'re ready'); pricingSheet(v);
+    }));
+    body.querySelectorAll('[data-dismiss]').forEach(b => b.addEventListener('click', async () => {
+      await api('/quotes/pending/' + b.dataset.dismiss + '/dismiss', { method: 'POST' });
+      toast('Dismissed — the quote is unchanged'); pricingSheet(v);
+    }));
+    return;
+  }
+
+  body.innerHTML = `<table class="resp"><thead><tr><th>Code</th><th>Deliverable</th><th>Unit</th><th>Behaviour</th><th class="right">Basic</th><th class="right">Standard</th><th class="right">Premium</th><th></th></tr></thead><tbody>
+    ${items.map(p => `<tr><td data-l="Code"><b>${esc(p.code)}</b></td>
+      <td data-l="Deliverable">${esc(p.name)}${p.fromCustom ? ' <span class="tag t-cust">from custom</span>' : ''}${p.recipeStatus === 'pending' ? ' <span class="tag tag-incomplete">recipe pending</span>' : ''}
+        ${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(p.description.slice(0, 80))}</span>` : ''}</td>
+      <td data-l="Unit">${esc(p.unit || '')}</td><td data-l="Behaviour" class="muted">${esc(p.behaviour || 'none')}</td>
+      <td data-l="Basic" class="right">${money(p.basicSell)}</td><td data-l="Standard" class="right">${money(p.standardSell)}</td><td data-l="Premium" class="right">${money(p.premiumSell)}</td>
+      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}
+    </tbody></table>`;
+  const ap = $('#addPi'); if (ap) ap.addEventListener('click', () => editPriceItem(null, v));
+  body.querySelectorAll('[data-pi]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(x => x.id === b.dataset.pi), v)));
 }
-function editPriceItem(item) {
+function editPriceItem(item, v) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   const t = item ? item.tiers : { Basic: {}, Standard: {}, Premium: {} };
   bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${item ? 'Edit' : 'Add'} deliverable</h2>
@@ -1005,9 +1243,9 @@ function editPriceItem(item) {
   $('#p_save').addEventListener('click', async () => {
     const body = { code: $('#p_code').value, name: $('#p_name').value, unit: $('#p_unit').value, behaviour: $('#p_behav').value, description: $('#p_desc').value, tiers: { Basic: { spec: $('#p_Basic_spec').value, sell: +$('#p_Basic_sell').value }, Standard: { spec: $('#p_Standard_spec').value, sell: +$('#p_Standard_sell').value }, Premium: { spec: $('#p_Premium_spec').value, sell: +$('#p_Premium_sell').value } } };
     if (item) await api('/price-list/' + item.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); else await api('/price-list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    bg.remove(); toast('Saved'); pricingSheet($('#view'));
+    bg.remove(); toast('Saved'); pricingSheet(v || $('#view'));
   });
-  const del = $('#p_del'); if (del) del.addEventListener('click', async () => { if (confirm('Delete?')) { await api('/price-list/' + item.id, { method: 'DELETE' }); bg.remove(); pricingSheet($('#view')); } });
+  const del = $('#p_del'); if (del) del.addEventListener('click', async () => { if (confirm('Delete?')) { await api('/price-list/' + item.id, { method: 'DELETE' }); bg.remove(); pricingSheet(v || $('#view')); } });
 }
 
 // ---------------- SURCHARGES / CHECKLIST ----------------
@@ -1068,20 +1306,29 @@ async function settingsTab(v) {
     <div class="grid3">
       <div class="stat"><div class="k">Customer tiers — target gross margin</div>
         <div style="font-size:12.5px;line-height:1.9;margin-top:4px;"><b>Bronze</b> ${esc(s.tier_bronze || '15')}% · <b>Silver</b> ${esc(s.tier_silver || '25')}% · <b>Gold</b> ${esc(s.tier_gold || '35')}%</div></div>
+      <div class="stat"><div class="k">Quote numbering</div>
+        <div style="font-size:12.5px;line-height:1.9;margin-top:4px;">Next new quote: <b>${esc(s.nextQuoteNumber || s.quote_number_start || '1410')}</b><br>
+        <span class="muted">Starting number ${esc(s.quote_number_start || '1410')}</span></div></div>
       <div class="stat"><div class="k">Quote ageing</div>
         <div style="font-size:12.5px;line-height:1.9;margin-top:4px;">Follow up <b>${esc(s.age_flag || '7')}d</b> · Chase <b>${esc(s.age_chase || '14')}d</b> · Dead <b>${esc(s.age_dead || '30')}d</b></div></div>
       <div class="stat"><div class="k">Labour &amp; crew</div>
-        <div style="font-size:12.5px;line-height:1.9;margin-top:4px;"><b>${money(parseFloat(s.crew_day_rate || 1150))}</b>/day for <b>${esc(s.crew_people || '2')}</b> people · <b>${esc(s.hours_per_day || '8')}</b> hrs/day<br>
-        <span class="muted">= ${money2((parseFloat(s.crew_day_rate || 1150) / Math.max(1, parseFloat(s.crew_people || 2)) / Math.max(1, parseFloat(s.hours_per_day || 8))))} per person-hour</span></div></div>
+        <div style="font-size:12.5px;line-height:1.9;margin-top:4px;"><b>${money(parseFloat(s.crew_day_rate || 1150))}</b>/day for <b>${esc(s.crew_people || '3')}</b> people · <b>${esc(s.hours_per_day || '8')}</b> hrs/day<br>
+        <span class="muted">= ${money2((parseFloat(s.crew_day_rate || 1150) / Math.max(1, parseFloat(s.crew_people || 3)) / Math.max(1, parseFloat(s.hours_per_day || 8))))} per person-hour</span></div></div>
     </div></div>
   <div class="card"><h2>Customer tiers — target gross margin</h2><div class="sub">Warns on quotes below target, and drives the cost-plus guide price.</div><div class="rule"></div>
     <div class="grid3">${[['tier_bronze', 'Bronze %'], ['tier_silver', 'Silver %'], ['tier_gold', 'Gold %']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveTiers">Save tiers</button></div>
+  <div class="card"><h2>Quote numbering</h2>
+    <div class="sub">The starting number applies to the very first quote only — after that the tool counts up from the highest number in use. To change an existing quote's number, open it and use "Change number".</div><div class="rule"></div>
+    <div class="grid3"><div class="field"><label>Starting quote number</label><input id="set_quote_number_start" type="number" value="${esc(s.quote_number_start || '1410')}"></div></div>
+    <button class="btn btn-blue" id="saveQnum">Save numbering</button></div>
   <div class="card"><h2>Quote ageing (days)</h2><div class="rule"></div>
     <div class="grid3">${[['age_flag', 'Follow up from'], ['age_chase', 'Chase from'], ['age_dead', 'Dead from']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveAge">Save ageing</button></div>
   <div class="card"><h2>Labour & crew rates</h2><div class="sub">Used by every recipe: crew day rate ÷ people ÷ hours = cost per person-hour. Site time uses crew size on each quote.</div><div class="rule"></div>
     <div class="grid4">${[['crew_day_rate', 'Crew day rate $'], ['crew_people', 'People in day rate'], ['extra_person_rate', 'Extra person $/day'], ['hours_per_day', 'Hours per day']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <div class="legend" id="ratePreview">= <b>${money2((parseFloat(s.crew_day_rate || 1150)) / Math.max(1, parseFloat(s.crew_people || 3)) / Math.max(1, parseFloat(s.hours_per_day || 8)))}</b> per person-hour — this is what every recipe uses.<br>
+      <span style="color:var(--red);">Changing the crew size without changing the day rate makes every quote cheaper. If a bigger crew costs more per day, update both together.</span></div>
     <button class="btn btn-blue" id="saveLab">Save rates</button></div>
   <div class="card"><h2>Logins</h2><div class="sub">Estimators see quotes, builder and cost totals only — no margin, vendors, recipes, surcharges, checklist or settings.</div><div class="rule"></div>
     <table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th></th></tr></thead><tbody>
@@ -1107,7 +1354,18 @@ async function settingsTab(v) {
     <button class="btn btn-blue" id="saveContract">Save contract text</button></div>`;
   const save = (keys, msg) => async () => { const body = {}; keys.forEach(k => body[k] = $('#set_' + k).value); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast(msg); };
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
+  $('#saveQnum').addEventListener('click', save(['quote_number_start'], 'Numbering saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
+  ['set_crew_day_rate', 'set_crew_people', 'set_hours_per_day'].forEach(id => {
+    const el = $('#' + id); if (!el) return;
+    el.addEventListener('input', () => {
+      const d = parseFloat($('#set_crew_day_rate').value) || 0;
+      const p = Math.max(1, parseFloat($('#set_crew_people').value) || 1);
+      const hr = Math.max(1, parseFloat($('#set_hours_per_day').value) || 1);
+      const out = $('#ratePreview');
+      if (out) out.innerHTML = `= <b>${money2(d / p / hr)}</b> per person-hour — this is what every recipe uses.<br><span style="color:var(--red);">Changing crew size without the day rate makes every quote cheaper.</span>`;
+    });
+  });
   $('#saveLab').addEventListener('click', save(['crew_day_rate', 'crew_people', 'extra_person_rate', 'hours_per_day'], 'Rates saved'));
   $('#testEmail').addEventListener('click', async () => {
     const el = $('#testResult'); el.innerHTML = '<span class="muted">Testing…</span>';

@@ -9,7 +9,7 @@ function resolveItem(item, pi, tier) {
   const lockedSell = item[`locked_${p}_sell`];
   if (lockedSell !== null && lockedSell !== undefined) {
     return {
-      code: item.custom_code || (pi ? pi.code : 'XX'),
+      code: item.custom_code || (pi ? pi.code : 'C?'),
       name: item.custom_name || (pi ? pi.name : 'Item'),
       unit: item.custom_unit || (pi ? pi.unit : 'ea'),
       spec: lockedSpec || (pi ? pi[`${p}_spec`] : ''), rate: lockedSell,
@@ -24,7 +24,7 @@ function resolveItem(item, pi, tier) {
     };
   }
   return {
-    code: item.custom_code || 'XX', name: item.custom_name || 'Custom item', unit: item.custom_unit || 'ea',
+    code: item.custom_code || 'C?', name: item.custom_name || 'Custom item', unit: item.custom_unit || 'ea',
     spec: item.custom_name || '', rate: item.custom_rate || 0,
     behaviour: item.behaviour_override || 'none',
   };
@@ -41,7 +41,13 @@ function snapshotFromPriceItem(pi) {
   };
 }
 
-function lineTotal(item, resolved) {
+function lineTotal(item, resolved, tier) {
+  // A site-specific value replaces qty x rate entirely — used for things priced from a
+  // supplier quote (plant schedules, one-off features) rather than from the rate card.
+  if (item.value_override) {
+    const v = item['val_' + String(tier || 'Standard').toLowerCase()];
+    if (v != null) return v;
+  }
   let t = item.qty * resolved.rate;
   if (resolved.behaviour === 'rate_only' || resolved.behaviour === 'optional') t = 0;
   if (item.shared_enabled) t = t * ((item.shared_pct || 50) / 100);

@@ -166,7 +166,10 @@ CREATE TABLE IF NOT EXISTS fy_close (
 );
 `);
 addColumn('quotes','customer_tier',"TEXT DEFAULT 'Silver'");
-addColumn('quotes','crew_size','INTEGER DEFAULT 2');
+addColumn('quotes','crew_size','INTEGER DEFAULT 3');
+// Upgraded databases can carry rows created before the column existed.
+try { db.exec("UPDATE quotes SET crew_size=3 WHERE crew_size IS NULL"); } catch (e) {}
+try { db.exec("UPDATE quotes SET customer_tier='Silver' WHERE customer_tier IS NULL"); } catch (e) {}
 addColumn('quotes','quoted_cost','REAL');
 addColumn('quotes','quoted_sell','REAL');
 addColumn('quotes','accepted_mixed','TEXT');
@@ -193,6 +196,31 @@ addColumn('vendors','code_no','INTEGER');
 addColumn('quote_items','sel_method','TEXT');
 addColumn('quote_items','sel_vendor_id','TEXT');
 addColumn('quote_items','sel_sub_days','REAL');
+// Q1: site-specific sell value AND matching cost, per tier
+addColumn('quote_items','val_basic','REAL');
+addColumn('quote_items','val_standard','REAL');
+addColumn('quote_items','val_premium','REAL');
+addColumn('quote_items','cost_basic','REAL');
+addColumn('quote_items','cost_standard','REAL');
+addColumn('quote_items','cost_premium','REAL');
+addColumn('quote_items','value_override','INTEGER DEFAULT 0');
+// Q2: custom lines carry full spec so they can be promoted to a real price item
+addColumn('quote_items','custom_desc','TEXT');
+addColumn('quote_items','custom_behaviour',"TEXT DEFAULT 'none'");
+addColumn('quote_items','custom_tiered','INTEGER DEFAULT 0');
+addColumn('quote_items','custom_spec_basic','TEXT');
+addColumn('quote_items','custom_spec_standard','TEXT');
+addColumn('quote_items','custom_spec_premium','TEXT');
+addColumn('quote_items','promoted_price_item_id','TEXT');
+addColumn('quote_items','promo_status',"TEXT DEFAULT 'none'");
+// Q2: price items know they came from a custom line and whether a recipe is still needed
+addColumn('price_items','status',"TEXT DEFAULT 'live'");
+addColumn('price_items','from_custom','INTEGER DEFAULT 0');
+addColumn('price_items','origin_quote','TEXT');
+addColumn('price_items','recipe_status',"TEXT DEFAULT 'none'");
+addColumn('price_items','entered_cost_basic','REAL');
+addColumn('price_items','entered_cost_standard','REAL');
+addColumn('price_items','entered_cost_premium','REAL');
 db.exec(`
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY, name TEXT, phone TEXT, email TEXT, address TEXT,
@@ -338,12 +366,6 @@ if (!settingGet2('seed_v7')) {
   iu.run(uid2(),'Smit','admin',sha('Smit@1234'),'admin');
   iu.run(uid2(),'Estimator 1','est1',sha('Est1@1234'),'estimator');
   iu.run(uid2(),'Estimator 2','est2',sha('Est2@1234'),'estimator');
-  // Defaults only — NEVER clobber a value the owner has already set.
-  [['tier_bronze','15'],['tier_silver','25'],['tier_gold','35'],
-   ['age_flag','7'],['age_chase','14'],['age_dead','30'],
-   ['crew_day_rate','1150'],['crew_people','2'],['extra_person_rate','420'],['hours_per_day','8'],
-   ['work_days_per_month','21']
-  ].forEach(([k,v])=>{ const cur=settingGet2(k); if(cur===null||cur===undefined||cur==='') settingSet2(k,v); });
   const iv=db.prepare('INSERT OR IGNORE INTO vendors (id,name,is_supplier,is_subcontractor,contact,phone,area,terms) VALUES (?,?,?,?,?,?,?,?)');
   const vHT=uid2(); iv.run(vHT,'Hunter Turf',1,0,'Dave','0412 000 111','Kellyville - 12 km','30 days');
   const vBS=uid2(); iv.run(vBS,'Benedict Sands',1,0,'Sales','02 9000 0000','Chipping Norton','Account');
@@ -372,6 +394,16 @@ if (!settingGet2('seed_v7')) {
   settingSet2('seed_v7','1');
 }
 
+
+// Setting defaults are applied on EVERY boot, not inside a seed guard — otherwise a new
+// setting added in a later version never appears on a database that has already been
+// seeded, and the field renders blank forever. Existing values are never overwritten.
+[['tier_bronze','15'],['tier_silver','25'],['tier_gold','35'],
+ ['age_flag','7'],['age_chase','14'],['age_dead','30'],
+ ['crew_day_rate','1150'],['crew_people','3'],['extra_person_rate','420'],['hours_per_day','8'],
+ ['work_days_per_month','21'],['quote_number_start','1410'],
+ ['default_crew_size','3'],['default_customer_tier','Silver']
+].forEach(([k,v]) => { const cur = settingGet2(k); if (cur === null || cur === undefined || cur === '') settingSet2(k,v); });
 
 // ---- v11: Materials & Plant library + three recipe variants per deliverable ----
 if (!settingGet2('seed_v11')) {

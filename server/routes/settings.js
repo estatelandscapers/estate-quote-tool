@@ -9,7 +9,7 @@ const KEYS = ['company_name','company_abn','company_lic','company_address','comp
   'pay_sched_standard','pay_sched_small','warranty_text','protections_text','default_special_clauses','standard_conditions',
   // tiers, ageing, labour — these were missing, which is why the Editor fields showed blank and "didn't save"
   'tier_bronze','tier_silver','tier_gold','age_flag','age_chase','age_dead',
-  'crew_day_rate','crew_people','extra_person_rate','hours_per_day','work_days_per_month'];
+  'crew_day_rate','crew_people','extra_person_rate','hours_per_day','work_days_per_month','quote_number_start','default_crew_size','default_customer_tier'];
 
 router.get('/', (req, res) => {
   const out = {}; KEYS.forEach(k => out[k] = settingGet(k));

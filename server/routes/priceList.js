@@ -4,7 +4,7 @@ const { newId } = require('../utils/ids');
 const router = express.Router();
 
 const rowOut = r => ({
-  id: r.id, code: r.code, name: r.name, description: r.description || '', unit: r.unit, behaviour: r.behaviour, notes: r.notes,
+  id: r.id, code: r.code, name: r.name, description: r.description || '', fromCustom: !!r.from_custom, originQuote: r.origin_quote, recipeStatus: r.recipe_status || 'none', unit: r.unit, behaviour: r.behaviour, notes: r.notes,
   tiers: { Basic: { spec: r.basic_spec, sell: r.basic_sell }, Standard: { spec: r.standard_spec, sell: r.standard_sell }, Premium: { spec: r.premium_spec, sell: r.premium_sell } },
 });
 

@@ -24,7 +24,7 @@ function clientView(q) {
   items.forEach(it => {
     const pi = getPI(it.price_item_id);
     const perTier = {};
-    TIERS.forEach(t => { const r = resolveItem(it, pi, t); perTier[t] = { spec: r.spec, price: lineTotal(it, r), rate: r.rate }; });
+    TIERS.forEach(t => { const r = resolveItem(it, pi, t); perTier[t] = { spec: r.spec, price: lineTotal(it, r, t), rate: r.rate }; });
     const anyR = resolveItem(it, pi, 'Standard');
     const row = {
       code: anyR.code, name: anyR.name, unit: anyR.unit, behaviour: anyR.behaviour,
