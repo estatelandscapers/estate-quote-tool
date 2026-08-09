@@ -3,18 +3,20 @@ const { db } = require('../db');
 const { TIERS, resolveItem, lineTotal, surchargeAmount } = require('../utils/pricing');
 const router = express.Router();
 
+// Value of a quote, EXCLUDING GST.
+// This used to be a second, private copy of the totals maths — and it drifted: it still
+// applied percentage surcharges to Scope 1 only, and ignored site-specific line values.
+// It now calls the same code the quote itself uses, so the figures can never disagree.
 function quoteValue(q) {
-  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=?').all(q.id);
-  const applied = JSON.parse(q.applied_surcharges || '[]');
-  const tier = q.accepted_package || q.default_package || 'Standard';
-  let s1 = 0, s2 = 0;
-  items.forEach(it => {
-    const pi = it.price_item_id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(it.price_item_id) : null;
-    const r = resolveItem(it, pi, tier);
-    const t = lineTotal(it, r);
-    if (it.scope === 2) s2 += t; else s1 += t;
-  });
-  return s1 + surchargeAmount(applied, s1) + s2;
+  const { fullQuote } = require('./quotes');
+  try {
+    const fq = fullQuote(q);
+    // For a won job use the price actually signed; otherwise the current build.
+    return (q.quoted_sell != null && q.status === 'accepted') ? q.quoted_sell : fq.grandExGst;
+  } catch (e) {
+    console.error('[dashboard] quoteValue failed for', q.quote_number, e.message);
+    return 0;
+  }
 }
 
 // Australian FY start (1 Jul)

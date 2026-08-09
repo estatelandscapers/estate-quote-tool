@@ -77,13 +77,36 @@ router.get('/:token/siteplan', (req, res) => {
   res.send(Buffer.from(q.siteplan_data, 'base64'));
 });
 
+// Is this us looking, rather than the client?
+//  1. a valid admin/estimator session cookie is present, or
+//  2. the link was opened from the tool's Preview button (?preview=1)
+function viewerOf(req) {
+  try {
+    const { getUser } = require('../utils/auth');
+    if (getUser(req)) return 'internal';          // signed in = one of us
+  } catch (e) {}
+  if (req.query.preview === '1' || (req.body && req.body.preview)) return 'internal';
+  return 'client';
+}
+// Rough visitor fingerprint so one person refreshing isn't counted five times.
+// Deliberately coarse — enough to de-dupe, not enough to identify anyone.
+function visitorKey(req) {
+  const ip = (req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim();
+  const ua = String(req.headers['user-agent'] || '').slice(0, 80);
+  return require('node:crypto').createHash('sha256').update(ip + '|' + ua).digest('hex').slice(0, 16);
+}
 router.post('/:token/event', (req, res) => {
   const q = getQ(req.params.token);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const { type, payload } = req.body || {};
   if (!['view', 'section_view', 'package_select', 'heartbeat', 'print_click'].includes(type)) return res.status(400).json({ error: 'Bad type' });
-  db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload) VALUES (?,?,?,?)').run(newId(), q.id, type, JSON.stringify(payload || {}));
-  if (type === 'view' && q.status === 'draft') db.prepare("UPDATE quotes SET status='viewed' WHERE id=?").run(q.id);
+  const viewer = viewerOf(req);
+  const vkey = visitorKey(req);
+  db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload,viewer,visitor_key) VALUES (?,?,?,?,?,?)')
+    .run(newId(), q.id, type, JSON.stringify(payload || {}), viewer, vkey);
+  // Only a genuine client view moves the quote to "viewed".
+  if (type === 'view' && viewer === 'client' && (q.status === 'draft' || q.status === 'sent'))
+    db.prepare("UPDATE quotes SET status='viewed' WHERE id=?").run(q.id);
   res.status(201).json({ ok: true });
 });
 

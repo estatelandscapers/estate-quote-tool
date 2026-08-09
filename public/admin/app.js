@@ -78,12 +78,14 @@ function route() {
 // ---------------- LEADS (enquiries + figures) ----------------
 const LEAD_STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
 async function leadsTab(v) {
-  v.innerHTML = `<div class="card">
+  v.innerHTML = `<div class="card"><h2>Figures</h2>
+      <div class="sub">Secured = accepted &amp; signed. FY = 1 Jul – 30 Jun. All values <b>exclude GST</b>; margins are GROSS margin.</div>
+      <div class="rule"></div><div id="dashcards">Loading…</div></div>
+    <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div><h2>Leads &amp; enquiries</h2><div class="sub">Log every enquiry, then convert it straight into a quote. A website form can feed this list later.</div></div>
+        <div><h2>Leads &amp; enquiries</h2><div class="sub">Log every enquiry, then convert it straight into a quote.</div></div>
         <button class="btn btn-blue" id="addLead">+ New enquiry</button></div>
-      <div class="rule"></div><div id="leadTable">Loading…</div></div>
-    <div class="card"><h2>Figures</h2><div class="sub">Secured = accepted &amp; signed. FY = 1 Jul – 30 Jun. All margins in this tool are GROSS margin.</div><div class="rule"></div><div id="dashcards">Loading…</div></div>`;
+      <div class="rule"></div><div id="leadTable">Loading…</div></div>`;
   $('#addLead').addEventListener('click', () => editLead(null, v));
   const data = await api('/leads');
   const rows = data.leads || [];
@@ -115,9 +117,9 @@ async function leadsTab(v) {
     </div>
     <div class="grid4" style="margin-top:10px;">
       <div class="stat"><div class="k">Quotes built (30d)</div><div class="v">${d.builtMonth || 0}</div></div>
-      <div class="stat"><div class="k">Value quoted (30d)</div><div class="v">${money(d.quotedValueMonth)}</div></div>
+      <div class="stat"><div class="k">Value quoted (30d)</div><div class="v">${money(d.quotedValueMonth)}</div><div style="font-size:9.5px;color:var(--grey);">excl. GST</div></div>
       <div class="stat"><div class="k">Win rate (value, FY)</div><div class="v">${d.winRateValue || 0}%</div></div>
-      <div class="stat"><div class="k">Avg quote value</div><div class="v">${money(d.avgQuote)}</div></div>
+      <div class="stat"><div class="k">Avg quote value</div><div class="v">${money(d.avgQuote)}</div><div style="font-size:9.5px;color:var(--grey);">excl. GST</div></div>
     </div>`;
 }
 function editLead(l, v) {
@@ -160,6 +162,44 @@ async function editorTab(v) {
   return settingsTab(body);
 }
 
+
+// ---------------- SEND QUOTE ----------------
+async function openSendDialog(q) {
+  const pv = await api('/quotes/' + q.id + '/send-preview');
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal" style="max-width:640px;">
+    <h2 style="margin:0 0 3px;">${pv.alreadySent ? 'Resend' : 'Send'} quote ${esc(q.quoteNumber)}</h2>
+    <div class="sub">${pv.alreadySent ? `Last sent ${esc(String(pv.sentAt || '').slice(0, 16))} to ${esc(pv.to)} · ${pv.sendCount}×. Resending does not reset the view count.` : 'The link and your signature are added automatically — you don\'t need to paste them in.'}</div>
+    <div class="rule"></div>
+    <div class="grid2">
+      <div class="field"><label>To</label><input id="sd_to" value="${esc(pv.to)}" placeholder="client@example.com"></div>
+      <div class="field"><label>Copy to</label><input id="sd_cc" value="${esc(pv.cc)}"></div>
+    </div>
+    <div class="field"><label>Subject</label><input id="sd_subj" value="${esc(pv.subject)}"></div>
+    <div class="field"><label>Message</label><textarea id="sd_msg" rows="8">${esc(pv.message)}</textarea></div>
+    <div class="legend">Quote <b>${esc(pv.quoteNumber)}</b> · valid until ${esc(pv.validUntil)} · link ${esc(pv.link)}</div>
+    <div id="sd_result"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:12px;">
+      <span class="muted" style="margin-right:auto;font-size:11px;">Sends from ${esc(pv.cc || 'the office address')}</span>
+      <button class="btn btn-ghost" id="sd_cancel">Cancel</button>
+      <button class="btn btn-blue" id="sd_send">${pv.alreadySent ? 'Resend now' : 'Send now'}</button></div></div>`;
+  document.body.appendChild(bg);
+  $('#sd_cancel').addEventListener('click', () => bg.remove());
+  $('#sd_send').addEventListener('click', async () => {
+    const btn = $('#sd_send'); const out = $('#sd_result');
+    if (!$('#sd_to').value.trim()) { out.innerHTML = '<div class="emailbar failed">Enter the client\'s email address.</div>'; return; }
+    btn.disabled = true; btn.textContent = 'Sending…';
+    const r = await api('/quotes/' + q.id + '/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: $('#sd_to').value.trim(), cc: $('#sd_cc').value.trim(), subject: $('#sd_subj').value, message: $('#sd_msg').value, validUntil: pv.validUntil }) });
+    if (r.error) {
+      out.innerHTML = `<div class="emailbar failed"><b>Not sent</b><br>${esc(r.error)}${r.hint ? `<br><span style="font-size:11px;">${esc(r.hint)}</span>` : ''}</div>`;
+      btn.disabled = false; btn.textContent = 'Try again'; return;
+    }
+    bg.remove(); toast('Quote sent to ' + $('#sd_to').value.trim());
+    state.tab = 'quotes'; shell();
+  });
+}
+
 // ---------------- QUOTES ----------------
 const AGE = { fresh: ['age-fresh', d => d + 'd'], flag: ['age-flag', d => d + 'd — follow up'], chase: ['age-chase', d => d + 'd — chase'], dead: ['age-dead', d => d + 'd — dead'] };
 async function quotesList(v) {
@@ -197,11 +237,25 @@ async function quoteEditor(v) {
   v.innerHTML = `
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>Quote ${esc(q.quoteNumber)}</h2><div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a><span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${q.status}</span></div>
+      <div><h2 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">Quote
+        <input id="qNum" value="${esc(q.parentNumber || q.quoteNumber)}" ${isAdmin() ? '' : 'disabled'}
+          style="width:104px;font-size:16px;font-weight:800;letter-spacing:.6px;padding:4px 8px;">
+        ${String(q.quoteNumber).includes('.') ? `<span class="muted" style="font-size:12px;font-weight:500;">rev ${esc(String(q.quoteNumber).split('.')[1])}</span>` : ''}
+        <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
+        <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote">${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
+      <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
     </div>
     <div class="rule"></div>
     ${q.emailStatus ? `<div class="emailbar ${q.emailStatus}"><b>Signed-contract email: ${q.emailStatus.toUpperCase()}</b><br><span style="font-size:11px;">${esc(q.emailDetail || '')}</span></div>` : ''}
+    <div class="viewbar">
+      <span><b>${q.clientViews || 0}</b> client view${q.clientViews === 1 ? '' : 's'}${q.clientVisitors > 1 ? ` from ${q.clientVisitors} visitors` : ''}</span>
+      ${q.firstViewedAt ? `<span class="muted">first opened ${esc(String(q.firstViewedAt).slice(0, 16))}</span>` : '<span class="muted">not opened yet</span>'}
+      ${q.internalViews ? `<span class="muted" title="Your own views and previews — never counted as client views">${q.internalViews} internal (not counted)</span>` : ''}
+      ${q.legacyViews ? `<span class="muted" title="Recorded before views were attributed">${q.legacyViews} older views (unattributed)</span>` : ''}
+      ${q.sentAt ? `<span class="muted">sent ${esc(String(q.sentAt).slice(0, 16))} to ${esc(q.sentTo || '')}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
+    </div>
     <div class="linkbar"><span>🔗 Live link:</span><input id="linkInput" readonly value="${esc(link)}"><button class="btn btn-blue btn-sm" id="copyLink">Copy</button><a class="btn btn-ghost btn-sm" href="${esc(link)}" target="_blank">Preview</a></div>
   </div>
 
@@ -304,6 +358,7 @@ async function quoteEditor(v) {
   $('#segPkg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPkg').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave().then(reload); }));
   $('#segPay').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPay').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave(); }));
 
+  const sq = $('#sendQuote'); if (sq) sq.addEventListener('click', () => openSendDialog(q));
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
   $('#newRev').addEventListener('click', async () => { const r = await api('/quotes/' + q.id + '/revision', { method: 'POST' }); state.quoteId = r.id; state.scrollY = 0; toast('Revision ' + r.quoteNumber + ' created — old link superseded'); route(); });
@@ -414,6 +469,21 @@ async function quoteEditor(v) {
   $('#planFile').addEventListener('change', e => { const file = e.target.files[0]; if (!file) return; state.scrollY = window.scrollY; const rd = new FileReader(); rd.onload = async () => { await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: rd.result.split(',')[1], mime: file.type }) }); toast('Drawing uploaded'); reload(); }; rd.readAsDataURL(file); });
   const rmPlan = $('#removePlan'); if (rmPlan) rmPlan.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: null, mime: null }) }); reload(); });
   $('#planNa').addEventListener('change', async e => { await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteplanNa: e.target.checked }) }); });
+
+  // Sticky footer: Save is quiet, Send is deliberate — the QuickBooks pattern.
+  if (isAdmin() && !$('#builderBar')) {
+    const bar = document.createElement('div');
+    bar.id = 'builderBar'; bar.className = 'builderbar';
+    bar.innerHTML = `<span class="muted" id="barStatus">Auto-saves as you work</span>
+      <button class="btn btn-ghost" id="barSave">Save</button>
+      <button class="btn btn-blue" id="barSend">${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>`;
+    v.appendChild(bar);
+    $('#barSave').addEventListener('click', async () => {
+      await autosave(); $('#barStatus').textContent = 'Saved just now';
+      setTimeout(() => { const el = $('#barStatus'); if (el) el.textContent = 'Auto-saves as you work'; }, 2500);
+    });
+    $('#barSend').addEventListener('click', () => openSendDialog(q));
+  }
 
   function renderItemsTiered(q, c) {
     const lineMap = {}; (c.perLine || []).forEach(l => lineMap[l.id] = l);
@@ -1221,7 +1291,9 @@ async function pricingSheet(v) {
       <td data-l="Deliverable">${esc(p.name)}${p.fromCustom ? ' <span class="tag t-cust">from custom</span>' : ''}${p.recipeStatus === 'pending' ? ' <span class="tag tag-incomplete">recipe pending</span>' : ''}
         ${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(p.description.slice(0, 80))}</span>` : ''}</td>
       <td data-l="Unit">${esc(p.unit || '')}</td><td data-l="Behaviour" class="muted">${esc(p.behaviour || 'none')}</td>
-      <td data-l="Basic" class="right">${money(p.basicSell)}</td><td data-l="Standard" class="right">${money(p.standardSell)}</td><td data-l="Premium" class="right">${money(p.premiumSell)}</td>
+      <td data-l="Basic" class="right">${money((p.tiers && p.tiers.Basic) ? p.tiers.Basic.sell : 0)}</td>
+      <td data-l="Standard" class="right">${money((p.tiers && p.tiers.Standard) ? p.tiers.Standard.sell : 0)}</td>
+      <td data-l="Premium" class="right">${money((p.tiers && p.tiers.Premium) ? p.tiers.Premium.sell : 0)}</td>
       <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}
     </tbody></table>`;
   const ap = $('#addPi'); if (ap) ap.addEventListener('click', () => editPriceItem(null, v));
@@ -1306,22 +1378,26 @@ async function settingsTab(v) {
     <div class="grid3">
       <div class="stat"><div class="k">Customer tiers — target gross margin</div>
         <div style="font-size:12.5px;line-height:1.9;margin-top:4px;"><b>Bronze</b> ${esc(s.tier_bronze || '15')}% · <b>Silver</b> ${esc(s.tier_silver || '25')}% · <b>Gold</b> ${esc(s.tier_gold || '35')}%</div></div>
-      <div class="stat"><div class="k">Quote numbering</div>
-        <div style="font-size:12.5px;line-height:1.9;margin-top:4px;">Next new quote: <b>${esc(s.nextQuoteNumber || s.quote_number_start || '1410')}</b><br>
-        <span class="muted">Starting number ${esc(s.quote_number_start || '1410')}</span></div></div>
+
       <div class="stat"><div class="k">Quote ageing</div>
         <div style="font-size:12.5px;line-height:1.9;margin-top:4px;">Follow up <b>${esc(s.age_flag || '7')}d</b> · Chase <b>${esc(s.age_chase || '14')}d</b> · Dead <b>${esc(s.age_dead || '30')}d</b></div></div>
       <div class="stat"><div class="k">Labour &amp; crew</div>
         <div style="font-size:12.5px;line-height:1.9;margin-top:4px;"><b>${money(parseFloat(s.crew_day_rate || 1150))}</b>/day for <b>${esc(s.crew_people || '3')}</b> people · <b>${esc(s.hours_per_day || '8')}</b> hrs/day<br>
         <span class="muted">= ${money2((parseFloat(s.crew_day_rate || 1150) / Math.max(1, parseFloat(s.crew_people || 3)) / Math.max(1, parseFloat(s.hours_per_day || 8))))} per person-hour</span></div></div>
     </div></div>
+  <div class="card"><h2>Email signature</h2>
+    <div class="sub">Used on quote emails and signed-contract emails. First line is shown in bold as your name.</div><div class="rule"></div>
+    <div class="grid2">
+      <div class="field"><label>Signature</label><textarea id="set_email_signature" rows="6">${esc(s.email_signature || '')}</textarea></div>
+      <div class="field"><label>Default quote email — subject</label><input id="set_quote_email_subject" value="${esc(s.quote_email_subject || '')}">
+        <label style="margin-top:10px;">Default quote email — message</label><textarea id="set_quote_email_body" rows="6">${esc(s.quote_email_body || '')}</textarea>
+        <span class="muted" style="font-size:10px;">{{firstname}}, {{client}}, {{number}} and {{address}} are filled in automatically. You can still edit every message before it sends.</span></div>
+    </div>
+    <button class="btn btn-blue" id="saveSig">Save email settings</button></div>
   <div class="card"><h2>Customer tiers — target gross margin</h2><div class="sub">Warns on quotes below target, and drives the cost-plus guide price.</div><div class="rule"></div>
     <div class="grid3">${[['tier_bronze', 'Bronze %'], ['tier_silver', 'Silver %'], ['tier_gold', 'Gold %']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveTiers">Save tiers</button></div>
-  <div class="card"><h2>Quote numbering</h2>
-    <div class="sub">The starting number applies to the very first quote only — after that the tool counts up from the highest number in use. To change an existing quote's number, open it and use "Change number".</div><div class="rule"></div>
-    <div class="grid3"><div class="field"><label>Starting quote number</label><input id="set_quote_number_start" type="number" value="${esc(s.quote_number_start || '1410')}"></div></div>
-    <button class="btn btn-blue" id="saveQnum">Save numbering</button></div>
+  
   <div class="card"><h2>Quote ageing (days)</h2><div class="rule"></div>
     <div class="grid3">${[['age_flag', 'Follow up from'], ['age_chase', 'Chase from'], ['age_dead', 'Dead from']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveAge">Save ageing</button></div>
@@ -1353,8 +1429,8 @@ async function settingsTab(v) {
     <div class="field"><label>Standard conditions</label><textarea id="set_standard_conditions" rows="6">${esc(s.standard_conditions)}</textarea></div>
     <button class="btn btn-blue" id="saveContract">Save contract text</button></div>`;
   const save = (keys, msg) => async () => { const body = {}; keys.forEach(k => body[k] = $('#set_' + k).value); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast(msg); };
+  $('#saveSig').addEventListener('click', save(['email_signature', 'quote_email_subject', 'quote_email_body'], 'Email settings saved'));
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
-  $('#saveQnum').addEventListener('click', save(['quote_number_start'], 'Numbering saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
   ['set_crew_day_rate', 'set_crew_people', 'set_hours_per_day'].forEach(id => {
     const el = $('#' + id); if (!el) return;

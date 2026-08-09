@@ -213,6 +213,14 @@ addColumn('quote_items','custom_spec_standard','TEXT');
 addColumn('quote_items','custom_spec_premium','TEXT');
 addColumn('quote_items','promoted_price_item_id','TEXT');
 addColumn('quote_items','promo_status',"TEXT DEFAULT 'none'");
+// View attribution: internal (us) vs client, plus a visitor key for de-duping
+addColumn('quote_events','viewer',"TEXT DEFAULT 'client'");
+addColumn('quote_events','visitor_key','TEXT');
+addColumn('quotes','sent_at','TEXT');
+addColumn('quotes','sent_to','TEXT');
+addColumn('quotes','sent_subject','TEXT');
+addColumn('quotes','sent_message','TEXT');
+addColumn('quotes','send_count','INTEGER DEFAULT 0');
 // Q2: price items know they came from a custom line and whether a recipe is still needed
 addColumn('price_items','status',"TEXT DEFAULT 'live'");
 addColumn('price_items','from_custom','INTEGER DEFAULT 0');
@@ -402,7 +410,10 @@ if (!settingGet2('seed_v7')) {
  ['age_flag','7'],['age_chase','14'],['age_dead','30'],
  ['crew_day_rate','1150'],['crew_people','3'],['extra_person_rate','420'],['hours_per_day','8'],
  ['work_days_per_month','21'],['quote_number_start','1410'],
- ['default_crew_size','3'],['default_customer_tier','Silver']
+ ['default_crew_size','3'],['default_customer_tier','Silver'],
+ ['email_signature','Smit Gajera\nEstate Landscapers\nT: +61 414 147 008\nE: info@estatelandscapers.com.au\nA: Unit 33/275 Annangrove Rd, Rouse Hill NSW 2155'],
+ ['quote_email_subject','Landscape Works Fee Proposal — Quote {{number}} — Estate Landscapers'],
+ ['quote_email_body','Hi {{firstname}},\n\nThank you for the opportunity to quote on your project. Your proposal is ready to view using the link below.\n\nThe quote shows three levels of finish so you can compare — tap through and let me know your thoughts.\n\nHappy to walk you through any of it.']
 ].forEach(([k,v]) => { const cur = settingGet2(k); if (cur === null || cur === undefined || cur === '') settingSet2(k,v); });
 
 // ---- v11: Materials & Plant library + three recipe variants per deliverable ----

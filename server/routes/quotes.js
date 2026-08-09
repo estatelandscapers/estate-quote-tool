@@ -52,6 +52,24 @@ function computeQuote(q) {
   };
 }
 
+// Client views only. Internal views are recorded but reported separately, and one
+// visitor inside 30 minutes counts once — a client refreshing is one visit, not five.
+function viewStats(quoteId) {
+  const rows = db.prepare("SELECT viewer, visitor_key, created_at FROM quote_events WHERE quote_id=? AND event_type='view' ORDER BY created_at").all(quoteId);
+  const legacy = rows.filter(r => !r.viewer).length;           // recorded before attribution existed
+  const internal = rows.filter(r => r.viewer === 'internal').length;
+  const client = rows.filter(r => r.viewer === 'client');
+  const seen = new Map(); let counted = 0;
+  client.forEach(r => {
+    const t = new Date((r.created_at || '') + 'Z').getTime();
+    const last = seen.get(r.visitor_key || 'anon');
+    if (!last || (t - last) > 30 * 60 * 1000) counted++;
+    seen.set(r.visitor_key || 'anon', t);
+  });
+  const first = client[0];
+  return { clientViews: counted, clientVisitors: seen.size, internalViews: internal,
+    legacyViews: legacy, firstViewedAt: first ? first.created_at : null };
+}
 function fullQuote(q) {
   const c = computeQuote(q);
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
@@ -65,7 +83,10 @@ function fullQuote(q) {
     updatedAt: q.updated_at, createdAt: q.created_at,
     customerTier: q.customer_tier || 'Silver', crewSize: q.crew_size || 2,
     siteplanNa: !!q.siteplan_na, surchargesNa: !!q.surcharges_na,
-    emailStatus: q.email_status || null, emailDetail: q.email_detail || null, ...c,
+    emailStatus: q.email_status || null, emailDetail: q.email_detail || null,
+    ...viewStats(q.id),
+    sentAt: q.sent_at || null, sentTo: q.sent_to || null, sendCount: q.send_count || 0,
+    sentSubject: q.sent_subject || null, sentMessage: q.sent_message || null, ...c,
   };
 }
 
@@ -127,6 +148,65 @@ function createQuote(b = {}) {
 }
 router.post('/', (req, res) => {
   res.status(201).json(fullQuote(createQuote(req.body || {})));
+});
+
+
+// ---- Send the quote to the client -------------------------------------------------
+// Prefills an editable message (QuickBooks style); nothing goes out until /send is called.
+router.get('/:id/send-preview', (req, res) => {
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  const fill = (t) => String(t || '')
+    .replace(/\{\{number\}\}/g, q.quote_number)
+    .replace(/\{\{firstname\}\}/g, String(q.client_name || '').trim().split(/\s+/)[0] || 'there')
+    .replace(/\{\{client\}\}/g, q.client_name || '')
+    .replace(/\{\{address\}\}/g, q.address || '');
+  const validDays = parseInt(settingGet('validity_days') || '14', 10);
+  const until = new Date(Date.now() + validDays * 864e5).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+  res.json({
+    to: q.sent_to || q.client_email || '',
+    cc: settingGet('company_email') || '',
+    subject: q.sent_subject || fill(settingGet('quote_email_subject')),
+    message: q.sent_message || fill(settingGet('quote_email_body')),
+    link: `${req.protocol}://${req.get('host')}/q/${q.token}`,
+    quoteNumber: q.quote_number, validUntil: until,
+    alreadySent: !!q.sent_at, sendCount: q.send_count || 0, sentAt: q.sent_at,
+  });
+});
+router.post('/:id/send', async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  const to = String(b.to || q.client_email || '').trim();
+  if (!to) return res.status(400).json({ error: 'No email address for the client' });
+  const link = `${req.protocol}://${req.get('host')}/q/${q.token}`;
+  const { quoteEmailHtml } = require('../utils/quoteEmail');
+  const { sendMail } = require('../utils/email');
+  const html = quoteEmailHtml({ message: b.message || '', link, quoteNumber: q.quote_number, validUntil: b.validUntil });
+  const subject = b.subject || `Quote ${q.quote_number} — Estate Landscapers`;
+  const results = [];
+  try {
+    const r = await sendMail({ to, subject, html });
+    if (r && r.skipped) throw new Error(r.reason);
+    results.push('client: sent to ' + to);
+  } catch (e) {
+    return res.status(502).json({ error: 'Could not send: ' + e.message, hint: e.hint });
+  }
+  const cc = String(b.cc || '').trim();
+  if (cc && cc.toLowerCase() !== to.toLowerCase()) {
+    try { await sendMail({ to: cc, subject: `[Copy] ${subject}`, html }); results.push('office: copied'); }
+    catch (e) { results.push('office copy FAILED: ' + e.message); }
+  }
+  // Keep the client's email address up to date, and remember what we said.
+  db.prepare(`UPDATE quotes SET client_email=COALESCE(NULLIF(?,''), client_email),
+      sent_at=datetime('now'), sent_to=?, sent_subject=?, sent_message=?,
+      send_count=COALESCE(send_count,0)+1,
+      status=CASE WHEN status='draft' THEN 'sent' ELSE status END,
+      updated_at=datetime('now') WHERE id=?`)
+    .run(to, to, subject, b.message || '', q.id);
+  console.log(`[send] quote ${q.quote_number} -> ${to} (${results.join(' | ')})`);
+  res.json({ ok: true, results, sendCount: (q.send_count || 0) + 1 });
 });
 
 // ---- Renumbering -------------------------------------------------------------
@@ -385,3 +465,4 @@ router.get('/:id/signed-preview', async (req, res) => {
 
 module.exports = router;
 module.exports.createQuote = createQuote;
+module.exports.fullQuote = fullQuote;
