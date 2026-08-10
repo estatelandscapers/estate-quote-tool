@@ -221,6 +221,10 @@ addColumn('quotes','sent_to','TEXT');
 addColumn('quotes','sent_subject','TEXT');
 addColumn('quotes','sent_message','TEXT');
 addColumn('quotes','send_count','INTEGER DEFAULT 0');
+// Extra-wastage price uplift, held per tier so the client link, contract and totals agree
+addColumn('quote_items','waste_uplift_basic','REAL DEFAULT 0');
+addColumn('quote_items','waste_uplift_standard','REAL DEFAULT 0');
+addColumn('quote_items','waste_uplift_premium','REAL DEFAULT 0');
 // Q2: price items know they came from a custom line and whether a recipe is still needed
 addColumn('price_items','status',"TEXT DEFAULT 'live'");
 addColumn('price_items','from_custom','INTEGER DEFAULT 0');

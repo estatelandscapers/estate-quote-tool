@@ -24,7 +24,7 @@ function computeQuote(q) {
       id: it.id, scope: it.scope, code: rEff.code, name: rEff.name, unit: rEff.unit,
       qty: it.qty, behaviour: rEff.behaviour, tierOverride: it.tier_override,
       method: it.method || null, subDays: it.sub_days, wastageOverride: it.wastage_override,
-      description: it.desc_override || (pi ? pi.description : '') || '', descIsCustom: !!it.desc_override,
+      description: it.desc_override || (pi ? pi.description : '') || it.custom_desc || '', descIsCustom: !!it.desc_override,
       valueOverride: !!it.value_override,
       value: { Basic: it.val_basic, Standard: it.val_standard, Premium: it.val_premium },
       lineCost: { Basic: it.cost_basic, Standard: it.cost_standard, Premium: it.cost_premium },
@@ -121,6 +121,25 @@ router.get('/', (req, res) => {
   }));
 });
 
+// NOTE: literal paths MUST be declared before the '/:id' wildcard below, otherwise
+// Express matches them as a quote id and returns 404. This bit us on
+// /next-custom-code and /pending/price-items.
+router.get('/next-custom-code', (req, res) => res.json({ code: nextCustomCode() }));
+router.get('/pending/price-items', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const rows = db.prepare(`SELECT qi.*, q.quote_number, q.client_name, q.created_at qdate
+    FROM quote_items qi JOIN quotes q ON q.id=qi.quote_id
+    WHERE qi.price_item_id IS NULL AND qi.promo_status='pending' ORDER BY q.created_at DESC`).all();
+  res.json(rows.map(r => ({
+    itemId: r.id, quoteId: r.quote_id, quoteNumber: r.quote_number, client: r.client_name, createdAt: r.qdate,
+    code: r.custom_code, name: r.custom_name, unit: r.custom_unit, description: r.custom_desc,
+    behaviour: r.custom_behaviour, tiered: !!r.custom_tiered,
+    spec: { Basic: r.custom_spec_basic, Standard: r.custom_spec_standard, Premium: r.custom_spec_premium },
+    value: { Basic: r.val_basic, Standard: r.val_standard, Premium: r.val_premium },
+    cost: { Basic: r.cost_basic, Standard: r.cost_standard, Premium: r.cost_premium },
+    marginPct: r.val_standard > 0 ? Math.round((r.val_standard - (r.cost_standard || 0)) / r.val_standard * 1000) / 10 : null,
+  })));
+});
 router.get('/:id', (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
@@ -178,8 +197,12 @@ router.post('/:id/send', async (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
+  const { validateEmail } = require('../utils/email');
   const to = String(b.to || q.client_email || '').trim();
-  if (!to) return res.status(400).json({ error: 'No email address for the client' });
+  const badTo = validateEmail(to);
+  if (badTo) return res.status(400).json({ error: badTo, field: 'to' });
+  const ccRaw = String(b.cc || '').trim();
+  if (ccRaw) { const badCc = validateEmail(ccRaw); if (badCc) return res.status(400).json({ error: 'Copy-to address: ' + badCc, field: 'cc' }); }
   const link = `${req.protocol}://${req.get('host')}/q/${q.token}`;
   const { quoteEmailHtml } = require('../utils/quoteEmail');
   const { sendMail } = require('../utils/email');
@@ -191,9 +214,9 @@ router.post('/:id/send', async (req, res) => {
     if (r && r.skipped) throw new Error(r.reason);
     results.push('client: sent to ' + to);
   } catch (e) {
-    return res.status(502).json({ error: 'Could not send: ' + e.message, hint: e.hint });
+    return res.status(502).json({ error: e.message, hint: e.hint, field: e.kind === 'recipient' ? 'to' : null });
   }
-  const cc = String(b.cc || '').trim();
+  const cc = ccRaw;
   if (cc && cc.toLowerCase() !== to.toLowerCase()) {
     try { await sendMail({ to: cc, subject: `[Copy] ${subject}`, html }); results.push('office: copied'); }
     catch (e) { results.push('office copy FAILED: ' + e.message); }
@@ -266,6 +289,12 @@ router.post('/:id/revision', (req, res) => {
   res.status(201).json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(id)));
 });
 
+function recalcAllUplifts(quoteId) {
+  try {
+    const { recalcWasteUplift } = require('../utils/costing');
+    db.prepare('SELECT id FROM quote_items WHERE quote_id=?').all(quoteId).forEach(r => recalcWasteUplift(r.id));
+  } catch (e) { console.error('uplift recalc all', e.message); }
+}
 router.put('/:id', (req, res) => {
   const e = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!e) return res.status(404).json({ error: 'Not found' });
@@ -280,6 +309,7 @@ router.put('/:id', (req, res) => {
       b.surchargesNa !== undefined ? (b.surchargesNa ? 1 : 0) : e.surcharges_na,
       b.customerTier ?? e.customer_tier, b.crewSize ?? e.crew_size,
       req.params.id);
+  if ((req.body || {}).customerTier !== undefined) recalcAllUplifts(req.params.id);
   res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id)));
 });
 
@@ -305,21 +335,6 @@ function nextCustomCode() {
 // ---- Custom line -> Pricing -> Recipe -------------------------------------------
 // A custom line already works on its own quote. Promotion only decides whether it
 // joins the reusable deliverable list.
-router.get('/pending/price-items', (req, res) => {
-  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
-  const rows = db.prepare(`SELECT qi.*, q.quote_number, q.client_name, q.created_at qdate
-    FROM quote_items qi JOIN quotes q ON q.id=qi.quote_id
-    WHERE qi.price_item_id IS NULL AND qi.promo_status='pending' ORDER BY q.created_at DESC`).all();
-  res.json(rows.map(r => ({
-    itemId: r.id, quoteId: r.quote_id, quoteNumber: r.quote_number, client: r.client_name, createdAt: r.qdate,
-    code: r.custom_code, name: r.custom_name, unit: r.custom_unit, description: r.custom_desc,
-    behaviour: r.custom_behaviour, tiered: !!r.custom_tiered,
-    spec: { Basic: r.custom_spec_basic, Standard: r.custom_spec_standard, Premium: r.custom_spec_premium },
-    value: { Basic: r.val_basic, Standard: r.val_standard, Premium: r.val_premium },
-    cost: { Basic: r.cost_basic, Standard: r.cost_standard, Premium: r.cost_premium },
-    marginPct: r.val_standard > 0 ? Math.round((r.val_standard - (r.cost_standard || 0)) / r.val_standard * 1000) / 10 : null,
-  })));
-});
 router.post('/pending/:itemId/promote', (req, res) => {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
   const it = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
@@ -352,7 +367,6 @@ router.post('/pending/:itemId/dismiss', (req, res) => {
   res.json({ ok: true });
 });
 
-router.get('/next-custom-code', (req, res) => res.json({ code: nextCustomCode() }));
 router.post('/:id/items', (req, res) => {
   const b = req.body || {};
   const id = newId();
@@ -391,6 +405,10 @@ router.put('/:id/items/:itemId', (req, res) => {
       b.scope ?? e.scope, b.method !== undefined ? b.method : e.method,
       b.wastageOverride !== undefined ? b.wastageOverride : e.wastage_override, req.params.itemId);
   if (b.subDays !== undefined) db.prepare('UPDATE quote_items SET sub_days=? WHERE id=?').run(b.subDays, req.params.itemId);
+  // Anything that moves the extra-wastage cost also moves the price uplift.
+  if (['wastageOverride', 'qty', 'method', 'tierOverride'].some(k => b[k] !== undefined)) {
+    try { require('../utils/costing').recalcWasteUplift(req.params.itemId); } catch (e) { console.error('uplift recalc', e.message); }
+  }
   if (b.description !== undefined) db.prepare('UPDATE quote_items SET desc_override=? WHERE id=?').run(b.description || null, req.params.itemId);
   // Site-specific value: sell AND cost together, so margin stays honest.
   if (b.valueOverride !== undefined)

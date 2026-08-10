@@ -137,6 +137,52 @@ function costVariant({ qty, wastageOverride, subDaysOverride, vendorOverride }, 
   return out;
 }
 
+
+// Recalculate the price uplift needed to cover extra wastage at the target margin.
+// Called whenever wastage, qty, method or tier changes — the result is stored on the
+// line so the quote, client link and contract all read the same number.
+function recalcWasteUplift(itemId) {
+  const it = db.prepare('SELECT * FROM quote_items WHERE id=?').get(itemId);
+  if (!it) return;
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(it.quote_id);
+  if (!q) return;
+  const target = parseFloat(settingGet('tier_' + (q.customer_tier || 'Silver').toLowerCase()) || '25') / 100;
+  const recs = recipesFor(it.price_item_id);
+  const method = it.method || defaultVariant(it.price_item_id);
+  const rec = recs[method];
+  const out = {};
+  const pi = it.price_item_id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(it.price_item_id) : null;
+  TIERS.forEach(t => {
+    let uplift = 0;
+    if (rec && it.wastage_override != null) {
+      // Measure the REAL extra cost: recipe-standard wastage vs site wastage. Using the
+      // material surcharge alone missed knock-on costs — extra wastage can tip the order
+      // into another delivery load, which the price then failed to cover.
+      const withWaste = costVariant({ qty: it.qty, wastageOverride: it.wastage_override, subDaysOverride: it.sub_days }, rec, t);
+      const atStandard = costVariant({ qty: it.qty, subDaysOverride: it.sub_days }, rec, t);
+      const extra = Math.max(0, withWaste.cost - atStandard.cost);
+      if (extra > 0) {
+        // Recover at THIS LINE's own margin, not the tier target — otherwise a line
+        // running above target gets diluted every time wastage is raised, and the
+        // overall margin still drifts down. Fall back to the target when the line's
+        // own margin isn't meaningful (zero/negative).
+        let m = target;
+        try {
+          const r = resolveItem({ ...it, waste_uplift_basic: 0, waste_uplift_standard: 0, waste_uplift_premium: 0 }, pi, t);
+          const baseSell = it.qty * r.rate;
+          const baseCost = atStandard.cost;
+          if (baseSell > 0 && baseCost >= 0 && baseSell > baseCost) m = (baseSell - baseCost) / baseSell;
+        } catch (e) {}
+        uplift = m < 1 ? extra / (1 - m) : extra;
+      }
+    }
+    out[t] = Math.round(uplift * 100) / 100;
+  });
+  db.prepare('UPDATE quote_items SET waste_uplift_basic=?, waste_uplift_standard=?, waste_uplift_premium=? WHERE id=?')
+    .run(out.Basic, out.Standard, out.Premium, itemId);
+  return out;
+}
+
 function costQuote(q, opts = {}) {
   const useSelections = !!opts.useSelections;
   const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? AND scope=1 ORDER BY sort_order').all(q.id);
@@ -180,6 +226,7 @@ function costQuote(q, opts = {}) {
       line.tiers[t] = { spec: r.spec, rate: r.rate, sell, cost: c.cost, hrs: c.hrs, subDays: c.subDays };
       tierTot[t].cost += c.cost; tierTot[t].sell += sell; tierTot[t].hrs += c.hrs;
       line.tiers[t].wastageSurcharge = Math.round(c.wastageSurcharge);
+      line.tiers[t].wasteUplift = it['waste_uplift_' + t.toLowerCase()] || 0;
       if (t === selTier) {
         selTot.cost += c.cost; selTot.sell += sell; selTot.hrs += c.hrs;
         selTot.matCost += c.matCost; selTot.plantCost += c.plantCost; selTot.labCost += c.labCost;
@@ -224,6 +271,7 @@ function costQuote(q, opts = {}) {
     ohInRecipes: Math.round(selTot.ohCost || 0), ohRecipeDays: Math.round((selTot.ohDays || 0) * 10) / 10,
     netMarginPct: selTot.sell > 0 ? Math.round((selTot.sell - selTot.cost - ohAllocated) / selTot.sell * 1000) / 10 : 0,
     wastageSurcharge: Math.round(selTot.wastageSurcharge || 0),
+    wasteUplift: Math.round(perLine.reduce((a, l) => a + (l.tiers[l.selected].wasteUplift || 0), 0)),
     changes, mixed: changes.length > 0, takeoff, selectionsLocked: !!q.selections_locked };
 }
-module.exports = { costQuote, costVariant, recipesFor, defaultVariant, materialPrice, crewHourRate, overheadDailyRate, deliveryFor, TIERS, VARIANTS };
+module.exports = { costQuote, costVariant, recalcWasteUplift, recipesFor, defaultVariant, materialPrice, crewHourRate, overheadDailyRate, deliveryFor, TIERS, VARIANTS };

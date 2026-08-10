@@ -51,6 +51,7 @@ function zeptoAuth() {
   return /^Zoho-enczapikey\s/i.test(raw) ? raw : `Zoho-enczapikey ${raw}`;
 }
 function zeptoEndpoints() {
+  if (KNOWN_REGION) return [KNOWN_REGION];
   if (process.env.ZEPTOMAIL_URL) return [process.env.ZEPTOMAIL_URL];
   const r = (process.env.ZEPTOMAIL_REGION || '').toLowerCase();
   if (r === 'au') return ['https://api.zeptomail.com.au/v1.1/email'];
@@ -62,6 +63,21 @@ function zeptoEndpoints() {
           'https://api.zeptomail.eu/v1.1/email',
           'https://api.zeptomail.in/v1.1/email'];
 }
+// ZeptoMail returns 401 both for a bad token AND for a bad recipient, which is
+// confusing. These codes mean the token was fine and the request itself was rejected —
+// so we must NOT fall through to the next region, or the real reason gets buried.
+const ZEPTO_NOT_A_TOKEN_PROBLEM = /SM_113|SMI_116|SM_101|SM_133|TM_3201|Invalid email address|No valid recipients|sandbox/i;
+
+function zeptoReason(msg) {
+  if (/SM_113|Invalid email address|SMI_116|No valid recipients/i.test(msg))
+    return { human: 'The recipient email address was rejected as invalid. Check it for typos — a missing dot in the domain (e.g. "yahoo com" instead of "yahoo.com") is the usual cause.', kind: 'recipient' };
+  if (/SERR_157|Invalid API Token/i.test(msg))
+    return { human: 'ZeptoMail did not accept the API token. Check you copied the Mail Agent\'s "Send Mail Token" and that the agent is Active.', kind: 'token' };
+  if (/domain|SM_133|not verified/i.test(msg))
+    return { human: 'The sending domain is not verified in ZeptoMail yet.', kind: 'domain' };
+  return { human: null, kind: 'other' };
+}
+
 async function sendViaZepto({ to, subject, html, attachments }) {
   const body = {
     from: { address: fromAddress(), name: FROM_NAME },
@@ -73,15 +89,32 @@ async function sendViaZepto({ to, subject, html, attachments }) {
   for (const url of zeptoEndpoints()) {
     try {
       await postJson(url, { Authorization: zeptoAuth() }, body);
-      console.log(`[email] zeptomail endpoint ${url} accepted`);
+      console.log(`[email] zeptomail ${url} accepted`);
+      rememberRegion(url);
       return url;
     } catch (e) {
-      errors.push(`${url.replace('https://api.', '').replace('/v1.1/email', '')}: ${e.message}`);
-      // a 401 on one region usually means wrong region, so keep trying; other errors too
+      const region = url.replace('https://api.', '').replace('/v1.1/email', '');
+      // The token worked — this region is ours. Stop and report the real reason.
+      if (ZEPTO_NOT_A_TOKEN_PROBLEM.test(e.message)) {
+        rememberRegion(url);
+        const r = zeptoReason(e.message);
+        const err = new Error(r.human || e.message);
+        err.hint = r.kind === 'recipient' ? 'Fix the address and press Try again.' : undefined;
+        err.zeptoRaw = e.message;
+        throw err;
+      }
+      errors.push(`${region}: ${e.message}`);
     }
   }
-  throw new Error(errors.join(' | '));
+  const r = zeptoReason(errors.join(' '));
+  const err = new Error(r.human || errors.join(' | '));
+  err.zeptoRaw = errors.join(' | ');
+  throw err;
 }
+
+// Once we know which region answers, stick to it — saves three pointless round trips.
+let KNOWN_REGION = null;
+function rememberRegion(url) { KNOWN_REGION = url; }
 
 async function sendViaResend({ to, subject, html, attachments }) {
   return postJson('https://api.resend.com/emails',
@@ -121,13 +154,26 @@ async function sendViaSmtp({ to, subject, html, attachments }) {
   throw new Error(errors.join(' | '));
 }
 
+// Deliberately permissive, but catches the mistakes that actually happen:
+// missing dot in the domain, spaces, missing @, trailing punctuation.
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+function validateEmail(addr) {
+  const a = String(addr || '').trim();
+  if (!a) return 'No email address given.';
+  if (/\s/.test(a)) return `"${a}" contains a space — check for a missing dot in the domain.`;
+  if (!a.includes('@')) return `"${a}" is missing an @.`;
+  if (!EMAIL_RE.test(a)) return `"${a}" doesn't look like a valid email address — check the domain.`;
+  return null;
+}
+
 async function sendMail({ to, subject, html, attachments }) {
   const p = provider();
   if (!p) {
     console.log(`[email] no provider configured — skipped: ${subject} → ${to}`);
     return { skipped: true, reason: 'No email provider configured. Set ZEPTOMAIL_TOKEN, RESEND_API_KEY or SENDGRID_API_KEY in Railway.' };
   }
-  if (!to) return { skipped: true, reason: 'no recipient address' };
+  const bad = validateEmail(to);
+  if (bad) { const e = new Error(bad); e.kind = 'recipient'; throw e; }
   const payload = { to, subject, html, attachments };
   try {
     if (p === 'zeptomail') await sendViaZepto(payload);
@@ -137,8 +183,9 @@ async function sendMail({ to, subject, html, attachments }) {
     console.log(`[email] sent via ${p} → ${to} (${subject})`);
     return { ok: true, provider: p };
   } catch (e) {
-    console.error(`[email] ${p} FAILED → ${to}: ${e.message}`);
-    const err = new Error(`${p}: ${e.message}`);
+    console.error(`[email] ${p} FAILED → ${to}: ${e.zeptoRaw || e.message}`);
+    const err = new Error(e.message);
+    err.hint = e.hint; err.kind = e.kind;
     if (p === 'zeptomail' && /SERR_157|Invalid API Token|401/i.test(e.message)) {
       err.hint = 'ZeptoMail rejected the token on every region. Check you copied the Mail Agent\'s "Send Mail Token" (not an OAuth key), and that the Mail Agent is Active. If your Zoho account is Australian, set ZEPTOMAIL_REGION=au in Railway.';
     }
@@ -160,4 +207,4 @@ async function verifyConnection() {
   return { ok: false, provider: 'smtp', error: errors.join(' | '),
     hint: 'Both SMTP ports timed out — this host blocks outbound SMTP. Switch to an email API: set ZEPTOMAIL_TOKEN, RESEND_API_KEY or SENDGRID_API_KEY in Railway.' };
 }
-module.exports = { sendMail, configured, verifyConnection, provider, fromAddress };
+module.exports = { sendMail, configured, verifyConnection, provider, fromAddress, validateEmail };

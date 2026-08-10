@@ -28,7 +28,7 @@ function clientView(q) {
     const anyR = resolveItem(it, pi, 'Standard');
     const row = {
       code: anyR.code, name: anyR.name, unit: anyR.unit, behaviour: anyR.behaviour,
-      description: it.desc_override || (pi ? pi.description : '') || '',
+      description: it.desc_override || (pi ? pi.description : '') || it.custom_desc || '',
       qty: it.qty, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct, perTier, tierOverride: it.tier_override || null,
       changes: (() => { const a = perTier.Basic, b = perTier.Premium; return a.spec !== b.spec || a.price !== b.price; })(),
       alternates: (() => { const o = {}; TIERS.forEach(t => o[t] = perTier[t].spec); return o; })(),

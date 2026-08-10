@@ -51,6 +51,10 @@ function lineTotal(item, resolved, tier) {
   let t = item.qty * resolved.rate;
   if (resolved.behaviour === 'rate_only' || resolved.behaviour === 'optional') t = 0;
   if (item.shared_enabled) t = t * ((item.shared_pct || 50) / 100);
+  // Site-specific wastage above the recipe standard costs us more, so the price carries
+  // it at the target margin — otherwise a difficult block quietly eats the margin.
+  // Absorbed into this line's price; the client sees one figure.
+  if (t > 0) t += (item['waste_uplift_' + String(tier || 'Standard').toLowerCase()] || 0);
   return t;
 }
 

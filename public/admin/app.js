@@ -1,16 +1,24 @@
 // Estate Landscapers — admin SPA (v7: logins, vendors, recipes, costing, jobs, FY close)
 const $ = (s, r = document) => r.querySelector(s);
-const api = (p, opts) => fetch('/api' + p, opts).then(async r => {
-  if (r.status === 401) { location.href = '/admin/login.html'; return {}; }
-  const t = await r.text(); try { return t ? JSON.parse(t) : {}; } catch { return {}; }
-});
+const api = (p, opts) => {
+  // A stale click handler can fire after the view has changed and the id is gone.
+  // Sending /quotes/null just produces noise and 404s, so drop it here.
+  if (/\/(null|undefined)(\/|$)/.test(p)) return Promise.resolve({ error: 'stale request ignored', stale: true });
+  return fetch('/api' + p, opts).then(async r => {
+    if (r.status === 401) { location.href = '/admin/login.html'; return {}; }
+    const t = await r.text();
+    let d; try { d = t ? JSON.parse(t) : {}; } catch { d = {}; }
+    if (!r.ok && !d.error) d.error = `Request failed (${r.status})`;
+    return d;
+  });
+};
 const money = n => (n < 0 ? '−$' : '$') + Math.abs(Math.round(n || 0)).toLocaleString('en-AU');
 const money2 = n => '$' + (n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -48,8 +56,11 @@ function shell() {
 function route() {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   const v = $('#view');
-  if (isAdmin()) {
-    // keep the little counts on the tabs current, without blocking the render
+  // Pending counts refresh at most once a minute. They were previously fetched on every
+  // single render — two extra round-trips per click, which is what made the tool feel laggy.
+  const PENDING_TTL = 60000;
+  if (isAdmin() && Date.now() - (state.pendingCheckedAt || 0) > PENDING_TTL) {
+    state.pendingCheckedAt = Date.now();
     Promise.all([api('/quotes/pending/price-items'), api('/recipes/pending')]).then(([p, r]) => {
       const next = { pricing: (p || []).length, recipes: (r || []).length };
       if (next.pricing !== (state.pendingCounts || {}).pricing || next.recipes !== (state.pendingCounts || {}).recipes) {
@@ -163,6 +174,96 @@ async function editorTab(v) {
 }
 
 
+
+// ---------------- CUSTOM DELIVERABLE (create + edit) ----------------
+// Sell is driven by qty x unit rate, and stays overridable. Our cost is the TOTAL for
+// the line, not a unit rate — that's how a supplier quote actually arrives.
+async function customDialog(q, existing, done) {
+  const nc = existing ? { code: existing.code } : await api('/quotes/next-custom-code');
+  const tiered = existing ? !!existing.customTiered : false;
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal" style="max-width:900px;">
+    <h2 style="margin:0 0 3px;">${existing ? 'Edit' : 'New'} custom deliverable</h2>
+    <div class="sub">${existing ? 'Changes apply to this quote.' : 'Effectively a new price item drafted on this job — fill it in once and you can add it to Pricing afterwards.'}</div>
+    <div class="rule"></div>
+    <div class="grid4">
+      <div class="field"><label>Code</label><input id="cu_code" value="${esc(existing ? existing.code : (nc.code || 'C1'))}" style="font-weight:800;"><span class="muted" style="font-size:10px;">auto — editable</span></div>
+      <div class="field"><label>Deliverable name</label><input id="cu_name" value="${esc(existing ? existing.name : '')}" placeholder="e.g. Feature sandstone boulder set"></div>
+      <div class="field"><label>Unit</label><input id="cu_unit" value="${esc(existing ? existing.unit : 'ea')}"></div>
+      <div class="field"><label>Behaviour</label><select id="cu_behav">
+        ${[['none', 'Standard — qty × rate'], ['remeasurable', 'Remeasurable — measured on site'], ['rate_only', 'Rate only — no value in total'], ['allowance', 'Allowance — provisional sum'], ['optional', 'Optional — shown, not counted']]
+          .map(([v, l]) => `<option value="${v}" ${existing && existing.customBehaviour === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label>Scope description — shown on the client link, contract and site PO</label>
+      <textarea id="cu_desc" rows="2" placeholder="What this covers, in plain English for the client.">${esc(existing ? existing.customDesc || existing.description || '' : '')}</textarea></div>
+    <div class="grid4">
+      <div class="field"><label>Qty</label><input id="cu_qty" type="number" step="0.01" value="${existing ? existing.qty : 1}"></div>
+    </div>
+    <div style="display:flex;gap:16px;align-items:center;margin:6px 0 8px;flex-wrap:wrap;">
+      <b style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Pricing</b>
+      <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;"><input type="radio" name="cutier" value="flat" ${tiered ? '' : 'checked'} style="width:auto;"> Same across all packages</label>
+      <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;"><input type="radio" name="cutier" value="tiered" ${tiered ? 'checked' : ''} style="width:auto;"> Different per package</label>
+    </div>
+    <table><thead><tr><th style="width:96px;">Package</th><th>Specification shown to client</th>
+      <th class="right" style="width:110px;">Unit rate $</th><th class="right" style="width:120px;">Sell total $</th>
+      <th class="right" style="width:120px;">Our cost (total) $</th><th class="right" style="width:74px;">Margin</th></tr></thead><tbody>
+      ${TIERS.map(t => `<tr data-trow="${t}"><td><b class="tname">${t}</b></td>
+        <td><input data-cs="${t}" value="${esc(existing && existing.customSpec ? (existing.customSpec[t] || '') : '')}"></td>
+        <td class="right"><input data-cr="${t}" type="number" step="0.01" style="text-align:right;" placeholder="per unit"></td>
+        <td class="right"><input data-cv="${t}" type="number" step="0.01" style="text-align:right;" value="${existing && existing.value && existing.value[t] != null ? existing.value[t] : ''}"></td>
+        <td class="right"><input data-cc="${t}" type="number" step="0.01" style="text-align:right;" value="${existing && existing.lineCost && existing.lineCost[t] != null ? existing.lineCost[t] : ''}"></td>
+        <td class="right" data-cm="${t}"><span class="muted">—</span></td></tr>`).join('')}
+    </tbody></table>
+    <div class="legend">Type a <b>unit rate</b> and the sell total fills in as qty × rate. Type over the sell total whenever the job isn't a neat multiple. <b>Our cost is the total for the line</b>, not per unit.</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:12px;">
+      ${existing ? '' : `<label style="font-size:11.5px;margin-right:auto;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="cu_save2p" checked style="width:auto;"> Also offer it for the Pricing list afterwards</label>`}
+      <button class="btn btn-ghost" id="cu_cancel">Cancel</button>
+      <button class="btn btn-blue" id="cu_ok">${existing ? 'Save changes' : 'Add line'}</button></div></div>`;
+  document.body.appendChild(bg);
+  const qtyEl = $('#cu_qty');
+  const applyTierMode = () => {
+    const t = bg.querySelector('input[name=cutier]:checked').value === 'tiered';
+    bg.querySelectorAll('[data-trow]').forEach(r => { if (r.dataset.trow !== 'Standard') r.style.display = t ? '' : 'none'; });
+    bg.querySelector('[data-trow="Standard"] .tname').textContent = t ? 'Standard' : 'All packages';
+  };
+  const recalcMargin = () => TIERS.forEach(t => {
+    const s = parseFloat(bg.querySelector(`[data-cv="${t}"]`).value) || 0;
+    const c = parseFloat(bg.querySelector(`[data-cc="${t}"]`).value) || 0;
+    const cell = bg.querySelector(`[data-cm="${t}"]`);
+    cell.innerHTML = s > 0 ? `<b style="color:${(s - c) / s >= 0.25 ? 'var(--green)' : 'var(--red)'};">${Math.round((s - c) / s * 1000) / 10}%</b>` : '<span class="muted">—</span>';
+  });
+  const sellFromRate = t => {
+    const rate = parseFloat(bg.querySelector(`[data-cr="${t}"]`).value);
+    if (isNaN(rate)) return;
+    const qty = parseFloat(qtyEl.value) || 0;
+    bg.querySelector(`[data-cv="${t}"]`).value = Math.round(rate * qty * 100) / 100;
+    recalcMargin();
+  };
+  TIERS.forEach(t => {
+    bg.querySelector(`[data-cr="${t}"]`).addEventListener('input', () => sellFromRate(t));
+    bg.querySelector(`[data-cv="${t}"]`).addEventListener('input', recalcMargin);
+    bg.querySelector(`[data-cc="${t}"]`).addEventListener('input', recalcMargin);
+  });
+  qtyEl.addEventListener('input', () => TIERS.forEach(sellFromRate));
+  bg.querySelectorAll('input[name=cutier]').forEach(r => r.addEventListener('change', applyTierMode));
+  applyTierMode(); recalcMargin();
+  $('#cu_cancel').addEventListener('click', () => bg.remove());
+  $('#cu_ok').addEventListener('click', async () => {
+    const isTiered = bg.querySelector('input[name=cutier]:checked').value === 'tiered';
+    const grab = sel => { const o = {}; TIERS.forEach(t => { const val = bg.querySelector(`[${sel}="${t}"]`).value; o[t] = val === '' ? null : (sel === 'data-cs' ? val : Number(val)); }); return o; };
+    const spec = grab('data-cs'), value = grab('data-cv'), cost = grab('data-cc');
+    if (!isTiered) TIERS.forEach(t => { spec[t] = spec.Standard; value[t] = value.Standard; cost[t] = cost.Standard; });
+    if (!$('#cu_name').value.trim()) return toast('Give it a name first');
+    const body = { customCode: $('#cu_code').value, customName: $('#cu_name').value, customUnit: $('#cu_unit').value,
+      customDesc: $('#cu_desc').value, customBehaviour: $('#cu_behav').value, customTiered: isTiered,
+      customSpec: spec, value, cost, qty: parseFloat(qtyEl.value) || 1 };
+    if (existing) await api(`/quotes/${q.id}/items/${existing.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    else await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 1, ...body, saveToPricing: $('#cu_save2p').checked }) });
+    bg.remove(); state.pendingCheckedAt = 0; toast(existing ? 'Custom line updated' : 'Custom line added'); done();
+  });
+}
+
 // ---------------- SEND QUOTE ----------------
 async function openSendDialog(q) {
   const pv = await api('/quotes/' + q.id + '/send-preview');
@@ -185,13 +286,28 @@ async function openSendDialog(q) {
       <button class="btn btn-blue" id="sd_send">${pv.alreadySent ? 'Resend now' : 'Send now'}</button></div></div>`;
   document.body.appendChild(bg);
   $('#sd_cancel').addEventListener('click', () => bg.remove());
+  const looksLikeEmail = a => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(String(a || '').trim());
+  const flag = (id, bad) => { const el = $(id); el.style.borderColor = bad ? 'var(--red)' : ''; };
+  ['#sd_to', '#sd_cc'].forEach(id => $(id).addEventListener('blur', () => {
+    const val = $(id).value.trim();
+    flag(id, val && !looksLikeEmail(val));
+  }));
   $('#sd_send').addEventListener('click', async () => {
     const btn = $('#sd_send'); const out = $('#sd_result');
-    if (!$('#sd_to').value.trim()) { out.innerHTML = '<div class="emailbar failed">Enter the client\'s email address.</div>'; return; }
+    const toVal = $('#sd_to').value.trim(), ccVal = $('#sd_cc').value.trim();
+    // Catch the typo here rather than round-tripping to the provider for a 401.
+    if (!toVal || !looksLikeEmail(toVal)) {
+      flag('#sd_to', true);
+      out.innerHTML = `<div class="emailbar failed"><b>Check the email address</b><br>${toVal ? `"${esc(toVal)}" doesn't look right — a missing dot in the domain is the usual cause.` : 'Enter the client\'s email address.'}</div>`;
+      $('#sd_to').focus(); return;
+    }
+    if (ccVal && !looksLikeEmail(ccVal)) { flag('#sd_cc', true); out.innerHTML = `<div class="emailbar failed"><b>Check the copy-to address</b><br>"${esc(ccVal)}" doesn't look right.</div>`; $('#sd_cc').focus(); return; }
+    flag('#sd_to', false); flag('#sd_cc', false);
     btn.disabled = true; btn.textContent = 'Sending…';
     const r = await api('/quotes/' + q.id + '/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ to: $('#sd_to').value.trim(), cc: $('#sd_cc').value.trim(), subject: $('#sd_subj').value, message: $('#sd_msg').value, validUntil: pv.validUntil }) });
     if (r.error) {
+      if (r.field) { flag('#sd_' + r.field, true); $('#sd_' + r.field).focus(); }
       out.innerHTML = `<div class="emailbar failed"><b>Not sent</b><br>${esc(r.error)}${r.hint ? `<br><span style="font-size:11px;">${esc(r.hint)}</span>` : ''}</div>`;
       btn.disabled = false; btn.textContent = 'Try again'; return;
     }
@@ -223,10 +339,29 @@ async function quotesList(v) {
 
 // ---------------- QUOTE EDITOR ----------------
 async function quoteEditor(v) {
+  // Guard: a stale async render can fire after the user has navigated away and cleared
+  // the id. Without this we request /api/quotes/null, it 404s, and the screen is stuck
+  // on "Loading quote…" forever.
+  if (!state.quoteId) { state.tab = 'quotes'; return quotesList(v); }
+  const myQuoteId = state.quoteId;
   v.innerHTML = `<p class="muted">Loading quote…</p>`;
-  const [q, priceItems, surcharges, checklist, costing] = await Promise.all([
-    api('/quotes/' + state.quoteId), api('/price-list'), api('/price-list/surcharges/all'),
-    api('/checklist/quote/' + state.quoteId), api('/quotes/' + state.quoteId + '/costing')]);
+  let q, priceItems, surcharges, checklist, costing;
+  try {
+    [q, priceItems, surcharges, checklist, costing] = await Promise.all([
+      api('/quotes/' + myQuoteId), api('/price-list'), api('/price-list/surcharges/all'),
+      api('/checklist/quote/' + myQuoteId), api('/quotes/' + myQuoteId + '/costing')]);
+  } catch (e) {
+    v.innerHTML = `<div class="card"><h2>Couldn't load this quote</h2>
+      <div class="sub">${esc(e.message || 'The server did not respond.')}</div><div class="rule"></div>
+      <button class="btn btn-blue" id="retryQ">Try again</button>
+      <button class="btn btn-ghost" id="backQ">← All quotes</button></div>`;
+    $('#retryQ').addEventListener('click', () => quoteEditor(v));
+    $('#backQ').addEventListener('click', () => { state.quoteId = null; state.tab = 'quotes'; shell(); });
+    return;
+  }
+  // The user moved on while we were loading — drop this render rather than painting stale data.
+  if (state.quoteId !== myQuoteId) return;
+  if (!q || q.error) { state.quoteId = null; state.tab = 'quotes'; return quotesList(v); }
   const link = location.origin + '/q/' + q.token;
   const applied = q.appliedSurcharges || [];
   const isApplied = id => applied.some(s => s.id === id);
@@ -389,73 +524,7 @@ async function quoteEditor(v) {
     }
     toast(staged.size + ' deliverable(s) added'); reload();
   });
-  $('#addCustom').addEventListener('click', async () => {
-    const nc = await api('/quotes/next-custom-code');
-    const bg = document.createElement('div'); bg.className = 'modal-bg';
-    bg.innerHTML = `<div class="modal" style="max-width:860px;">
-      <h2 style="margin:0 0 3px;">New custom deliverable</h2>
-      <div class="sub">This is effectively a new price item being drafted on this job — fill it in once and you can add it to Pricing afterwards.</div>
-      <div class="rule"></div>
-      <div class="grid4">
-        <div class="field"><label>Code</label><input id="cu_code" value="${esc(nc.code || 'C1')}" style="font-weight:800;"><span class="muted" style="font-size:10px;">auto — editable</span></div>
-        <div class="field"><label>Deliverable name</label><input id="cu_name" placeholder="e.g. Feature sandstone boulder set"></div>
-        <div class="field"><label>Unit</label><input id="cu_unit" value="ea"></div>
-        <div class="field"><label>Behaviour</label><select id="cu_behav">
-          <option value="none">Standard — qty × rate</option>
-          <option value="remeasurable">Remeasurable — measured on site</option>
-          <option value="rate_only">Rate only — no value in total</option>
-          <option value="allowance">Allowance — provisional sum</option>
-          <option value="optional">Optional — shown, not counted</option></select></div>
-      </div>
-      <div class="field"><label>Scope description — client link, contract and site PO</label><textarea id="cu_desc" rows="2"></textarea></div>
-      <div class="field"><label>Qty</label><input id="cu_qty" type="number" value="1" style="max-width:120px;"></div>
-      <div style="display:flex;gap:16px;align-items:center;margin:8px 0;flex-wrap:wrap;">
-        <b style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Pricing</b>
-        <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;"><input type="radio" name="cutier" value="flat" checked style="width:auto;"> Same across all packages</label>
-        <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;"><input type="radio" name="cutier" value="tiered" style="width:auto;"> Different per package</label>
-      </div>
-      <table id="cu_table"><thead><tr><th>Package</th><th>Specification shown to client</th><th class="right">Sell $</th><th class="right">Our cost $</th><th class="right">Margin</th></tr></thead><tbody>
-        ${TIERS.map(t => `<tr data-trow="${t}" class="${t === 'Standard' ? '' : 'cu-tieronly'}"><td><b>${t}</b></td>
-          <td><input data-cs="${t}"></td>
-          <td class="right"><input data-cv="${t}" type="number" step="0.01" style="text-align:right;"></td>
-          <td class="right"><input data-cc="${t}" type="number" step="0.01" style="text-align:right;"></td>
-          <td class="right" data-cm="${t}"><span class="muted">—</span></td></tr>`).join('')}
-      </tbody></table>
-      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:14px;">
-        <label style="font-size:11.5px;margin-right:auto;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="cu_save2p" checked style="width:auto;"> Also offer it for the Pricing list afterwards</label>
-        <button class="btn btn-ghost" id="cu_cancel">Cancel</button>
-        <button class="btn btn-blue" id="cu_ok">Add line</button></div></div>`;
-    document.body.appendChild(bg);
-    const rows = () => bg.querySelectorAll('[data-trow]');
-    const applyTierMode = () => {
-      const tiered = bg.querySelector('input[name=cutier]:checked').value === 'tiered';
-      rows().forEach(r => { if (r.dataset.trow !== 'Standard') r.style.display = tiered ? '' : 'none'; });
-      bg.querySelector('[data-trow="Standard"] td b').textContent = tiered ? 'Standard' : 'All packages';
-    };
-    const recalc = () => TIERS.forEach(t => {
-      const s = parseFloat(bg.querySelector(`[data-cv="${t}"]`).value) || 0;
-      const c = parseFloat(bg.querySelector(`[data-cc="${t}"]`).value) || 0;
-      const cell = bg.querySelector(`[data-cm="${t}"]`);
-      cell.innerHTML = s > 0 ? `<b style="color:${(s - c) / s >= 0.25 ? 'var(--green)' : 'var(--red)'};">${Math.round((s - c) / s * 1000) / 10}%</b>` : '<span class="muted">—</span>';
-    });
-    bg.querySelectorAll('input[name=cutier]').forEach(r => r.addEventListener('change', applyTierMode));
-    bg.querySelectorAll('[data-cv],[data-cc]').forEach(i => i.addEventListener('input', recalc));
-    applyTierMode();
-    $('#cu_cancel').addEventListener('click', () => bg.remove());
-    $('#cu_ok').addEventListener('click', async () => {
-      const tiered = bg.querySelector('input[name=cutier]:checked').value === 'tiered';
-      const grab = sel => { const o = {}; TIERS.forEach(t => { const el = bg.querySelector(`[${sel}="${t}"]`); const val = el.value; o[t] = val === '' ? null : (sel === 'data-cs' ? val : Number(val)); }); return o; };
-      const spec = grab('data-cs'), value = grab('data-cv'), cost = grab('data-cc');
-      if (!tiered) TIERS.forEach(t => { spec[t] = spec.Standard; value[t] = value.Standard; cost[t] = cost.Standard; });
-      if (!$('#cu_name').value.trim()) return toast('Give it a name first');
-      await api('/quotes/' + q.id + '/items', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope: 1, qty: parseFloat($('#cu_qty').value) || 1,
-          customCode: $('#cu_code').value, customName: $('#cu_name').value, customUnit: $('#cu_unit').value,
-          customDesc: $('#cu_desc').value, customBehaviour: $('#cu_behav').value, customTiered: tiered,
-          customSpec: spec, value, cost, saveToPricing: $('#cu_save2p').checked }) });
-      bg.remove(); toast('Custom line added'); reload();
-    });
-  });
+  $('#addCustom').addEventListener('click', () => customDialog(q, null, reload));
 
   v.querySelectorAll('[data-sur]').forEach(c => c.addEventListener('click', async () => {
     state.scrollY = window.scrollY;
@@ -509,10 +578,10 @@ async function quoteEditor(v) {
           <textarea data-desc="${it.id}" rows="2" placeholder="Scope description shown to the client…" style="font-size:10.5px;margin-top:4px;width:100%;">${esc(it.description || '')}</textarea>
           <label style="font-size:10px;display:flex;align-items:center;gap:6px;margin-top:4px;" title="Price this line from a supplier quote instead of the rate card">
             <input type="checkbox" data-vo="${it.id}" ${it.valueOverride ? 'checked' : ''} style="width:auto;"> site-specific value</label>
-          ${it.valueOverride ? `<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;">
+          <div class="vofields" id="vo_${it.id}" style="display:${it.valueOverride ? 'flex' : 'none'};gap:4px;margin-top:4px;flex-wrap:wrap;">
             <input data-val="${it.id}" type="number" step="0.01" value="${it.value && it.value[cTier] != null ? it.value[cTier] : ''}" placeholder="sell $" style="width:84px;font-size:10.5px;" title="What the client pays for this line">
-            <input data-lcost="${it.id}" type="number" step="0.01" value="${it.lineCost && it.lineCost[cTier] != null ? it.lineCost[cTier] : ''}" placeholder="our cost $" style="width:84px;font-size:10.5px;" title="What it costs us — keeps margin honest">
-            <span class="muted" style="font-size:9.5px;align-self:center;">rate card <s>${money(it.qty * (it.perTier[cTier] ? it.perTier[cTier].rate : 0))}</s></span></div>` : ''}
+            <input data-lcost="${it.id}" type="number" step="0.01" value="${it.lineCost && it.lineCost[cTier] != null ? it.lineCost[cTier] : ''}" placeholder="our cost $" style="width:84px;font-size:10.5px;" title="Total cost to us for this line">
+            <span class="muted" style="font-size:9.5px;align-self:center;">rate card <s>${money(it.qty * (it.perTier[cTier] ? it.perTier[cTier].rate : 0))}</s></span></div>
           ${it.descIsCustom ? '<span class="muted" style="font-size:9.5px;">edited for this quote</span>' : ''}
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;align-items:center;">
             <select data-method="${it.id}" style="width:104px;font-size:10.5px;" title="How this deliverable is done">
@@ -526,7 +595,7 @@ async function quoteEditor(v) {
         </td>
         <td><input type="number" step="0.01" value="${it.qty}" data-qty="${it.id}" style="width:70px;"> ${esc(it.unit)}</td>
         ${tierCells}
-        <td class="right"><button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
+        <td class="right">${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
     };
     const head = `<table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
     $('#scope1').innerHTML = q.items.scope1.length ? head + q.items.scope1.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 1 items yet.</p>';
@@ -549,9 +618,18 @@ async function quoteEditor(v) {
     v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
     v.querySelectorAll('[data-method]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.method}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: s.value || null }) }); reload(); }));
     v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); toast('Wastage updated'); }));
+    // Show/hide the fields in place. This used to call reload(), which re-fetched five
+    // endpoints and rebuilt the whole quote — that was the freeze.
+    v.querySelectorAll('[data-cedit]').forEach(b => b.addEventListener('click', () => {
+      const line = [...(q.items.scope1 || []), ...(q.items.scope2 || [])].find(i => i.id === b.dataset.cedit);
+      if (line) customDialog(q, line, reload);
+    }));
     v.querySelectorAll('[data-vo]').forEach(c => c.addEventListener('change', async () => {
+      const box = document.getElementById('vo_' + c.dataset.vo);
+      if (box) box.style.display = c.checked ? 'flex' : 'none';
+      if (c.checked) { const f = box && box.querySelector('[data-val]'); if (f) f.focus(); }
       await api(`/quotes/${q.id}/items/${c.dataset.vo}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ valueOverride: c.checked }) });
-      reload();
+      refreshCosting();
     }));
     v.querySelectorAll('[data-val]').forEach(i => i.addEventListener('change', async () => {
       await api(`/quotes/${q.id}/items/${i.dataset.val}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: { [cTier]: i.value } }) });
@@ -1113,7 +1191,7 @@ async function recipesTab(v) {
   body.innerHTML = `
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
       ${R.isDefault ? '<span class="tag tag-accepted">Default delivery method</span>' : (isAdmin() ? `<button class="btn btn-ghost btn-sm" id="mkDef">Make this the default</button>` : '')}
-      ${isAdmin() ? `<span style="font-size:11px;">Delivery $ <input type="number" id="r_del" value="${R.deliveryCost || 0}" style="width:80px;display:inline-block;"></span>` : ''}
+      ${isAdmin() && (R.deliveryCost > 0) ? `<span style="font-size:11px;color:var(--gold);">Legacy whole-recipe delivery $ <input type="number" id="r_del" value="${R.deliveryCost || 0}" style="width:80px;display:inline-block;"> — set this to 0 and use the per-material delivery rules instead</span>` : `<span style="font-size:11px;" class="muted">Delivery is set per material (below), from each vendor in Costs.</span><input type="hidden" id="r_del" value="0">`}
     </div>
     <table><thead><tr><th>Component</th><th>Item / vendor</th><th>Ratio</th><th>Waste %</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th>Days</th><th></th></tr></thead><tbody>
     ${R.components.map(c => {
@@ -1141,7 +1219,8 @@ async function recipesTab(v) {
           <label style="font-size:10px;display:flex;align-items:center;gap:5px;margin-top:3px;"><input type="checkbox" data-rt="${R.id}|${c.id}" ${c.tiered ? 'checked' : ''} style="width:auto;"> different per tier</label>
           ${c.vendor ? `<span class="muted" style="font-size:10px;">via ${esc(c.vendor)}</span>` : ''}</td>
         <td><input type="number" step="0.001" value="${c.ratio}" data-rr="${R.id}|${c.id}" style="width:74px;"></td>
-        <td><input type="number" step="0.5" value="${c.wastagePct}" data-rw="${R.id}|${c.id}" style="width:62px;"></td>
+        <td><input type="number" step="0.5" value="${c.wastagePct}" data-rw="${R.id}|${c.id}" style="width:62px;">
+          ${c.kind === 'material' || c.kind === 'plant' ? `<div style="margin-top:4px;"><input data-rdel="${c.materialId || (c.mat && c.mat.Standard) || ''}" value="${esc(c.deliveryRule || '')}" placeholder="delivery rule" style="width:150px;font-size:10px;" title="Delivery for THIS material, from its vendor in Costs — e.g. $180 / load · 80 per load"></div>` : ''}</td>
         ${isAdmin() && c.tierCost ? ['Basic', 'Standard', 'Premium'].map(t => `<td class="center muted">${money2(c.tierCost[t] || 0)}</td>`).join('')
           : `<td class="center muted" colspan="3">${isAdmin() ? money2(c.unitCost || 0) + ' — from library' : 'from library'}</td>`}
         <td>—</td><td class="right"><button class="btn btn-danger btn-sm" data-rcdel="${R.id}|${c.id}">✕</button></td></tr>`;
@@ -1169,6 +1248,15 @@ async function recipesTab(v) {
   const bind = (sel, fn) => v.querySelectorAll(sel).forEach(i => i.addEventListener('change', () => { const r = fn(i); Promise.resolve(r).then(refreshIndicative); }));
   bind('[data-rr]', i => cput(i.dataset.rr, { ratio: parseFloat(i.value) || 0 }));
   bind('[data-rw]', i => cput(i.dataset.rw, { wastagePct: parseFloat(i.value) || 0 }));
+  // Delivery rule lives on the material/vendor link in Costs — save it there.
+  v.querySelectorAll('[data-rdel]').forEach(i => i.addEventListener('change', async () => {
+    const mid = i.dataset.rdel; if (!mid) return toast('Pick a library item first');
+    const m = (await api('/materials')).find(x => x.id === mid);
+    const mv = m && (m.vendors || []).find(x => x.isDefault) || (m && (m.vendors || [])[0]);
+    if (!mv) return toast('That item has no vendor yet — add one in Costs');
+    await api(`/materials/${mid}/vendors/${mv.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deliveryRule: i.value }) });
+    toast('Delivery rule saved to Costs'); refreshIndicative();
+  }));
   bind('[data-rd]', i => cput(i.dataset.rd, { subDays: parseFloat(i.value) || 0 }));
   bind('[data-rl]', i => cput(i.dataset.rl, { label: i.value }));
   bind('[data-rv]', i => cput(i.dataset.rv, { vendorId: i.value || null }));
@@ -1277,11 +1365,11 @@ async function pricingSheet(v) {
     body.querySelectorAll('[data-promote]').forEach(b => b.addEventListener('click', async () => {
       const r = await api('/quotes/pending/' + b.dataset.promote + '/promote', { method: 'POST' });
       if (r.error) return toast(r.error);
-      toast(r.code + ' added to Pricing — build its recipe when you\'re ready'); pricingSheet(v);
+      state.pendingCheckedAt = 0; toast(r.code + ' added to Pricing — build its recipe when you\'re ready'); pricingSheet(v);
     }));
     body.querySelectorAll('[data-dismiss]').forEach(b => b.addEventListener('click', async () => {
       await api('/quotes/pending/' + b.dataset.dismiss + '/dismiss', { method: 'POST' });
-      toast('Dismissed — the quote is unchanged'); pricingSheet(v);
+      state.pendingCheckedAt = 0; toast('Dismissed — the quote is unchanged'); pricingSheet(v);
     }));
     return;
   }

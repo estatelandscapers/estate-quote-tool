@@ -24,6 +24,9 @@ function compView(c, admin) {
     const mp = materialPrice(c.tiered ? c.mat_standard : c.material_id, c.vendor_id);
     base.vendor = mp ? mp.vendor : null;
     base.unitCost = mp ? mp.cost : 0;
+    // Delivery belongs to the material/vendor pair, not the recipe as a whole.
+    base.deliveryRule = mp ? (mp.deliveryRule || '') : '';
+    base.materialVendorId = mp ? mp.vendorId : null;
     base.amount = c.amount;
     base.sub = { Basic: c.sub_basic, Standard: c.sub_standard, Premium: c.sub_premium };
     if (c.tiered) {
