@@ -1,7 +1,7 @@
 const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId, newToken } = require('../utils/ids');
-const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeList } = require('../utils/pricing');
+const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeBase, surchargeGaps, surchargeList } = require('../utils/pricing');
 const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
@@ -42,12 +42,29 @@ function computeQuote(q) {
   });
 
   const s1 = scope1TierTotals[q.default_package];
-  const sur = surchargeAmount(applied, s1 + scope2Total);
-  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, scope1TierTotals[t] + scope2Total));
+  // Per-line bases for targeted surcharges: full value and labour portion, per tier.
+  const lineBasesByTier = {}; TIERS.forEach(t => lineBasesByTier[t] = {});
+  try {
+    const cq = costQuote(q);
+    (cq.perLine || []).forEach(l => TIERS.forEach(t => {
+      lineBasesByTier[t][l.id] = { full: l.tiers[t].sell, labour: l.tiers[t].labourValue || 0 };
+    }));
+  } catch (e) { console.error('[surcharge] line bases unavailable:', e.message); }
+  const baseTier = q.default_package || 'Standard';
+  const sur = surchargeAmount(applied, s1 + scope2Total, lineBasesByTier[baseTier]);
+  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, scope1TierTotals[t] + scope2Total, lineBasesByTier[t]));
   const grandExGst = s1 + scope2Total + sur;
+  const gaps = surchargeGaps(applied, out.scope1.map(r => ({ id: r.id, code: r.code, name: r.name })));
   return {
     items: out, appliedSurcharges: applied,
-    scope1TierTotals, scope2Total, surcharge: sur, surchargePerTier: surPerTier, surchargeList: surchargeList(applied),
+    scope1TierTotals, scope2Total, surcharge: sur, surchargePerTier: surPerTier,
+    surchargeList: surchargeList(applied).map((s, i) => ({ ...s,
+      base: Math.round(s.kind === 'percent' ? surchargeBase(applied[i], scope1TierTotals[baseTier] + scope2Total, lineBasesByTier[baseTier]) : 0),
+      amount: Math.round(s.kind === 'percent'
+        ? surchargeBase(applied[i], scope1TierTotals[baseTier] + scope2Total, lineBasesByTier[baseTier]) * (s.rate / 100)
+        : Number(s.rate) || 0) })),
+    surchargeGaps: gaps, surchargesIncomplete: gaps.length > 0,
+    lineBases: lineBasesByTier[baseTier],
     grandExGst, gst: grandExGst * 0.1, grandIncGst: grandExGst * 1.1,
   };
 }
@@ -203,6 +220,13 @@ router.post('/:id/send', async (req, res) => {
   if (badTo) return res.status(400).json({ error: badTo, field: 'to' });
   const ccRaw = String(b.cc || '').trim();
   if (ccRaw) { const badCc = validateEmail(ccRaw); if (badCc) return res.status(400).json({ error: 'Copy-to address: ' + badCc, field: 'cc' }); }
+  // A targeted surcharge with unanswered deliverables means the price is wrong.
+  // Refuse to send rather than let it go out.
+  const fqCheck = fullQuote(q);
+  if (fqCheck.surchargesIncomplete) {
+    const g = fqCheck.surchargeGaps.map(x => `${x.code} ${x.name} (${x.missing.map(m => m.code).join(', ')})`).join('; ');
+    return res.status(400).json({ error: `Finish the surcharge settings before sending — ${g} still has deliverables with no percentage set.`, field: 'surcharges' });
+  }
   const link = `${req.protocol}://${req.get('host')}/q/${q.token}`;
   const { quoteEmailHtml } = require('../utils/quoteEmail');
   const { sendMail } = require('../utils/email');
@@ -230,6 +254,29 @@ router.post('/:id/send', async (req, res) => {
     .run(to, to, subject, b.message || '', q.id);
   console.log(`[send] quote ${q.quote_number} -> ${to} (${results.join(' | ')})`);
   res.json({ ok: true, results, sendCount: (q.send_count || 0) + 1 });
+});
+
+// Configure how a percentage surcharge is targeted.
+router.put('/:id/surcharges/:index', (req, res) => {
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  const applied = JSON.parse(q.applied_surcharges || '[]');
+  const i = parseInt(req.params.index, 10);
+  if (!applied[i]) return res.status(404).json({ error: 'surcharge not applied to this quote' });
+  const b = req.body || {};
+  if (b.mode !== undefined) applied[i].mode = b.mode === 'targeted' ? 'targeted' : 'whole';
+  if (b.basis !== undefined) applied[i].basis = b.basis === 'labour' ? 'labour' : 'full';
+  if (b.lines !== undefined) {
+    const clean = {};
+    Object.entries(b.lines || {}).forEach(([k, v]) => {
+      const n = Number(v);
+      if (!isNaN(n)) clean[k] = Math.max(0, Math.min(100, n));
+    });
+    applied[i].lines = clean;
+  }
+  if (applied[i].mode === 'whole') { delete applied[i].lines; delete applied[i].basis; }
+  db.prepare("UPDATE quotes SET applied_surcharges=?, updated_at=datetime('now') WHERE id=?").run(JSON.stringify(applied), q.id);
+  res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id)));
 });
 
 // ---- Renumbering -------------------------------------------------------------

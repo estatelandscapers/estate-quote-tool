@@ -59,15 +59,52 @@ function lineTotal(item, resolved, tier) {
 }
 
 // Total = (Scope 1 + Scope 2) x (1 + sum of % surcharges) + fixed surcharges, then GST.
-// Percentage surcharges apply to the FULL works subtotal (both scopes).
-function surchargeAmount(applied, worksSubtotal) {
+//
+// A percentage surcharge charges on the whole works subtotal by default (mode 'whole').
+// Set mode 'targeted' and it charges only on the deliverables you pick, and only on the
+// portion of each that is actually affected:
+//
+//   base = SUM over chosen lines of  (line value or its labour portion) x portion%
+//
+//   s.mode   'whole' | 'targeted'
+//   s.basis  'full'  | 'labour'          (labour includes subcontract labour)
+//   s.lines  { <quoteItemId>: portionPercent }
+//
+// Fixed-dollar surcharges are unaffected — $750 is $750 wherever it lands.
+function surchargeBase(s, worksSubtotal, lineBases) {
+  if (s.mode !== 'targeted' || !lineBases) return worksSubtotal;
+  let base = 0;
+  Object.entries(s.lines || {}).forEach(([itemId, pct]) => {
+    const lb = lineBases[itemId];
+    if (!lb) return;
+    const value = s.basis === 'labour' ? (lb.labour || 0) : (lb.full || 0);
+    base += value * ((Number(pct) || 0) / 100);
+  });
+  return base;
+}
+function surchargeAmount(applied, worksSubtotal, lineBases) {
   let total = 0;
-  (applied || []).forEach(s => { total += s.kind === 'percent' ? worksSubtotal * (s.rate / 100) : Number(s.rate) || 0; });
+  (applied || []).forEach(s => {
+    if (s.kind !== 'percent') { total += Number(s.rate) || 0; return; }
+    total += surchargeBase(s, worksSubtotal, lineBases) * (s.rate / 100);
+  });
   return total;
+}
+// A targeted surcharge must say what it does about every Scope 1 deliverable — including
+// ones added after it was set up. Anything unanswered makes the quote incomplete.
+function surchargeGaps(applied, scope1Items) {
+  const gaps = [];
+  (applied || []).forEach((s, i) => {
+    if (s.kind !== 'percent' || s.mode !== 'targeted') return;
+    const missing = scope1Items.filter(it => !(s.lines || {}).hasOwnProperty(it.id));
+    if (missing.length) gaps.push({ code: 'SS' + (i + 1), name: s.name, missing: missing.map(m => ({ id: m.id, code: m.code, name: m.name })) });
+  });
+  return gaps;
 }
 // Site-specific surcharge codes: SS1, SS2... in applied order.
 function surchargeList(applied) {
-  return (applied || []).map((s, i) => ({ code: 'SS' + (i + 1), name: s.name, kind: s.kind, rate: s.rate }));
+  return (applied || []).map((s, i) => ({ code: 'SS' + (i + 1), name: s.name, kind: s.kind, rate: s.rate,
+    mode: s.mode || 'whole', basis: s.basis || 'full', lines: s.lines || {} }));
 }
 
-module.exports = { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeList };
+module.exports = { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeBase, surchargeGaps, surchargeList };

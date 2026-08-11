@@ -226,6 +226,11 @@ function costQuote(q, opts = {}) {
       line.tiers[t] = { spec: r.spec, rate: r.rate, sell, cost: c.cost, hrs: c.hrs, subDays: c.subDays };
       tierTot[t].cost += c.cost; tierTot[t].sell += sell; tierTot[t].hrs += c.hrs;
       line.tiers[t].wastageSurcharge = Math.round(c.wastageSurcharge);
+      // Labour portion of this line, as a share of its SELL value. Includes subcontract
+      // labour, because a difficult site raises the subbie's price too.
+      const labCost = (c.labCost || 0) + (c.subCost || 0);
+      line.tiers[t].labourShare = c.cost > 0 ? labCost / c.cost : 0;
+      line.tiers[t].labourValue = Math.round(sell * (c.cost > 0 ? labCost / c.cost : 0));
       line.tiers[t].wasteUplift = it['waste_uplift_' + t.toLowerCase()] || 0;
       if (t === selTier) {
         selTot.cost += c.cost; selTot.sell += sell; selTot.hrs += c.hrs;

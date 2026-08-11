@@ -3,6 +3,7 @@ const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId } = require('../utils/ids');
 const { TIERS, resolveItem, lineTotal, surchargeAmount, surchargeList } = require('../utils/pricing');
+const { costQuote: cq2 } = require('../utils/costing');
 const { sendMail } = require('../utils/email');
 const { buildSignedPdf } = require('../utils/signedPdf');
 const { costQuote } = require('../utils/costing');
@@ -36,7 +37,14 @@ function clientView(q) {
     if (it.scope === 2) { s2 += perTier.Standard.price; scope2.push(row); }
     else { TIERS.forEach(t => tierTotals[t] += perTier[t].price); scope1.push(row); }
   });
-  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, tierTotals[t] + s2));
+  // Same targeted bases the admin side uses, so the client total always agrees.
+  const lb = {}; TIERS.forEach(t => lb[t] = {});
+  try {
+    (cq2(q).perLine || []).forEach(l => TIERS.forEach(t => {
+      lb[t][l.id] = { full: l.tiers[t].sell, labour: l.tiers[t].labourValue || 0 };
+    }));
+  } catch (e) { console.error('[client surcharge] bases unavailable:', e.message); }
+  const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, tierTotals[t] + s2, lb[t]));
 
   return {
     quoteNumber: q.quote_number, projectTitle: q.project_title, client: q.client_name, address: q.address,
@@ -46,7 +54,7 @@ function clientView(q) {
     mixed: (() => { try { const c = costQuote(q); return c.mixed ? { base: c.base, changes: c.changes.map(x => ({ code: x.code, name: x.name, to: x.to, delta: Math.round(x.delta), up: x.up })), sellExGst: Math.round(c.selected.sell) } : null; } catch { return null; } })(),
     paymentScheduleText: settingGet(q.payment_schedule === 'small' ? 'pay_sched_small' : 'pay_sched_standard'),
     siteNotes: q.site_notes, hasSiteplan: !!q.siteplan_data,
-    surcharges: surchargeList(applied),
+    surcharges: surchargeList(applied).map(s => ({ code: s.code, name: s.name, kind: s.kind, rate: s.rate })),
     surchargePerTier: surPerTier,
     scope1, scope2, tierTotals, scope2Total: s2,
     company: {

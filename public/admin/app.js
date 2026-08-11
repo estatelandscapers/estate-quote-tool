@@ -379,7 +379,7 @@ async function quoteEditor(v) {
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
-      ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote">${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
+      ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete ? 'disabled title="Finish the surcharge settings first" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
       <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
     </div>
     <div class="rule"></div>
@@ -441,6 +441,39 @@ async function quoteEditor(v) {
     <h2>Site surcharges <span class="reqbadge">Required</span></h2><div class="rule"></div>
     <div id="surChips">${surcharges.map(s => `<span class="chip ${isApplied(s.id) ? 'on' : ''}" data-sur="${s.id}">${esc(s.name)} ${s.kind === 'percent' ? '+' + s.rate + '%' : '+' + money(s.rate)}</span>`).join('')}
       <span class="chip ${q.surchargesNa ? 'on' : ''}" data-sur-na="1">N/A — no site surcharges</span></div>
+    ${q.surchargesIncomplete ? `<div class="emailbar failed" style="margin-top:10px;"><b>Surcharge settings incomplete — this quote can't be sent</b><br>
+      ${q.surchargeGaps.map(g => `${esc(g.code)} ${esc(g.name)}: no percentage set for ${g.missing.map(m => `<b>${esc(m.code)}</b>`).join(', ')}`).join('<br>')}
+      <br><span style="font-size:11px;">Open the surcharge below and set a percentage (0% is fine) for each.</span></div>` : ''}
+    ${(q.surchargeList || []).filter(s => s.kind === 'percent').map((s, i) => `
+      <div class="surtarget" data-si="${i}">
+        <div class="st-head">
+          <b>${esc(s.code)} · ${esc(s.name)} — ${s.rate}%</b>
+          <select data-smode="${i}" style="width:210px;font-size:11px;">
+            <option value="whole" ${s.mode !== 'targeted' ? 'selected' : ''}>Across the whole job</option>
+            <option value="targeted" ${s.mode === 'targeted' ? 'selected' : ''}>Only selected deliverables</option>
+          </select>
+          ${s.mode === 'targeted' ? `<select data-sbasis="${i}" style="width:210px;font-size:11px;">
+            <option value="full" ${s.basis !== 'labour' ? 'selected' : ''}>On the full deliverable value</option>
+            <option value="labour" ${s.basis === 'labour' ? 'selected' : ''}>On the labour within it</option></select>` : ''}
+          <span class="st-amt">base ${money(s.base)} → <b>${money(s.amount)}</b></span>
+        </div>
+        ${s.mode === 'targeted' ? `<table class="st-tbl"><thead><tr><th>Deliverable</th><th class="right">Line value</th><th class="right">Labour in it</th><th style="width:120px;">% affected</th><th class="right">Charged on</th></tr></thead><tbody>
+          ${(q.items.scope1 || []).map(it => {
+            const lb = (q.lineBases || {})[it.id] || { full: 0, labour: 0 };
+            const pct = (s.lines || {}).hasOwnProperty(it.id) ? s.lines[it.id] : null;
+            const val = s.basis === 'labour' ? lb.labour : lb.full;
+            return `<tr class="${pct === null ? 'st-missing' : ''}">
+              <td><b>${esc(it.code)}</b> ${esc(it.name)}${pct === null ? ' <span class="tag tag-superseded">not set</span>' : ''}</td>
+              <td class="right">${money(lb.full)}</td><td class="right muted">${money(lb.labour)}</td>
+              <td><input type="number" min="0" max="100" step="5" value="${pct === null ? '' : pct}" placeholder="—" data-spct="${i}|${it.id}" style="width:78px;"> %</td>
+              <td class="right">${pct === null ? '<span class="muted">—</span>' : money(val * (pct / 100))}</td></tr>`;
+          }).join('')}
+        </tbody></table>
+        <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" data-sall="${i}">All 100%</button>
+          <button class="btn btn-ghost btn-sm" data-snone="${i}">All 0%</button>
+        </div>` : ''}
+      </div>`).join('')}
   </div>
 
   <div class="card">
@@ -526,6 +559,24 @@ async function quoteEditor(v) {
   });
   $('#addCustom').addEventListener('click', () => customDialog(q, null, reload));
 
+  const surPut = (i, body) => api(`/quotes/${q.id}/surcharges/${i}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(() => reload());
+  v.querySelectorAll('[data-smode]').forEach(s => s.addEventListener('change', () => surPut(s.dataset.smode, { mode: s.value })));
+  v.querySelectorAll('[data-sbasis]').forEach(s => s.addEventListener('change', () => surPut(s.dataset.sbasis, { basis: s.value })));
+  v.querySelectorAll('[data-spct]').forEach(inp => inp.addEventListener('change', async () => {
+    const [i, itemId] = inp.dataset.spct.split('|');
+    const cur = (q.surchargeList[i].lines) || {};
+    const next = { ...cur };
+    if (inp.value === '') delete next[itemId]; else next[itemId] = Math.max(0, Math.min(100, parseFloat(inp.value) || 0));
+    surPut(i, { lines: next });
+  }));
+  v.querySelectorAll('[data-sall]').forEach(b => b.addEventListener('click', () => {
+    const lines = {}; (q.items.scope1 || []).forEach(it => lines[it.id] = 100);
+    surPut(b.dataset.sall, { lines });
+  }));
+  v.querySelectorAll('[data-snone]').forEach(b => b.addEventListener('click', () => {
+    const lines = {}; (q.items.scope1 || []).forEach(it => lines[it.id] = 0);
+    surPut(b.dataset.snone, { lines });
+  }));
   v.querySelectorAll('[data-sur]').forEach(c => c.addEventListener('click', async () => {
     state.scrollY = window.scrollY;
     const id = c.dataset.sur; const s = surcharges.find(x => x.id === id);
@@ -545,7 +596,7 @@ async function quoteEditor(v) {
     bar.id = 'builderBar'; bar.className = 'builderbar';
     bar.innerHTML = `<span class="muted" id="barStatus">Auto-saves as you work</span>
       <button class="btn btn-ghost" id="barSave">Save</button>
-      <button class="btn btn-blue" id="barSend">${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>`;
+      <button class="btn btn-blue" id="barSend" ${q.surchargesIncomplete ? 'disabled title="Finish the surcharge settings first" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>`;
     v.appendChild(bar);
     $('#barSave').addEventListener('click', async () => {
       await autosave(); $('#barStatus').textContent = 'Saved just now';

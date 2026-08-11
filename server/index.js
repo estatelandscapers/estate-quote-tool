@@ -47,8 +47,40 @@ const path2 = require('node:path');
 app.get('/api/backup', (req, res) => {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
   if ((req.query.key || '') !== key) return res.status(403).send('forbidden');
+  const fsb = require('node:fs');
   const dbPath = process.env.DB_PATH || path2.join(process.env.DATA_DIR || path2.join(__dirname,'..','data'),'estate.db');
-  res.download(dbPath, 'estate-backup.db');
+  // Copying estate.db on its own can miss anything still sitting in the -wal file.
+  // VACUUM INTO writes a consistent, self-contained point-in-time snapshot instead.
+  const snap = path2.join(require('node:os').tmpdir(), `estate-snap-${Date.now()}.db`);
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  try {
+    const { db: liveDb } = require('./db');
+    liveDb.exec(`VACUUM INTO '${snap.replace(/'/g, "''")}'`);
+    res.download(snap, `estate-backup-${stamp}.db`, err => {
+      fsb.unlink(snap, () => {});
+      if (err) console.error('[backup] send failed:', err.message);
+      else console.log(`[backup] snapshot sent (${stamp})`);
+    });
+  } catch (e) {
+    console.error('[backup] snapshot failed, falling back to raw file:', e.message);
+    res.download(dbPath, `estate-backup-${stamp}.db`);
+  }
+});
+
+// Lightweight check for the backup script: confirms the key works and reports size,
+// so a scheduled task can verify without downloading the whole database.
+app.get('/api/backup/status', (req, res) => {
+  const key = process.env.BACKUP_KEY || 'CHANGE-ME';
+  if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
+  const fsb = require('node:fs');
+  const dbPath = process.env.DB_PATH || path2.join(process.env.DATA_DIR || path2.join(__dirname,'..','data'),'estate.db');
+  let size = null; try { size = fsb.statSync(dbPath).size; } catch (e) {}
+  const { db: liveDb } = require('./db');
+  const counts = {};
+  ['quotes', 'quote_items', 'price_items', 'materials', 'vendors', 'leads'].forEach(t => {
+    try { counts[t] = liveDb.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c; } catch (e) { counts[t] = null; }
+  });
+  res.json({ ok: true, dbBytes: size, at: new Date().toISOString(), counts });
 });
 
 // Simple restore page + upload. Protected by the same key. Lets you re-load a
