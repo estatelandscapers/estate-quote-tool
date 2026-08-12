@@ -465,7 +465,7 @@ async function quoteEditor(v) {
       ${q.firstViewedAt ? `<span class="muted">first opened ${esc(String(q.firstViewedAt).slice(0, 16))}</span>` : '<span class="muted">not opened yet</span>'}
       ${q.internalViews ? `<span class="muted" title="Your own views and previews — never counted as client views">${q.internalViews} internal (not counted)</span>` : ''}
       ${q.legacyViews ? `<span class="muted" title="Recorded before views were attributed">${q.legacyViews} older views (unattributed)</span>` : ''}
-      ${q.sentAt ? `<span class="muted">sent ${esc(String(q.sentAt).slice(0, 16))} to ${esc(q.sentTo || '')}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
+      ${q.sentAt ? `<span class="muted">sent ${esc(String(q.sentAt).slice(0, 16))} to ${esc(q.sentTo || '')}${q.sentBy ? ' by ' + esc(q.sentBy) : ''}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
     </div>
     <div class="linkbar"><span>🔗 Live link:</span><input id="linkInput" readonly value="${esc(link)}"><button class="btn btn-blue btn-sm" id="copyLink">Copy</button><a class="btn btn-ghost btn-sm" href="${esc(link)}" target="_blank">Preview</a></div>
   </div>

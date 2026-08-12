@@ -234,6 +234,7 @@ addColumn('quotes','lost_reason','TEXT');
 // timestamps (SQLite has one-second resolution), so a timestamp cannot detect a
 // concurrent edit. This increments on every change and never collides.
 addColumn('quotes','rev_no','INTEGER DEFAULT 0');
+addColumn('quotes','sent_by','TEXT');   // who emailed it — matters once more than one person can
 // Extra-wastage price uplift, held per tier so the client link, contract and totals agree
 addColumn('quote_items','waste_uplift_basic','REAL DEFAULT 0');
 addColumn('quote_items','waste_uplift_standard','REAL DEFAULT 0');

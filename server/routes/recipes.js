@@ -6,8 +6,14 @@ const { newId } = require('../utils/ids');
 const { materialPrice, costVariant, recipesFor } = require('../utils/costing');
 const router = express.Router();
 const isAdmin = req => req.user && req.user.role === 'admin';
-// ADMIN-ONLY MODULE — recipes expose build-ups and subcontractor rates.
-router.use((req, res, next) => isAdmin(req) ? next() : res.status(403).json({ error: 'admin only' }));
+// The Recipes TAB is admin-only, but a few screens need to know which delivery
+// variants exist. Reads are allowed and stripped of all cost by the view functions
+// below; every write stays admin-only.
+router.use((req, res, next) => {
+  if (!req.user) return res.status(403).json({ error: 'sign in required' });
+  if (req.method === 'GET' || isAdmin(req)) return next();
+  return res.status(403).json({ error: 'admin only' });
+});
 const VARIANTS = ['in', 'sub', 'mixed'];
 const VNAME = { in: 'In-house', sub: 'Subcontract', mixed: 'Mixed' };
 

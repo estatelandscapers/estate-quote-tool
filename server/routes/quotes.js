@@ -103,7 +103,7 @@ function fullQuote(q) {
     rev: q.rev_no || 0,
     emailStatus: q.email_status || null, emailDetail: q.email_detail || null,
     ...viewStats(q.id),
-    sentAt: q.sent_at || null, sentTo: q.sent_to || null, sendCount: q.send_count || 0,
+    sentAt: q.sent_at || null, sentTo: q.sent_to || null, sentBy: q.sent_by || null, sendCount: q.send_count || 0,
     sentSubject: q.sent_subject || null, sentMessage: q.sent_message || null, ...c,
   };
 }
@@ -243,7 +243,7 @@ router.get('/:id/send-preview', (req, res) => {
   });
 });
 router.post('/:id/send', async (req, res) => {
-  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  if (!req.user) return res.status(403).json({ error: 'sign in required' });
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
@@ -259,8 +259,8 @@ router.post('/:id/send', async (req, res) => {
     const since = Date.now() - new Date(q.sent_at.replace(' ', 'T') + 'Z').getTime();
     if (since < 30000 && !(req.body || {}).force) {
       return res.status(409).json({
-        error: `This quote was sent ${Math.round(since / 1000)} seconds ago — possibly by someone else.`,
-        alreadySent: true, sentTo: q.sent_to,
+        error: `This quote was sent ${Math.round(since / 1000)} seconds ago${q.sent_by ? ' by ' + q.sent_by : ''}.`,
+        alreadySent: true, sentTo: q.sent_to, sentBy: q.sent_by,
         hint: 'Check with the team before sending again, or press Send once more to force it.' });
     }
   }
@@ -291,12 +291,12 @@ router.post('/:id/send', async (req, res) => {
   }
   // Keep the client's email address up to date, and remember what we said.
   db.prepare(`UPDATE quotes SET client_email=COALESCE(NULLIF(?,''), client_email),
-      sent_at=datetime('now'), sent_to=?, sent_subject=?, sent_message=?,
+      sent_at=datetime('now'), sent_to=?, sent_subject=?, sent_message=?, sent_by=?,
       send_count=COALESCE(send_count,0)+1,
       status=CASE WHEN status='draft' THEN 'sent' ELSE status END,
       updated_at=datetime('now') WHERE id=?`)
-    .run(to, to, subject, b.message || '', q.id);
-  console.log(`[send] quote ${q.quote_number} -> ${to} (${results.join(' | ')})`);
+    .run(to, to, subject, b.message || '', req.user.name || req.user.username, q.id);
+  console.log(`[send] quote ${q.quote_number} -> ${to} by ${req.user.username} (${results.join(' | ')})`);
   res.json({ ok: true, results, sendCount: (q.send_count || 0) + 1 });
 });
 
@@ -332,7 +332,7 @@ function numberInUse(parentNumber, exceptQuoteId) {
   return rows.some(r => r.id !== exceptQuoteId);
 }
 router.put('/:id/number', (req, res) => {
-  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  if (!req.user) return res.status(403).json({ error: 'sign in required' });
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const raw = String((req.body || {}).number || '').trim();
@@ -546,19 +546,29 @@ router.get('/:id/analytics', (req, res) => {
 });
 
 // Full tier costing for a quote (recipes). Estimators get cost totals + site time but no margin.
+// Estimators build and price quotes, but never see what anything costs us.
+function stripCosting(c) {
+  const o = { ...c };
+  ['grossMargin', 'grossMarginPct', 'target', 'belowTarget', 'guidePrice', 'ohDailyRate',
+   'ohAllocated', 'ohInRecipes', 'ohRecipeDays', 'netMarginPct', 'wastageSurcharge',
+   'wasteUplift', 'takeoff'].forEach(k => delete o[k]);
+  o.selected = { sell: c.selected ? c.selected.sell : 0, hrs: c.selected ? c.selected.hrs : 0 };
+  o.tierTotals = {};
+  Object.entries(c.tierTotals || {}).forEach(([t, v]) => o.tierTotals[t] = { sell: v.sell, hrs: v.hrs });
+  o.perLine = (c.perLine || []).map(l => {
+    const tiers = {};
+    Object.entries(l.tiers || {}).forEach(([t, v]) => tiers[t] = { spec: v.spec, rate: v.rate, sell: v.sell });
+    const { variantCost, ...rest } = l;
+    return { ...rest, tiers };
+  });
+  o.restricted = true;
+  return o;
+}
 router.get('/:id/costing', (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const c = costQuote(q);
-  if (req.user && req.user.role !== 'admin') {
-    // strip commercially sensitive figures for estimators
-    const { grossMargin, grossMarginPct, target, belowTarget, guidePrice, tierTotals, ...rest } = c;
-    rest.perLine = rest.perLine.map(l => { const t = {}; Object.keys(l.tiers).forEach(k => { const { cost, ...tv } = l.tiers[k]; t[k] = tv; }); return { ...l, tiers: t }; });
-    const { matCost, labCost, subCost, delivery, plant, ...selRest } = rest.selected;
-    rest.selected = selRest; rest.takeoff = [];
-    return res.json(rest);
-  }
-  res.json(c);
+  res.json(req.user && req.user.role === 'admin' ? c : stripCosting(c));
 });
 
 // Signed-contract PREVIEW (admin): the exact PDF a client receives, before any send.

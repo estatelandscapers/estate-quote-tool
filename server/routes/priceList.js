@@ -2,10 +2,15 @@ const express = require('express');
 const { db } = require('../db');
 const { newId } = require('../utils/ids');
 const router = express.Router();
-// ADMIN-ONLY MODULE. The rate card is commercially sensitive, so this is enforced here
-// rather than by hiding the tab — a hidden tab is not access control.
+// Estimators can't browse or edit the rate card (the Pricing tab is admin-only), but
+// they DO need to read it to build a quote — otherwise there are no deliverables to
+// add and the builder never loads. So: reads allowed, writes admin-only.
 const isAdminReq = req => req.user && req.user.role === 'admin';
-router.use((req, res, next) => isAdminReq(req) ? next() : res.status(403).json({ error: 'admin only' }));
+router.use((req, res, next) => {
+  if (!req.user) return res.status(403).json({ error: 'sign in required' });
+  if (req.method === 'GET' || isAdminReq(req)) return next();
+  return res.status(403).json({ error: 'admin only' });
+});
 
 const rowOut = r => ({
   id: r.id, code: r.code, name: r.name, description: r.description || '', fromCustom: !!r.from_custom, originQuote: r.origin_quote, recipeStatus: r.recipe_status || 'none', unit: r.unit, behaviour: r.behaviour, notes: r.notes,
