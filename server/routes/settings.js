@@ -11,13 +11,20 @@ const KEYS = ['company_name','company_abn','company_lic','company_address','comp
   'tier_bronze','tier_silver','tier_gold','age_flag','age_chase','age_dead',
   'crew_day_rate','crew_people','extra_person_rate','hours_per_day','work_days_per_month','quote_number_start','default_crew_size','default_customer_tier','email_signature','quote_email_subject','quote_email_body'];
 
+// Company details are needed by the client-facing pages, but margin targets and
+// labour rates are not for general viewing.
+const SENSITIVE = ['tier_bronze','tier_silver','tier_gold','crew_day_rate','crew_people',
+  'extra_person_rate','hours_per_day','work_days_per_month','quote_number_start',
+  'default_crew_size','default_customer_tier','age_flag','age_chase','age_dead']; // SENSITIVE KEYS
 router.get('/', (req, res) => {
   const out = {}; KEYS.forEach(k => out[k] = settingGet(k));
   out.smtpConfigured = configured();
   try { out.emailProvider = require('../utils/email').provider(); } catch { out.emailProvider = null; }
+  if (!req.user || req.user.role !== 'admin') SENSITIVE.forEach(k => delete out[k]);
   res.json(out);
 });
 router.put('/', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
   KEYS.forEach(k => { if (req.body[k] !== undefined) settingSet(k, req.body[k]); });
   res.json({ ok: true });
 });

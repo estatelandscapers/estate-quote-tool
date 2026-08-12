@@ -2,6 +2,10 @@ const express = require('express');
 const { db } = require('../db');
 const { newId } = require('../utils/ids');
 const router = express.Router();
+// ADMIN-ONLY MODULE — vendor terms, contacts and pricing links are sensitive.
+// (Selections and POs surface vendor NAMES separately, which non-admins do need.)
+const isAdminReq2 = req => req.user && req.user.role === 'admin';
+router.use((req, res, next) => isAdminReq2(req) ? next() : res.status(403).json({ error: 'admin only' }));
 // estimators may list vendor names (for context); prices/details admin only
 // What this vendor supplies is GENERATED from the Costs library (material_vendors) —
 // it is never a separate typed list, so the two can't drift apart.

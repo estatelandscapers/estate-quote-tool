@@ -5,7 +5,16 @@ const { db } = require('../db');
 const { newId } = require('../utils/ids');
 const router = express.Router();
 const adminGuard = (req, res, next) => req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'admin only' });
-router.use(adminGuard);
+const isAdmin = req => req.user && req.user.role === 'admin';
+// Non-admins can see WHICH jobs are running and how they're tracking, but never the
+// money. Every figure below is removed for them, not just hidden in the interface.
+const MONEY_FIELDS = ['sellExGst', 'quotedCost', 'quotedGM', 'quotedGMPct', 'actualCost', 'actualGM',
+  'actualGMPct', 'forecastCost', 'forecastGMPct', 'costToDate', 'committed', 'remainingCost',
+  'projectedCost', 'projectedGMPct', 'driftPts', 'ohAllocated', 'netGMPct', 'spentPct'];
+function stripMoney(job) { const o = { ...job }; MONEY_FIELDS.forEach(k => delete o[k]); return o; }
+// Reading is open to any signed-in user (money stripped below); changing anything
+// — closing a year, reopening a job — stays admin-only.
+router.use((req, res, next) => (req.method === 'GET' || isAdmin(req)) ? next() : adminGuard(req, res, next));
 
 function fyOf(dateStr) {
   const d = new Date((dateStr || '') + 'Z');
@@ -80,6 +89,7 @@ router.get('/', (req, res) => {
   const totSell = list.reduce((a, j) => a + j.sellExGst, 0);
   const totCost = list.reduce((a, j) => a + (j.projectedCost || 0), 0);
   const totOh = list.reduce((a, j) => a + (j.ohAllocated || 0), 0);
+  if (!isAdmin(req)) return res.json({ fys, jobs: list.map(stripMoney), restricted: true });
   res.json({ fys, jobs: list, overheadDailyRate: Math.round(ohDaily),
     summary: { grossPct: totSell > 0 ? Math.round((totSell - totCost) / totSell * 1000) / 10 : 0,
       overhead: Math.round(totOh),

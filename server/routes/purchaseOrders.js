@@ -7,8 +7,9 @@ const { newId } = require('../utils/ids');
 const { costQuote, crewHourRate } = require('../utils/costing');
 const router = express.Router();
 const isAdmin = req => req.user && req.user.role === 'admin';
-// Purchase Orders are admin-only per current access policy.
-router.use((req, res, next) => isAdmin(req) ? next() : res.status(403).json({ error: 'admin only' }));
+// The site team needs POs — the site copy to work from, and to mark things ordered
+// and delivered. Prices are removed for them below; only admins see cost.
+router.use((req, res, next) => req.user ? next() : res.status(403).json({ error: 'sign in required' }));
 
 function createPOFromQuote(quoteId, opts = {}) {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(quoteId);
@@ -78,6 +79,12 @@ function poView(po, admin) {
     if (q) { view.sellExGst = q.quoted_sell; view.quotedCost = q.quoted_cost;
       view.actualGM = q.quoted_sell != null ? Math.round((q.quoted_sell - actualCost) * 100) / 100 : null;
       view.actualGMPct = q.quoted_sell > 0 ? Math.round((q.quoted_sell - actualCost) / q.quoted_sell * 1000) / 10 : null; }
+  } else {
+    // Non-admins still need to know which vendors are involved and whether each has
+    // been ordered or delivered — they just don't see any prices.
+    view.vendors = vendors.map(v => ({ id: v.id, name: v.vendor_name, suffix: v.suffix, status: v.status }));
+    view.costItems = [];
+    view.restricted = true;
   }
   return view;
 }
@@ -187,7 +194,7 @@ router.post('/:id/supersede', (req, res) => {
   res.json({ ok: true, id: newPoId, carried: carried.length });
 });
 router.put('/:id/items/:itemId/status', (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  // Marking things ordered/delivered is exactly what the site team is here to do.
   const s = (req.body || {}).status;
   if (!['pending', 'ordered', 'delivered', 'invoiced'].includes(s)) return res.status(400).json({ error: 'bad status' });
   db.prepare('UPDATE po_items SET po_status=? WHERE id=?').run(s, req.params.itemId);

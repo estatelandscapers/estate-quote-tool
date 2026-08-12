@@ -221,6 +221,9 @@ addColumn('quotes','sent_to','TEXT');
 addColumn('quotes','sent_subject','TEXT');
 addColumn('quotes','sent_message','TEXT');
 addColumn('quotes','send_count','INTEGER DEFAULT 0');
+// Lost quotes: kept for the record, hidden from the working list like superseded ones
+addColumn('quotes','lost_at','TEXT');
+addColumn('quotes','lost_reason','TEXT');
 // Extra-wastage price uplift, held per tier so the client link, contract and totals agree
 addColumn('quote_items','waste_uplift_basic','REAL DEFAULT 0');
 addColumn('quote_items','waste_uplift_standard','REAL DEFAULT 0');

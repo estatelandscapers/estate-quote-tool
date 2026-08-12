@@ -6,7 +6,8 @@ const { newId } = require('../utils/ids');
 const { materialPrice, costVariant, recipesFor } = require('../utils/costing');
 const router = express.Router();
 const isAdmin = req => req.user && req.user.role === 'admin';
-router.use((req, res, next) => (req.method === 'GET' || isAdmin(req)) ? next() : res.status(403).json({ error: 'admin only' }));
+// ADMIN-ONLY MODULE — recipes expose build-ups and subcontractor rates.
+router.use((req, res, next) => isAdmin(req) ? next() : res.status(403).json({ error: 'admin only' }));
 const VARIANTS = ['in', 'sub', 'mixed'];
 const VNAME = { in: 'In-house', sub: 'Subcontract', mixed: 'Mixed' };
 

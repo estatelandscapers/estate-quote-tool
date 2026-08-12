@@ -5,7 +5,9 @@ const { db } = require('../db');
 const { costQuote } = require('../utils/costing');
 const router = express.Router();
 const isAdmin = req => req.user && req.user.role === 'admin';
-router.use((req, res, next) => isAdmin(req) ? next() : res.status(403).json({ error: 'admin only' }));
+// The site/ops side needs Selections to do their job — choosing how each deliverable
+// is delivered and by whom. They just don't see what any of it costs.
+router.use((req, res, next) => req.user ? next() : res.status(403).json({ error: 'sign in required' }));
 
 router.get('/', (req, res) => {
   const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' ORDER BY accepted_at DESC").all();
@@ -38,6 +40,13 @@ router.get('/:quoteId', (req, res) => {
       finalCost: l.tiers[l.selected].cost,
       delta: Math.round(l.tiers[l.selected].cost - qLine.tiers[qLine.selected].cost) };
   });
+  if (!isAdmin(req)) {
+    return res.json({ quoteId: q.id, quoteNumber: q.quote_number, client: q.client_name, address: q.address,
+      locked: !!q.selections_locked, vendors, restricted: true,
+      lines: lines.map(l => { const { quotedCost, finalCost, delta, variantCost, ...rest } = l; return rest; }),
+      quoted: { days: quoted.days, crewDays: quoted.crewDays, subDays: quoted.subDays },
+      final: { days: selected.days, crewDays: selected.crewDays, subDays: selected.subDays } });
+  }
   res.json({ quoteId: q.id, quoteNumber: q.quote_number, client: q.client_name, address: q.address,
     locked: !!q.selections_locked, vendors, lines,
     quoted: { cost: Math.round(quoted.selected.cost), days: quoted.days, crewDays: quoted.crewDays, subDays: quoted.subDays, marginPct: quoted.grossMarginPct },

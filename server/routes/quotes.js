@@ -109,7 +109,7 @@ function fullQuote(q) {
 
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM quotes ORDER BY parent_number DESC, created_at DESC').all();
-  res.json(rows.map(q => {
+  const mapped = rows.map(q => {
     const views = db.prepare("SELECT COUNT(*) c FROM quote_events WHERE quote_id=? AND event_type='view'").get(q.id).c;
     const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
     // completeness: has at least one item, a surcharge decision, a siteplan decision, and no unchecked CRITICAL checklist items
@@ -128,14 +128,46 @@ router.get('/', (req, res) => {
     else if (ageDays >= th.dead) ageBand = 'dead';
     else if (ageDays >= th.chase) ageBand = 'chase';
     else if (ageDays >= th.flag) ageBand = 'flag';
-    let status = laterRev > 0 ? 'superseded' : q.status;
-    if (status !== 'accepted' && status !== 'superseded' && !complete) status = 'incomplete';
+    // Lost sits above everything except an actual acceptance — a lost job is lost
+    // even if its checklist was never finished.
+    let status = q.lost_at ? 'lost' : (laterRev > 0 ? 'superseded' : q.status);
+    if (!['accepted', 'superseded', 'lost'].includes(status) && !complete) status = 'incomplete';
     return { id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number,
       client: q.client_name, projectTitle: q.project_title,
       status, acceptedPackage: q.accepted_package,
+      lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
       value: Math.round(fq.grandIncGst), complete, uncheckedCritical, ageDays, ageBand, customerTier: q.customer_tier || 'Silver',
       views, updatedAt: q.updated_at };
-  }));
+  });
+  // Superseded and lost quotes are kept forever but hidden from the working list,
+  // so what you see is the work that's actually live.
+  const showLost = req.query.lost === '1';
+  const showSuperseded = req.query.superseded === '1';
+  const lostCount = mapped.filter(x => x.status === 'lost').length;
+  const supersededCount = mapped.filter(x => x.status === 'superseded').length;
+  const visible = mapped.filter(x =>
+    (x.status !== 'lost' || showLost) && (x.status !== 'superseded' || showSuperseded));
+  res.json({ quotes: visible, lostCount, supersededCount, total: mapped.length });
+});
+
+// Mark a quote as lost (or bring it back). The quote is never deleted — the value,
+// the packages and what the client saw all stay on record.
+router.put('/:id/lost', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  if (b.lost === false) {
+    db.prepare("UPDATE quotes SET lost_at=NULL, lost_reason=NULL, updated_at=datetime('now') WHERE id=?").run(q.id);
+    return res.json({ ok: true, lost: false });
+  }
+  if (q.status === 'accepted') return res.status(400).json({ error: 'That quote has been accepted and signed — it can\'t be marked lost.' });
+  db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, updated_at=datetime('now') WHERE id=?")
+    .run(String(b.reason || '').slice(0, 200), q.id);
+  // Keep the lead in step, if this quote came from one.
+  if (q.lead_id) { try { db.prepare("UPDATE leads SET status='Lost', updated_at=datetime('now') WHERE id=?").run(q.lead_id); } catch (e) {} }
+  console.log(`[lost] quote ${q.quote_number} marked lost${b.reason ? ' — ' + b.reason : ''}`);
+  res.json({ ok: true, lost: true });
 });
 
 // NOTE: literal paths MUST be declared before the '/:id' wildcard below, otherwise
@@ -220,6 +252,7 @@ router.post('/:id/send', async (req, res) => {
   if (badTo) return res.status(400).json({ error: badTo, field: 'to' });
   const ccRaw = String(b.cc || '').trim();
   if (ccRaw) { const badCc = validateEmail(ccRaw); if (badCc) return res.status(400).json({ error: 'Copy-to address: ' + badCc, field: 'cc' }); }
+  if (q.lost_at) return res.status(400).json({ error: 'This quote is marked as lost. Reopen it before sending.' });
   // A targeted surcharge with unanswered deliverables means the price is wrong.
   // Refuse to send rather than let it go out.
   const fqCheck = fullQuote(q);

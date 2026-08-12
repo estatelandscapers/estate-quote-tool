@@ -80,7 +80,17 @@ app.get('/api/backup/status', (req, res) => {
   ['quotes', 'quote_items', 'price_items', 'materials', 'vendors', 'leads'].forEach(t => {
     try { counts[t] = liveDb.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c; } catch (e) { counts[t] = null; }
   });
-  res.json({ ok: true, dbBytes: size, at: new Date().toISOString(), counts });
+  // Where the space is actually going. Site plan photos are stored as base64 text
+  // inside the database, so a handful of phone photos dwarfs everything else.
+  const space = {};
+  try {
+    space.sitePlanBytes = liveDb.prepare("SELECT COALESCE(SUM(LENGTH(siteplan_data)),0) s FROM quotes").get().s;
+    space.sitePlanCount = liveDb.prepare('SELECT COUNT(*) c FROM quotes WHERE siteplan_data IS NOT NULL').get().c;
+    space.poSitePlanBytes = liveDb.prepare("SELECT COALESCE(SUM(LENGTH(siteplan_data)),0) s FROM purchase_orders").get().s;
+    space.signatureBytes = liveDb.prepare("SELECT COALESCE(SUM(LENGTH(signed_sig)),0) s FROM quotes").get().s;
+    space.eventRows = liveDb.prepare('SELECT COUNT(*) c FROM quote_events').get().c;
+  } catch (e) {}
+  res.json({ ok: true, dbBytes: size, at: new Date().toISOString(), counts, space });
 });
 
 // Simple restore page + upload. Protected by the same key. Lets you re-load a

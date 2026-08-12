@@ -31,10 +31,16 @@ router.get('/', (req, res) => {
   const wk = now - 7 * 86400000, mo = now - 30 * 86400000, fy = fyStart().getTime();
   let securedWeek = 0, securedMonth = 0, securedFY = 0;
   let quotedMonth = 0, builtMonth = 0, quotedValueMonth = 0, securedCountFY = 0;
+  let lostFY = 0, lostValueFY = 0;
 
   quotes.forEach(q => {
     const created = new Date((q.created_at || '') + 'Z').getTime();
     const val = quoteValue(q);
+    if (q.lost_at) {
+      // Lost quotes still count against the win rate — that's what a win rate is for.
+      const lt = new Date((q.lost_at || '') + 'Z').getTime();
+      if (lt >= fy) { lostFY++; lostValueFY += val; }
+    }
     if (q.status === 'accepted') {
       const at = new Date((q.accepted_at || q.updated_at || '') + 'Z').getTime();
       if (at >= wk) securedWeek += val;
@@ -61,6 +67,7 @@ router.get('/', (req, res) => {
   res.json({
     securedWeek: Math.round(securedWeek), securedMonth: Math.round(securedMonth), securedFY: Math.round(securedFY),
     builtMonth, quotedValueMonth: Math.round(quotedValueMonth),
+    lostFY, lostValueFY: Math.round(lostValueFY),
     winRateValue: fyQuoted > 0 ? Math.round(fySecured / fyQuoted * 100) : 0,
     avgQuote: builtMonth > 0 ? Math.round(quotedValueMonth / builtMonth) : 0,
     securedCountFY, recent,

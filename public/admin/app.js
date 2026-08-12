@@ -18,7 +18,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -37,7 +37,10 @@ function shell() {
   const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
                ['recipes', 'Recipes'], ['vendors', 'Vendors'], ['editor', 'Editor'],
                ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders']];
-  const adminOnlyTabs = ['editor', 'jobs', 'selections', 'po'];
+  // Admin sees everything. Everyone else works the delivery side of the business:
+  // Leads, Quotes, Costs, Projects, Selections and Purchase Orders — but not the
+  // rate card, the recipes or the vendor terms, and no money in the delivery tabs.
+  const adminOnlyTabs = ['editor', 'pricing', 'recipes', 'vendors'];
   const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
   if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
   $('#app').innerHTML = `
@@ -130,6 +133,7 @@ async function leadsTab(v) {
       <div class="stat"><div class="k">Quotes built (30d)</div><div class="v">${d.builtMonth || 0}</div></div>
       <div class="stat"><div class="k">Value quoted (30d)</div><div class="v">${money(d.quotedValueMonth)}</div><div style="font-size:9.5px;color:var(--grey);">excl. GST</div></div>
       <div class="stat"><div class="k">Win rate (value, FY)</div><div class="v">${d.winRateValue || 0}%</div></div>
+      <div class="stat"><div class="k">Lost this FY</div><div class="v">${money(d.lostValueFY || 0)}</div><div style="font-size:9.5px;color:var(--grey);">${d.lostFY || 0} quote${d.lostFY === 1 ? '' : 's'} · excl. GST</div></div>
       <div class="stat"><div class="k">Avg quote value</div><div class="v">${money(d.avgQuote)}</div><div style="font-size:9.5px;color:var(--grey);">excl. GST</div></div>
     </div>`;
 }
@@ -321,20 +325,75 @@ const AGE = { fresh: ['age-fresh', d => d + 'd'], flag: ['age-flag', d => d + 'd
 async function quotesList(v) {
   v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
     <div><h2>Quotes</h2><div class="sub">Colour = quote age (thresholds in Settings). Latest revision is the live link.</div></div>
-    <div style="display:flex;gap:10px;align-items:center;"><label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showSup" ${state.showSuperseded ? 'checked' : ''} style="width:auto;"> Show superseded</label><button class="btn btn-blue" id="newQuote">+ New quote</button></div></div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showSup" ${state.showSuperseded ? 'checked' : ''} style="width:auto;"> Show superseded <span id="supN" class="muted"></span></label>
+      <label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showLost" ${state.showLost ? 'checked' : ''} style="width:auto;"> Show lost <span id="lostN" class="muted"></span></label>
+      <button class="btn btn-blue" id="newQuote">+ New quote</button></div></div>
     <div class="rule"></div><div id="qtable">Loading…</div></div>`;
   $('#newQuote').addEventListener('click', async () => { const q = await api('/quotes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: '', projectTitle: 'Landscape Works' }) }); state.quoteId = q.id; state.scrollY = 0; route(); });
   $('#showSup').addEventListener('change', e => { state.showSuperseded = e.target.checked; quotesList(v); });
-  let list = await api('/quotes');
-  if (!state.showSuperseded) list = list.filter(q => q.status !== 'superseded');
+  $('#showLost').addEventListener('change', e => { state.showLost = e.target.checked; quotesList(v); });
+  const qs = [];
+  if (state.showLost) qs.push('lost=1');
+  if (state.showSuperseded) qs.push('superseded=1');
+  const data = await api('/quotes' + (qs.length ? '?' + qs.join('&') : ''));
+  const list = data.quotes || data;
+  if (data.supersededCount) $('#supN').textContent = `(${data.supersededCount})`;
+  if (data.lostCount) $('#lostN').textContent = `(${data.lostCount})`;
   $('#qtable').innerHTML = list.length ? `<table><thead><tr><th>Quote</th><th>Client</th><th>Tier</th><th>Value</th><th>Status</th><th>Age</th><th>Views</th><th></th></tr></thead><tbody>
-    ${list.map(q => { const a = AGE[q.ageBand] || AGE.fresh; return `<tr><td><b>${esc(q.quoteNumber)}</b></td><td>${esc(q.client || '—')}</td><td><span class="tag tag-tier">${esc(q.customerTier || 'Silver')}</span></td><td>${q.value ? money(q.value) : '—'}</td>
-      <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span></td>
-      <td>${q.status === 'accepted' ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td>${q.views}</td>
-      <td class="right"><button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button> <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button></td></tr>`; }).join('')}
+    ${list.map(q => { const a = AGE[q.ageBand] || AGE.fresh; const isLost = q.status === 'lost'; const isSup = q.status === 'superseded';
+      return `<tr class="${isLost ? 'row-lost' : ''}"><td><b>${esc(q.quoteNumber)}</b></td><td>${esc(q.client || '—')}</td><td><span class="tag tag-tier">${esc(q.customerTier || 'Silver')}</span></td><td>${q.value ? money(q.value) : '—'}</td>
+      <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>
+        ${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
+      <td>${q.status === 'accepted' || isLost ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td>${q.views}</td>
+      <td class="right"><button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
+        ${isLost ? `<button class="btn btn-ghost btn-sm" data-reopen="${q.id}">Reopen</button>`
+          : (q.status === 'accepted' || isSup ? '' : `<button class="btn btn-ghost btn-sm" data-lost="${q.id}">Lost</button>`)}
+        <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button></td></tr>`; }).join('')}
     </tbody></table>` : '<p class="muted">No quotes yet.</p>';
   v.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => { state.quoteId = b.dataset.open; state.scrollY = 0; route(); }));
   v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this quote?')) { await api('/quotes/' + b.dataset.del, { method: 'DELETE' }); toast('Deleted'); quotesList(v); } }));
+  v.querySelectorAll('[data-lost]').forEach(b => b.addEventListener('click', () => markLost(b.dataset.lost, () => quotesList(v))));
+  v.querySelectorAll('[data-reopen]').forEach(b => b.addEventListener('click', async () => {
+    await api('/quotes/' + b.dataset.reopen + '/lost', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lost: false }) });
+    toast('Quote reopened'); quotesList(v);
+  }));
+}
+
+// Marking a quote lost keeps everything — it just leaves the working list.
+function markLost(quoteId, done) {
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal" style="max-width:460px;">
+    <h2 style="margin:0 0 3px;">Mark this quote as lost</h2>
+    <div class="sub">It stays on record and still counts toward your win rate — it just won't clutter the working list. You can reopen it any time.</div>
+    <div class="rule"></div>
+    <div class="field"><label>Why was it lost? (optional)</label>
+      <select id="lost_reason">
+        <option value="">— not recorded —</option>
+        <option>Price — went with a cheaper quote</option>
+        <option>Price — client's budget changed</option>
+        <option>Timing — client postponed the work</option>
+        <option>Timing — we couldn't start soon enough</option>
+        <option>Scope changed</option>
+        <option>No response from client</option>
+        <option>Went with another landscaper</option>
+        <option>Client did it themselves</option>
+        <option>Other</option>
+      </select></div>
+    <div class="field" id="lost_other_wrap" style="display:none;"><label>Details</label><input id="lost_other" placeholder="e.g. beaten by $3k on the driveway"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+      <button class="btn btn-ghost" id="lost_cancel">Cancel</button>
+      <button class="btn btn-blue" id="lost_ok">Mark as lost</button></div></div>`;
+  document.body.appendChild(bg);
+  $('#lost_reason').addEventListener('change', e => { $('#lost_other_wrap').style.display = e.target.value === 'Other' ? '' : 'none'; });
+  $('#lost_cancel').addEventListener('click', () => bg.remove());
+  $('#lost_ok').addEventListener('click', async () => {
+    let reason = $('#lost_reason').value;
+    if (reason === 'Other') reason = $('#lost_other').value || 'Other';
+    const r = await api('/quotes/' + quoteId + '/lost', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lost: true, reason }) });
+    if (r.error) { toast(r.error); return; }
+    bg.remove(); toast('Marked as lost'); done();
+  });
 }
 
 // ---------------- QUOTE EDITOR ----------------
@@ -379,10 +438,16 @@ async function quoteEditor(v) {
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
-      ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete ? 'disabled title="Finish the surcharge settings first" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
+      ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
+        ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
+        : `<button class="btn btn-ghost" id="lostQuote">Mark lost</button>`) : ''}
+      ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete || q.lostAt ? 'disabled title="' + (q.lostAt ? 'This quote is marked lost' : 'Finish the surcharge settings first') + '" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
       <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
     </div>
     <div class="rule"></div>
+    ${q.lostAt ? `<div class="emailbar failed" style="background:#F6F6F6;border-color:#DDD;color:#666;">
+      <b>This quote is marked as LOST</b>${q.lostReason ? ` — ${esc(q.lostReason)}` : ''}
+      <br><span style="font-size:11px;">Hidden from the quotes list and can't be sent. Everything is kept — press Reopen to bring it back.</span></div>` : ''}
     ${q.emailStatus ? `<div class="emailbar ${q.emailStatus}"><b>Signed-contract email: ${q.emailStatus.toUpperCase()}</b><br><span style="font-size:11px;">${esc(q.emailDetail || '')}</span></div>` : ''}
     <div class="viewbar">
       <span><b>${q.clientViews || 0}</b> client view${q.clientViews === 1 ? '' : 's'}${q.clientVisitors > 1 ? ` from ${q.clientVisitors} visitors` : ''}</span>
@@ -526,6 +591,11 @@ async function quoteEditor(v) {
   $('#segPkg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPkg').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave().then(reload); }));
   $('#segPay').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPay').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave(); }));
 
+  const lq = $('#lostQuote'); if (lq) lq.addEventListener('click', () => markLost(q.id, () => { state.quoteId = null; state.tab = 'quotes'; shell(); }));
+  const rq = $('#reopenQuote'); if (rq) rq.addEventListener('click', async () => {
+    await api('/quotes/' + q.id + '/lost', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lost: false }) });
+    toast('Quote reopened'); reload();
+  });
   const sq = $('#sendQuote'); if (sq) sq.addEventListener('click', () => openSendDialog(q));
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
@@ -755,26 +825,27 @@ async function jobsTab(v) {
     </div>
     <div class="rule"></div>
     <div class="legend" style="margin-bottom:6px;">Showing <b>${state.incGst ? 'INCLUDING' : 'EXCLUDING'} GST</b>. Margins are calculated ex-GST either way.</div>
-    <table class="resp"><thead><tr><th>Quote</th><th>Client</th><th>FY</th><th>Package</th><th class="right">Sell ${state.incGst ? 'inc' : 'ex'} GST</th><th class="right">Forecast cost</th><th class="right">Forecast GM</th><th class="right">Cost to date</th><th class="right">Projected final</th><th class="right">Projected GM</th><th>Drift</th><th>Status</th><th></th></tr></thead><tbody>
+    <table class="resp"><thead><tr><th>Quote</th><th>Client</th><th>FY</th><th>Package</th>${isAdmin() ? `<th class="right">Sell ${state.incGst ? 'inc' : 'ex'} GST</th><th class="right">Forecast cost</th><th class="right">Forecast GM</th><th class="right">Cost to date</th><th class="right">Projected final</th><th class="right">Projected GM</th><th>Drift</th>` : ''}<th>Status</th><th></th></tr></thead><tbody>
     ${(data.jobs || []).map(jb => {
       return `<tr><td data-l="Quote"><b>${esc(jb.quoteNumber)}</b></td><td data-l="Client">${esc(jb.client || '')}</td><td data-l="FY">${esc(jb.fy || '')}</td><td>${esc(jb.tier || '')}${jb.mixed ? ' <span class="tag t-up">mixed</span>' : ''}</td>
-      <td class="right">${money(jb.sellExGst * (state.incGst ? 1.1 : 1))}</td>
+      ${!isAdmin() ? '' : `<td class="right">${money(jb.sellExGst * (state.incGst ? 1.1 : 1))}</td>
       <td class="right">${jb.forecastCost != null ? money(jb.forecastCost * (state.incGst ? 1.1 : 1)) : '—'}</td>
       <td class="right"><b>${jb.forecastGMPct != null ? jb.forecastGMPct + '%' : '—'}</b></td>
       <td class="right">${jb.costToDate != null ? money(jb.costToDate * (state.incGst ? 1.1 : 1)) + (jb.spentPct ? ` <span class="muted">(${jb.spentPct}%)</span>` : '') : '—'}${jb.committed ? `<br><span class="muted" style="font-size:10px;" title="Ordered but not yet delivered">+${money(jb.committed)} committed</span>` : ''}</td>
       <td class="right">${jb.projectedCost != null ? money(jb.projectedCost * (state.incGst ? 1.1 : 1)) : '—'}</td>
       <td class="right"><b style="color:${jb.projectedGMPct == null ? 'var(--grey)' : jb.projectedGMPct >= (jb.forecastGMPct || 0) ? 'var(--green)' : 'var(--red)'};">${jb.projectedGMPct != null ? jb.projectedGMPct + '%' : '—'}</b></td>
-      <td>${jb.driftPts == null ? '<span class="muted">—</span>' : `<span class="tag ${jb.driftPts >= 0 ? 'tag-accepted' : 'tag-superseded'}">${jb.driftPts > 0 ? '+' : ''}${jb.driftPts} pts</span>`}</td>
+      <td>${jb.driftPts == null ? '<span class="muted">—</span>' : `<span class="tag ${jb.driftPts >= 0 ? 'tag-accepted' : 'tag-superseded'}">${jb.driftPts > 0 ? '+' : ''}${jb.driftPts} pts</span>`}</td>`}
       <td><span class="tag ${jb.jobStatus === 'complete' ? 'tag-closed' : 'tag-open'}">${jb.jobStatus}</span></td>
       <td class="right">${jb.poId ? `<button class="btn btn-ghost btn-sm" data-po="${jb.poId}">PO</button>` : ''}</td></tr>`;
     }).join('') || '<tr><td colspan="12" class="muted">No jobs won yet.</td></tr>'}</tbody></table>
-    <div class="grid4" style="margin-top:12px;">
+    ${!isAdmin() ? '' : `<div class="grid4" style="margin-top:12px;">
       <div class="stat"><div class="k">Gross margin (before overheads)</div><div class="v">${(data.summary || {}).grossPct || 0}%</div></div>
       <div class="stat"><div class="k">Overhead allocated</div><div class="v">${money((data.summary || {}).overhead || 0)}</div><div style="font-size:10px;color:#999;">${money(data.overheadDailyRate || 0)} per crew-day</div></div>
       <div class="stat hero"><div class="k">Net-of-overhead margin</div><div class="v">${(data.summary || {}).netPct || 0}%</div></div>
       <div class="stat"><div class="k">Jobs shown</div><div class="v">${(data.jobs || []).length}</div></div>
     </div>
-    <div class="legend">Gross margin is before overheads. The net figure allocates business overheads (supervisor, office, vehicles, insurances — not site labour) by crew-days. Year-end close still uses your real annual figures.</div>
+    </div>`}
+    ${isAdmin() ? '<div class="legend">Gross margin is before overheads. The net figure allocates business overheads (supervisor, office, vehicles, insurances — not site labour) by crew-days. Year-end close still uses your real annual figures.</div>' : '<div class="legend">Job costs and margins are visible to admin only.</div>'}
   </div>
   <div class="card"><h2>Year-end close — net margin</h2><div class="sub">Enter the year's overheads (office, insurance, vehicles…) once actual costs are known, then close the year.</div><div class="rule"></div>
     <div id="yearend">${fys.length ? '' : '<p class="muted">No completed financial years yet.</p>'}</div></div>`;
@@ -1348,7 +1419,7 @@ async function selectionDetail(v) {
       <div style="display:flex;gap:6px;"><button class="btn btn-ghost btn-sm" id="backSel">← All selections</button>
         ${d.locked ? '<button class="btn btn-ghost btn-sm" id="unlockSel">Unlock</button>' : ''}</div>
     </div><div class="rule"></div>
-    <table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th>Quoted as</th><th>Final method</th><th>Vendor</th><th>Sub days</th><th class="right">Cost impact</th></tr></thead><tbody>
+    <table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th>Quoted as</th><th>Final method</th><th>Vendor</th><th>Sub days</th>${d.restricted ? '' : '<th class="right">Cost impact</th>'}</tr></thead><tbody>
     ${d.lines.map(l => `<tr ${l.delta !== 0 ? 'style="background:#FFFBF2;"' : ''}>
       <td><b>${esc(l.code)}</b></td><td>${esc(l.name)}<br><span class="muted" style="font-size:10.5px;">${esc(l.spec || '')}</span></td>
       <td>${l.qty} ${esc(l.unit || '')}</td>
@@ -1357,12 +1428,12 @@ async function selectionDetail(v) {
         ${['in', 'sub', 'mixed'].map(x => `<option value="${x}" ${l.finalMethod === x ? 'selected' : ''} ${l.availableVariants.includes(x) ? '' : 'disabled'}>${VNAME[x]}${l.variantCost[x] ? ' · ' + money(l.variantCost[x].cost) : ''}</option>`).join('')}</select></td>
       <td><select data-sv="${l.id}" ${d.locked ? 'disabled' : ''} style="width:140px;"><option value="">Default vendor</option>${d.vendors.map(x => `<option value="${x.id}" ${l.selVendorId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
       <td><input type="number" step="0.5" value="${l.subDays ?? ''}" data-sd="${l.id}" ${d.locked ? 'disabled' : ''} style="width:62px;"></td>
-      <td class="right"><b style="color:${l.delta < 0 ? 'var(--green)' : l.delta > 0 ? 'var(--red)' : 'var(--grey)'};">${l.delta === 0 ? 'no change' : (l.delta > 0 ? '+' : '') + money(l.delta)}</b></td></tr>`).join('')}
+      ${d.restricted ? '' : `<td class="right"><b style="color:${l.delta < 0 ? 'var(--green)' : l.delta > 0 ? 'var(--red)' : 'var(--grey)'};">${l.delta === 0 ? 'no change' : (l.delta > 0 ? '+' : '') + money(l.delta)}</b></td>`}</tr>`).join('')}
     </tbody></table>
     <div class="grid4" style="margin-top:14px;">
-      <div class="stat"><div class="k">Quoted cost</div><div class="v">${money(d.quoted.cost)}</div></div>
-      <div class="stat hero"><div class="k">Selected cost</div><div class="v">${money(d.final.cost)}</div><div style="font-size:10px;color:#cfe0ff;">${dCost === 0 ? 'same as quoted' : (dCost > 0 ? '+' : '') + money(dCost)}</div></div>
-      <div class="admin-only"><div class="k">🔒 Margin after selections</div><div class="v" style="color:${d.final.marginPct >= d.quoted.marginPct ? 'var(--green)' : 'var(--red)'};">${d.final.marginPct}%</div><div style="font-size:10px;">was ${d.quoted.marginPct}% at quote</div></div>
+      ${d.restricted ? '' : `<div class="stat"><div class="k">Quoted cost</div><div class="v">${money(d.quoted.cost)}</div></div>`}
+      ${d.restricted ? '' : `<div class="stat hero"><div class="k">Selected cost</div><div class="v">${money(d.final.cost)}</div><div style="font-size:10px;color:#cfe0ff;">${dCost === 0 ? 'same as quoted' : (dCost > 0 ? '+' : '') + money(dCost)}</div></div>
+      <div class="admin-only"><div class="k">🔒 Margin after selections</div><div class="v" style="color:${d.final.marginPct >= d.quoted.marginPct ? 'var(--green)' : 'var(--red)'};">${d.final.marginPct}%</div><div style="font-size:10px;">was ${d.quoted.marginPct}% at quote</div></div>`}
       <div class="stat time"><div class="k">Revised duration</div><div class="v">${d.final.days} days</div><div style="font-size:10px;color:#e0d0f5;">crew ${d.final.crewDays}d + subbies ${d.final.subDays}d${dDays !== 0 ? ` · ${dDays > 0 ? '+' : ''}${dDays}d vs quote` : ''}</div></div>
     </div>
     ${d.locked ? '<div class="legend" style="margin-top:12px;">Selections are locked and the PO has been raised. Unlock to change them — the PO will need superseding.</div>'
