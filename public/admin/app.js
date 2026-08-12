@@ -310,6 +310,17 @@ async function openSendDialog(q) {
     btn.disabled = true; btn.textContent = 'Sending…';
     const r = await api('/quotes/' + q.id + '/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ to: $('#sd_to').value.trim(), cc: $('#sd_cc').value.trim(), subject: $('#sd_subj').value, message: $('#sd_msg').value, validUntil: pv.validUntil }) });
+    if (r.alreadySent) {
+      out.innerHTML = `<div class="emailbar partial"><b>Already sent just now</b><br>${esc(r.error)}${r.sentTo ? ' — to ' + esc(r.sentTo) : ''}<br><span style="font-size:11px;">${esc(r.hint || '')}</span></div>`;
+      btn.disabled = false; btn.textContent = 'Send anyway';
+      btn.onclick = async () => {
+        const r2 = await api('/quotes/' + q.id + '/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: $('#sd_to').value.trim(), cc: $('#sd_cc').value.trim(), subject: $('#sd_subj').value, message: $('#sd_msg').value, validUntil: pv.validUntil, force: true }) });
+        if (r2.error) { out.innerHTML = `<div class="emailbar failed">${esc(r2.error)}</div>`; return; }
+        bg.remove(); toast('Quote sent'); state.tab = 'quotes'; shell();
+      };
+      return;
+    }
     if (r.error) {
       if (r.field) { flag('#sd_' + r.field, true); $('#sd_' + r.field).focus(); }
       out.innerHTML = `<div class="emailbar failed"><b>Not sent</b><br>${esc(r.error)}${r.hint ? `<br><span style="font-size:11px;">${esc(r.hint)}</span>` : ''}</div>`;
@@ -583,9 +594,34 @@ async function quoteEditor(v) {
 
   const autosave = async () => {
     const body = { client: $('#f_client').value, clientEmail: $('#f_email').value, projectTitle: $('#f_title').value, address: $('#f_address').value, validityDays: parseInt($('#f_validity').value) || 14, defaultPackage: $('#segPkg .on').dataset.v, paymentSchedule: $('#segPay .on').dataset.v, siteNotes: $('#f_notes').value, customerTier: $('#f_ctier').value, crewSize: parseInt($('#f_crew').value) || 2 };
-    await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    body.seenRev = state.seenRev;   // detect a change made by someone else
+    const r = await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r && r.conflict) {
+      $('#saveStatus').innerHTML = '<span style="color:var(--red);font-weight:700;">Not saved — someone else changed this quote.</span>';
+      showConflict(r);
+      return false;
+    }
+    state.seenRev = (r && r.rev != null) ? r.rev : state.seenRev;
     $('#saveStatus').textContent = 'Auto-saved just now.';
+    return true;
   };
+  // Someone else edited the same quote. Don't silently overwrite them, and don't
+  // silently lose what this person typed either — show both options.
+  function showConflict(r) {
+    if (document.getElementById('conflictBox')) return;
+    const bg = document.createElement('div'); bg.className = 'modal-bg'; bg.id = 'conflictBox';
+    bg.innerHTML = `<div class="modal" style="max-width:480px;">
+      <h2 style="margin:0 0 3px;">Someone else is editing this quote</h2>
+      <div class="sub">${esc(r.error || '')}</div><div class="rule"></div>
+      <p style="font-size:12.5px;line-height:1.7;">Your change was <b>not saved</b>, so nothing of theirs has been lost.</p>
+      <p style="font-size:12.5px;line-height:1.7;">Reload to see their version, then make your change again. If you're both working on the same quote, it's worth a quick word first.</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button class="btn btn-ghost" id="cf_stay">Stay (don't save)</button>
+        <button class="btn btn-blue" id="cf_reload">Reload the quote</button></div></div>`;
+    document.body.appendChild(bg);
+    $('#cf_stay').addEventListener('click', () => bg.remove());
+    $('#cf_reload').addEventListener('click', () => { bg.remove(); reload(); });
+  }
   ['f_client', 'f_email', 'f_title', 'f_address', 'f_validity', 'f_notes'].forEach(id => $('#' + id).addEventListener('change', autosave));
   ['f_ctier', 'f_crew'].forEach(id => $('#' + id).addEventListener('change', () => autosave().then(refreshCosting)));
   $('#segPkg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPkg').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave().then(reload); }));
@@ -596,6 +632,9 @@ async function quoteEditor(v) {
     await api('/quotes/' + q.id + '/lost', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lost: false }) });
     toast('Quote reopened'); reload();
   });
+  // Remember which version this screen was built from, so a save can detect that
+  // someone else changed the quote in the meantime.
+  state.seenRev = q.rev;
   const sq = $('#sendQuote'); if (sq) sq.addEventListener('click', () => openSendDialog(q));
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });

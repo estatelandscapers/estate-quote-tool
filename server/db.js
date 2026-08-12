@@ -11,6 +11,12 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const db = new DatabaseSync(process.env.DB_PATH || path.join(DATA_DIR, 'estate.db'));
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA journal_mode = WAL;');
+// Multi-user safety. WAL lets many people read while one writes; busy_timeout makes a
+// blocked write wait up to 5 seconds instead of failing instantly, which is what
+// causes "database is locked" errors when two people save at the same moment.
+db.exec('PRAGMA busy_timeout = 5000;');
+db.exec('PRAGMA synchronous = NORMAL;');
+db.exec('PRAGMA foreign_keys = ON;');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -224,6 +230,10 @@ addColumn('quotes','send_count','INTEGER DEFAULT 0');
 // Lost quotes: kept for the record, hidden from the working list like superseded ones
 addColumn('quotes','lost_at','TEXT');
 addColumn('quotes','lost_reason','TEXT');
+// A counter, not a timestamp. Two saves in the same second produce identical
+// timestamps (SQLite has one-second resolution), so a timestamp cannot detect a
+// concurrent edit. This increments on every change and never collides.
+addColumn('quotes','rev_no','INTEGER DEFAULT 0');
 // Extra-wastage price uplift, held per tier so the client link, contract and totals agree
 addColumn('quote_items','waste_uplift_basic','REAL DEFAULT 0');
 addColumn('quote_items','waste_uplift_standard','REAL DEFAULT 0');

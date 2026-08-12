@@ -100,6 +100,7 @@ function fullQuote(q) {
     updatedAt: q.updated_at, createdAt: q.created_at,
     customerTier: q.customer_tier || 'Silver', crewSize: q.crew_size || 2,
     siteplanNa: !!q.siteplan_na, surchargesNa: !!q.surcharges_na,
+    rev: q.rev_no || 0,
     emailStatus: q.email_status || null, emailDetail: q.email_detail || null,
     ...viewStats(q.id),
     sentAt: q.sent_at || null, sentTo: q.sent_to || null, sendCount: q.send_count || 0,
@@ -253,6 +254,16 @@ router.post('/:id/send', async (req, res) => {
   const ccRaw = String(b.cc || '').trim();
   if (ccRaw) { const badCc = validateEmail(ccRaw); if (badCc) return res.status(400).json({ error: 'Copy-to address: ' + badCc, field: 'cc' }); }
   if (q.lost_at) return res.status(400).json({ error: 'This quote is marked as lost. Reopen it before sending.' });
+  // Two people pressing Send at the same moment would email the client twice.
+  if (q.sent_at) {
+    const since = Date.now() - new Date(q.sent_at.replace(' ', 'T') + 'Z').getTime();
+    if (since < 30000 && !(req.body || {}).force) {
+      return res.status(409).json({
+        error: `This quote was sent ${Math.round(since / 1000)} seconds ago — possibly by someone else.`,
+        alreadySent: true, sentTo: q.sent_to,
+        hint: 'Check with the team before sending again, or press Send once more to force it.' });
+    }
+  }
   // A targeted surcharge with unanswered deliverables means the price is wrong.
   // Refuse to send rather than let it go out.
   const fqCheck = fullQuote(q);
@@ -375,7 +386,17 @@ function recalcAllUplifts(quoteId) {
     db.prepare('SELECT id FROM quote_items WHERE quote_id=?').all(quoteId).forEach(r => recalcWasteUplift(r.id));
   } catch (e) { console.error('uplift recalc all', e.message); }
 }
+// Two people can have the same quote open. A save carrying a stale updated_at means
+// someone else changed it in between — we refuse rather than silently overwrite them.
 router.put('/:id', (req, res) => {
+  const existing = db.prepare('SELECT rev_no FROM quotes WHERE id=?').get(req.params.id);
+  const seen = (req.body || {}).seenRev;
+  if (existing && seen != null && Number(seen) !== (existing.rev_no || 0)) {
+    return res.status(409).json({
+      error: 'Someone else changed this quote while you had it open.',
+      conflict: true, serverRev: existing.rev_no || 0,
+      hint: 'Your screen is out of date. Reload to see their changes, then make yours again.' });
+  }
   const e = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!e) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
@@ -390,6 +411,7 @@ router.put('/:id', (req, res) => {
       b.customerTier ?? e.customer_tier, b.crewSize ?? e.crew_size,
       req.params.id);
   if ((req.body || {}).customerTier !== undefined) recalcAllUplifts(req.params.id);
+  db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id);
   res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id)));
 });
 
@@ -448,6 +470,7 @@ router.post('/pending/:itemId/dismiss', (req, res) => {
 });
 
 router.post('/:id/items', (req, res) => {
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
   const b = req.body || {};
   const id = newId();
   const pi = b.priceItemId ? db.prepare('SELECT * FROM price_items WHERE id=?').get(b.priceItemId) : null;
@@ -475,6 +498,7 @@ router.post('/:id/items', (req, res) => {
   res.status(201).json({ id, code: db.prepare('SELECT custom_code c FROM quote_items WHERE id=?').get(id).c });
 });
 router.put('/:id/items/:itemId', (req, res) => {
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
   const e = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
   if (!e) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
@@ -511,7 +535,8 @@ router.put('/:id/items/:itemId', (req, res) => {
     db.prepare('UPDATE quote_items SET custom_tiered=? WHERE id=?').run(b.customTiered ? 1 : 0, req.params.itemId);
   res.json({ ok: true });
 });
-router.delete('/:id/items/:itemId', (req, res) => { db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
+router.delete('/:id/items/:itemId', (req, res) => {
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {} db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
 
 router.get('/:id/analytics', (req, res) => {
   const ev = db.prepare('SELECT * FROM quote_events WHERE quote_id=? ORDER BY created_at DESC LIMIT 300').all(req.params.id);
