@@ -1303,6 +1303,25 @@ async function vendorsTab(v) {
       ${(x.usedInRecipes || []).length ? `<div class="legend">Used in recipes: ${x.usedInRecipes.map(esc).join(', ')}</div>` : ''}
       <button class="btn btn-ghost btn-sm" id="v_gocosts" style="margin-top:8px;">Manage items in Costs →</button>
     </div>`;
+    // Save the vendor. This handler went missing when the old vendor-materials editor
+    // was stripped out, leaving a button that did nothing.
+    $('#v_save').addEventListener('click', async () => {
+      const name = $('#v_name').value.trim();
+      if (!name) return toast('Give the vendor a name');
+      const body = {
+        name, contact: $('#v_contact').value, phone: $('#v_phone').value, email: $('#v_email').value,
+        area: $('#v_area').value, terms: $('#v_terms').value,
+        isSupplier: $('#v_sup').checked, isSubcontractor: $('#v_sub').checked,
+        licence: $('#v_lic').value, insuranceExpiry: $('#v_ins').value, swms: $('#v_swms').checked,
+      };
+      const r = await api('/vendors/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (r && r.error) return toast(r.error);
+      toast('Vendor saved');
+      await vendorsTab(v);
+      openVendor(id);            // keep the panel open so you can carry on
+    });
+    // Compliance fields only make sense for subcontractors — show them as you tick.
+    $('#v_sub').addEventListener('change', e => { $('#compliance').style.display = e.target.checked ? '' : 'none'; });
     const gc = $('#v_gocosts'); if (gc) gc.addEventListener('click', () => { state.tab = 'materials'; state.matCat = 'material'; shell(); });
     $('#vDetail').scrollIntoView({ behavior: 'smooth' });
   }
