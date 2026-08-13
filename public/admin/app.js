@@ -18,7 +18,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', leadId: null, leadStage: null, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', leadId: null, leadStage: null, leadPhase: null, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -91,38 +91,66 @@ function route() {
 
 // ---------------- LEADS (enquiries + figures) ----------------
 const LEAD_STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
+
+const PHCOL = ['', '#1E5BFF', '#6A3E9C', '#B08D3E', '#2E7D46', '#888'];
 async function leadsTab(v) {
-  v.innerHTML = `<div class="card"><h2>Figures</h2>
-      <div class="sub">Secured = accepted &amp; signed. FY = 1 Jul – 30 Jun. All values <b>exclude GST</b>; margins are GROSS margin.</div>
-      <div class="rule"></div><div id="dashcards">Loading…</div></div>
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div><h2>Leads &amp; enquiries</h2><div class="sub">Log every enquiry, then convert it straight into a quote.</div></div>
-        <button class="btn btn-blue" id="addLead">+ New enquiry</button></div>
-      <div class="rule"></div><div id="leadTable">Loading…</div></div>`;
-  $('#addLead').addEventListener('click', () => editLead(null, v));
-  const data = await api('/leads');
+  v.innerHTML = `<div class="card"><h2>Leads</h2><div class="sub">Loading…</div></div>`;
+  const [board, data, stageData] = await Promise.all([api('/leads/board'), api('/leads'), api('/leads/stages')]);
+  if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
   const rows = data.leads || [];
-  $('#leadTable').innerHTML = rows.length ? `<table class="resp"><thead><tr><th>Name</th><th>Contact</th><th>Site</th><th>Source</th><th>Age</th><th>Status</th><th>Quote</th><th></th></tr></thead><tbody>
-    ${rows.map(l => `<tr><td data-l="Name"><b>${esc(l.name || '—')}</b>${l.notes ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.notes.slice(0, 60))}</span>` : ''}</td>
-      <td>${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
-      <td>${esc(l.address || '')}</td><td>${esc(l.source || '')}</td>
-      <td><span class="tag ${l.ageDays >= 7 ? 'age-flag' : 'age-fresh'}">${l.ageDays}d</span>
-        ${l.followupOverdue ? '<br><span class="tag age-flag" title="Follow-up is overdue">follow-up due</span>' : (l.nextFollowup ? `<br><span class="muted" style="font-size:10px;">next ${esc(l.nextFollowup)}</span>` : '')}
-        ${l.msgCount ? `<br><span class="muted" style="font-size:10px;">${l.msgCount} message${l.msgCount === 1 ? '' : 's'}</span>` : ''}</td>
-      <td><select data-ls="${l.id}" style="width:110px;font-size:10.5px;">${LEAD_STATUS.map(s => `<option ${l.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
-      <td>${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" data-lq="${l.quoteId}">${esc(l.quoteNumber)}</button>` : `<button class="btn btn-blue btn-sm" data-lc="${l.id}">→ Quote</button>`}</td>
-      <td class="right"><button class="btn btn-blue btn-sm" data-lopen="${l.id}">Open</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`).join('')}
-    </tbody></table>` : '<p class="muted">No enquiries logged yet.</p>';
-  v.querySelectorAll('[data-ls]').forEach(s => s.addEventListener('change', async () => { await api('/leads/' + s.dataset.ls, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: s.value }) }); toast('Status updated'); }));
-  v.querySelectorAll('[data-lc]').forEach(b => b.addEventListener('click', async () => {
-    const r = await api('/leads/' + b.dataset.lc + '/convert', { method: 'POST' });
-    if (r.error) return toast(r.error);
-    toast('Quote ' + r.quoteNumber + ' created'); state.tab = 'quotes'; state.quoteId = r.quoteId; shell();
-  }));
-  v.querySelectorAll('[data-lq]').forEach(b => b.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = b.dataset.lq; shell(); }));
+  const total = (board.overdue.length + board.dueToday.length);
+  const line = (l, cls) => `<div class="today ${cls}">
+      <div><b>${esc(l.name || '—')}</b>${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
+        <br><span class="muted" style="font-size:11px;">Phase ${l.phase} · ${esc(l.stageLabel)} · <b>${esc(l.nextAction)}</b>${l.due ? ' · due ' + esc(l.due) : ''}${l.quoteNumber ? ' · quote ' + esc(l.quoteNumber) : ''}</span></div>
+      <div style="display:flex;gap:6px;"><button class="btn btn-blue btn-sm" data-lopen="${l.id}">Open</button></div>
+    </div>`;
+  v.innerHTML = `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div><h2>What needs doing</h2><div class="sub">Clear this list and every enquiry has been chased properly today.</div></div>
+        <button class="btn btn-blue" id="addLead">+ New enquiry</button></div>
+      <div class="rule"></div>
+      <div class="grid3" style="margin-bottom:12px;">
+        <div class="stat" style="border-left:4px solid var(--red);"><div class="k">Overdue</div><div class="v" style="color:var(--red);">${board.overdue.length}</div></div>
+        <div class="stat" style="border-left:4px solid #B5761E;"><div class="k">Due today</div><div class="v" style="color:#B5761E;">${board.dueToday.length}</div></div>
+        <div class="stat" style="border-left:4px solid var(--green);"><div class="k">This week</div><div class="v" style="color:var(--green);">${board.thisWeek.length}</div></div>
+      </div>
+      ${board.overdue.length ? `<div class="wl">Overdue</div>${board.overdue.map(l => line(l, '')).join('')}` : ''}
+      ${board.dueToday.length ? `<div class="wl" style="color:#B5761E;">Due today</div>${board.dueToday.map(l => line(l, 'soon')).join('')}` : ''}
+      ${board.thisWeek.length ? `<div class="wl" style="color:var(--green);">Coming up this week</div>${board.thisWeek.map(l => line(l, 'ok')).join('')}` : ''}
+      ${board.undated.length ? `<div class="wl" style="color:var(--grey);">No follow-up set</div>${board.undated.map(l => line(l, 'ok')).join('')}` : ''}
+      ${!total && !board.thisWeek.length && !board.undated.length ? '<p class="muted">Nothing due. Every enquiry is up to date.</p>' : ''}
+    </div>
+
+    <div class="card"><h2>Pipeline</h2><div class="sub">Where every open enquiry is sitting.</div><div class="rule"></div>
+      <div class="pipe">${board.phases.map(p => `<div class="ph ${state.leadPhase === p.id ? 'on' : ''}" data-phase="${p.id}">
+        <div class="n">PHASE ${p.id}</div><div class="t">${esc(p.label)}</div>
+        <div class="c">${board.phaseCounts[p.id] || 0}</div><div class="w">${esc(p.blurb)}${p.target ? ' · ' + esc(p.target) : ''}</div></div>`).join('')}</div>
+      ${state.leadPhase ? '<div class="legend">Showing phase ' + state.leadPhase + ' only. <a href="#" id="clearPhase">Show all</a></div>' : ''}
+    </div>
+
+    <div class="card"><h2>All enquiries</h2><div class="rule"></div><div id="leadTable"></div></div>
+    <div class="card"><h2>Figures</h2><div class="sub">All values exclude GST.</div><div class="rule"></div><div id="dashcards">Loading…</div></div>`;
+
+  $('#addLead').addEventListener('click', () => editLead(null, v));
   v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen; leadConsole(v); }));
+  v.querySelectorAll('[data-phase]').forEach(b => b.addEventListener('click', () => {
+    state.leadPhase = state.leadPhase === +b.dataset.phase ? null : +b.dataset.phase; leadsTab(v);
+  }));
+  const cp = $('#clearPhase'); if (cp) cp.addEventListener('click', e => { e.preventDefault(); state.leadPhase = null; leadsTab(v); });
+
+  const shown = state.leadPhase ? rows.filter(r => (board.phaseCounts && true) && phaseOfStage(r.stage) === state.leadPhase) : rows;
+  $('#leadTable').innerHTML = shown.length ? `<table class="resp"><thead><tr><th>Name</th><th>Contact</th><th>Site</th><th>Phase</th><th>Next</th><th>Quote</th><th></th></tr></thead><tbody>
+    ${shown.map(l => `<tr><td data-l="Name"><b>${esc(l.name || '—')}</b>${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
+      <td data-l="Contact">${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
+      <td data-l="Site">${esc(l.suburb || l.address || '')}</td>
+      <td data-l="Phase"><span class="tag" style="background:${PHCOL[phaseOfStage(l.stage)] || '#888'}22;color:${PHCOL[phaseOfStage(l.stage)] || '#888'};">P${phaseOfStage(l.stage)}</span></td>
+      <td data-l="Next">${l.followupOverdue ? `<span class="tag age-flag">overdue</span> ` : ''}${esc(l.nextFollowup || '—')}${l.msgCount ? `<br><span class="muted" style="font-size:10px;">${l.msgCount} msg</span>` : ''}</td>
+      <td data-l="Quote">${l.quoteNumber ? esc(l.quoteNumber) : '<span class="muted">—</span>'}</td>
+      <td class="right"><button class="btn btn-ghost btn-sm" data-lopen2="${l.id}">Open</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`).join('')}
+    </tbody></table>` : '<p class="muted">No enquiries here.</p>';
+  v.querySelectorAll('[data-lopen2]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen2; leadConsole(v); }));
   v.querySelectorAll('[data-ld]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this enquiry?')) { await api('/leads/' + b.dataset.ld, { method: 'DELETE' }); leadsTab(v); } }));
+
   const d = await api('/dashboard');
   $('#dashcards').innerHTML = `
     <div class="grid4">
@@ -135,10 +163,15 @@ async function leadsTab(v) {
       <div class="stat"><div class="k">Quotes built (30d)</div><div class="v">${d.builtMonth || 0}</div></div>
       <div class="stat"><div class="k">Value quoted (30d)</div><div class="v">${money(d.quotedValueMonth)}</div><div style="font-size:9.5px;color:var(--grey);">excl. GST</div></div>
       <div class="stat"><div class="k">Win rate (value, FY)</div><div class="v">${d.winRateValue || 0}%</div></div>
-      <div class="stat"><div class="k">Lost this FY</div><div class="v">${money(d.lostValueFY || 0)}</div><div style="font-size:9.5px;color:var(--grey);">${d.lostFY || 0} quote${d.lostFY === 1 ? '' : 's'} · excl. GST</div></div>
-      <div class="stat"><div class="k">Avg quote value</div><div class="v">${money(d.avgQuote)}</div><div style="font-size:9.5px;color:var(--grey);">excl. GST</div></div>
+      <div class="stat"><div class="k">Lost this FY</div><div class="v">${money(d.lostValueFY || 0)}</div><div style="font-size:9.5px;color:var(--grey);">${d.lostFY || 0} quote(s)</div></div>
     </div>`;
 }
+let STAGE_PHASE = null;
+function phaseOfStage(id) {
+  if (!STAGE_PHASE) return 1;
+  return STAGE_PHASE[id] || 1;
+}
+
 function editLead(l, v) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${l ? 'Edit' : 'New'} enquiry</h2>
@@ -337,8 +370,10 @@ async function openSendDialog(q) {
 // ---------------- LEAD FOLLOW-UP CONSOLE ----------------
 const CHAN = { whatsapp: ['WhatsApp', '#25D366'], sms: ['SMS', '#888'], email: ['Email', '#143FB0'], call: ['Call', '#888'], note: ['Note', '#888'] };
 async function leadConsole(v) {
-  const [leadsData, stages, history] = await Promise.all([
-    api('/leads'), api('/leads/stages'), api(`/leads/${state.leadId}/history`)]);
+  const [leadsData, stageData, history, st] = await Promise.all([
+    api('/leads'), api('/leads/stages'), api(`/leads/${state.leadId}/history`), api(`/leads/${state.leadId}/state`)]);
+  const stages = stageData.stages || stageData;
+  if (!STAGE_PHASE) { STAGE_PHASE = {}; stages.forEach(s => STAGE_PHASE[s.id] = s.phase); }
   const l = (leadsData.leads || []).find(x => x.id === state.leadId);
   if (!l) { state.leadId = null; return leadsTab(v); }
   const stage = state.leadStage || l.stage || 'noanswer';
@@ -352,6 +387,29 @@ async function leadConsole(v) {
           : '<button class="btn btn-blue btn-sm" id="toQuote">→ Convert to quote</button>'}
       </div></div>
     <div class="rule"></div>
+    <div class="pipe" style="margin-bottom:14px;">
+      ${(stageData.phases || []).map(p => `<div class="ph ${p.id === st.phase ? 'on' : ''}" style="${p.id < st.phase ? 'background:#F2F8F4;border-color:#CBE0D2;' : ''}">
+        <div class="n">${p.id < st.phase ? '✓ DONE' : p.id === st.phase ? 'YOU ARE HERE' : 'PHASE ' + p.id}</div>
+        <div class="t" style="font-size:11px;">${esc(p.label)}</div>
+        ${p.id === st.phase ? `<div class="w">${esc(st.stageLabel)}</div>` : ''}</div>`).join('')}
+    </div>
+    <div class="grid2" style="margin-bottom:14px;">
+      <div class="nextact">
+        <div class="k">Next action${st.due ? (st.overdue ? ' — OVERDUE' : ' — due ' + esc(st.due)) : ''}</div>
+        <div class="v">${esc(st.nextAction)}</div>
+        ${st.gaps.length ? `<div style="font-size:11.5px;color:#f3c0b8;margin-top:7px;">Before ${esc(st.nextPhaseLabel)}: ${st.gaps.map(esc).join(', ')} still needed.</div>`
+          : `<div style="font-size:11.5px;color:#9fd8a8;margin-top:7px;">Ready for ${esc(st.nextPhaseLabel || 'the next step')}.</div>`}
+        ${st.suggestCloseout ? '<div style="font-size:11.5px;color:#f3d9a0;margin-top:7px;">Two follow-ups sent with no reply — worth closing this one out.</div>' : ''}
+      </div>
+      <div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="ld_snooze">😴 Snooze 3 days</button>
+          <button class="btn btn-ghost btn-sm" id="ld_close">✕ Close this enquiry</button>
+          ${st.phase < 4 ? '<button class="btn btn-ghost btn-sm" id="ld_skip">⏭ Skip ahead</button>' : ''}
+        </div>
+        <div class="legend">Skipping, snoozing and closing are always available — the steps guide you, they don't trap you.</div>
+      </div>
+    </div>
     <div class="grid2">
       <div>
         <div class="grid2">
@@ -416,6 +474,20 @@ async function leadConsole(v) {
         suburb: $('#ld_suburb').value, jobType: $('#ld_job').value, notes: $('#ld_notes').value,
         nextFollowup: $('#ld_next').value || null }) });
     toast('Saved'); leadConsole(v);
+  });
+  $('#ld_snooze').addEventListener('click', async () => {
+    const r = await api(`/leads/${l.id}/snooze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 3 }) });
+    toast('Snoozed until ' + r.until); leadConsole(v);
+  });
+  $('#ld_close').addEventListener('click', async () => {
+    if (!confirm('Close this enquiry out? It stays on record and can be reopened.')) return;
+    await api(`/leads/${l.id}/stage`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: 'closeout' }) });
+    toast('Enquiry closed'); state.leadId = null; leadsTab(v);
+  });
+  const skip = $('#ld_skip'); if (skip) skip.addEventListener('click', async () => {
+    const target = st.phase === 1 ? 'details' : st.phase === 2 ? 'propose' : 'aftervisit';
+    await api(`/leads/${l.id}/stage`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: target }) });
+    toast('Moved ahead'); leadConsole(v);
   });
   v.querySelectorAll('[data-stage]').forEach(b => b.addEventListener('click', () => { state.leadStage = b.dataset.stage; loadMsg(); paintStage(b.dataset.stage); }));
   function paintStage(id) { v.querySelectorAll('[data-stage]').forEach(x => x.classList.toggle('on', x.dataset.stage === id)); }

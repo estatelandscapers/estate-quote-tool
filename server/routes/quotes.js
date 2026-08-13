@@ -166,7 +166,7 @@ router.put('/:id/lost', (req, res) => {
   db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, updated_at=datetime('now') WHERE id=?")
     .run(String(b.reason || '').slice(0, 200), q.id);
   // Keep the lead in step, if this quote came from one.
-  if (q.lead_id) { try { db.prepare("UPDATE leads SET status='Lost', updated_at=datetime('now') WHERE id=?").run(q.lead_id); } catch (e) {} }
+  if (q.lead_id) { try { db.prepare("UPDATE leads SET status='Lost', stage='lost', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(q.lead_id); } catch (e) {} }
   console.log(`[lost] quote ${q.quote_number} marked lost${b.reason ? ' — ' + b.reason : ''}`);
   res.json({ ok: true, lost: true });
 });
@@ -296,6 +296,14 @@ router.post('/:id/send', async (req, res) => {
       status=CASE WHEN status='draft' THEN 'sent' ELSE status END,
       updated_at=datetime('now') WHERE id=?`)
     .run(to, to, subject, b.message || '', req.user.name || req.user.username, q.id);
+  // Sending the quote advances the lead to Phase 4 and diarises the chase.
+  try {
+    if (q.lead_id) {
+      const { nextDueFrom } = require('../utils/leadTemplates');
+      db.prepare("UPDATE leads SET stage='quotesent', status='Quoted', next_followup=?, updated_at=datetime('now') WHERE id=?")
+        .run(nextDueFrom('quotesent'), q.lead_id);
+    }
+  } catch (e) { console.error('lead stage sync', e.message); }
   console.log(`[send] quote ${q.quote_number} -> ${to} by ${req.user.username} (${results.join(' | ')})`);
   res.json({ ok: true, results, sendCount: (q.send_count || 0) + 1 });
 });
@@ -415,7 +423,13 @@ router.put('/:id', (req, res) => {
   res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id)));
 });
 
-router.delete('/:id', (req, res) => { db.prepare('DELETE FROM quotes WHERE id=?').run(req.params.id); res.status(204).end(); });
+router.delete('/:id', (req, res) => {
+  // Release any lead pointing at this quote, or it stays stuck on "already converted"
+  // with a link to a quote that no longer exists.
+  try { db.prepare("UPDATE leads SET quote_id=NULL, status=CASE WHEN status='Quoted' THEN 'Contacted' ELSE status END WHERE quote_id=?").run(req.params.id); } catch (e) {}
+  db.prepare('DELETE FROM quotes WHERE id=?').run(req.params.id);
+  res.status(204).end();
+});
 
 router.post('/:id/siteplan', (req, res) => {
   const { data, mime } = req.body || {};

@@ -209,6 +209,10 @@ router.post('/:token/sign', async (req, res) => {
         else { outcome.push('office: sent'); anySent = true; }
       } catch (e) { outcome.push('office FAILED: ' + e.message); anyFail = true; console.error('office email failed', e.message); }
       if (!pdf) outcome.push('WARNING: PDF could not be generated');
+      // Winning the quote wins the lead — otherwise the two drift apart.
+      try {
+        if (fresh.lead_id) db.prepare("UPDATE leads SET stage='won', status='Won', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(fresh.lead_id);
+      } catch (e) { console.error('lead win sync', e.message); }
       const status = anyFail ? (anySent ? 'partial' : 'failed') : 'sent';
       db.prepare('UPDATE quotes SET email_status=?, email_detail=? WHERE id=?').run(status, outcome.join(' | '), fresh.id);
       console.log(`[sign] quote ${fresh.quote_number} email ${status}: ${outcome.join(' | ')}`);
