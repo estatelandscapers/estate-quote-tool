@@ -234,7 +234,8 @@ addColumn('quotes','lost_reason','TEXT');
 // timestamps (SQLite has one-second resolution), so a timestamp cannot detect a
 // concurrent edit. This increments on every change and never collides.
 addColumn('quotes','rev_no','INTEGER DEFAULT 0');
-addColumn('quotes','sent_by','TEXT');   // who emailed it — matters once more than one person can
+addColumn('quotes','sent_by','TEXT');
+   // who emailed it — matters once more than one person can
 // Extra-wastage price uplift, held per tier so the client link, contract and totals agree
 addColumn('quote_items','waste_uplift_basic','REAL DEFAULT 0');
 addColumn('quote_items','waste_uplift_standard','REAL DEFAULT 0');
@@ -251,7 +252,15 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY, name TEXT, phone TEXT, email TEXT, address TEXT,
   source TEXT DEFAULT 'Phone', notes TEXT, status TEXT DEFAULT 'New',
-  quote_id TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+  quote_id TEXT, stage TEXT DEFAULT 'noanswer', next_followup TEXT,
+  job_type TEXT, suburb TEXT,
+  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS lead_messages (
+  id TEXT PRIMARY KEY, lead_id TEXT REFERENCES leads(id) ON DELETE CASCADE,
+  channel TEXT, stage TEXT, subject TEXT, body TEXT,
+  sent_by TEXT, outcome TEXT, note TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS materials (
   id TEXT PRIMARY KEY, name TEXT, unit TEXT, category TEXT DEFAULT 'material',
@@ -279,6 +288,11 @@ CREATE TABLE IF NOT EXISTS material_vendors (
   cost REAL DEFAULT 0, delivery_rule TEXT, review_by TEXT, preferred INTEGER DEFAULT 0
 );
 `);
+// Lead follow-up console — added after the tables exist, or the ALTER runs first and fails
+addColumn('leads','stage',"TEXT DEFAULT 'noanswer'");
+addColumn('leads','next_followup','TEXT');
+addColumn('leads','job_type','TEXT');
+addColumn('leads','suburb','TEXT');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

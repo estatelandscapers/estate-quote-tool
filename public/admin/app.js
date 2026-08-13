@@ -18,7 +18,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', leadId: null, leadStage: null, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -77,7 +77,7 @@ function route() {
       }
     }).catch(() => {});
   }
-  if (state.tab === 'leads') return leadsTab(v);
+  if (state.tab === 'leads') return state.leadId ? leadConsole(v) : leadsTab(v);
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
   if (state.tab === 'jobs') return jobsTab(v);
   if (state.tab === 'po') return state.poId ? poEditor(v) : poList(v);
@@ -107,10 +107,12 @@ async function leadsTab(v) {
     ${rows.map(l => `<tr><td data-l="Name"><b>${esc(l.name || '—')}</b>${l.notes ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.notes.slice(0, 60))}</span>` : ''}</td>
       <td>${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
       <td>${esc(l.address || '')}</td><td>${esc(l.source || '')}</td>
-      <td><span class="tag ${l.ageDays >= 7 ? 'age-flag' : 'age-fresh'}">${l.ageDays}d</span></td>
+      <td><span class="tag ${l.ageDays >= 7 ? 'age-flag' : 'age-fresh'}">${l.ageDays}d</span>
+        ${l.followupOverdue ? '<br><span class="tag age-flag" title="Follow-up is overdue">follow-up due</span>' : (l.nextFollowup ? `<br><span class="muted" style="font-size:10px;">next ${esc(l.nextFollowup)}</span>` : '')}
+        ${l.msgCount ? `<br><span class="muted" style="font-size:10px;">${l.msgCount} message${l.msgCount === 1 ? '' : 's'}</span>` : ''}</td>
       <td><select data-ls="${l.id}" style="width:110px;font-size:10.5px;">${LEAD_STATUS.map(s => `<option ${l.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
       <td>${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" data-lq="${l.quoteId}">${esc(l.quoteNumber)}</button>` : `<button class="btn btn-blue btn-sm" data-lc="${l.id}">→ Quote</button>`}</td>
-      <td class="right"><button class="btn btn-ghost btn-sm" data-le="${l.id}">Edit</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`).join('')}
+      <td class="right"><button class="btn btn-blue btn-sm" data-lopen="${l.id}">Open</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`).join('')}
     </tbody></table>` : '<p class="muted">No enquiries logged yet.</p>';
   v.querySelectorAll('[data-ls]').forEach(s => s.addEventListener('change', async () => { await api('/leads/' + s.dataset.ls, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: s.value }) }); toast('Status updated'); }));
   v.querySelectorAll('[data-lc]').forEach(b => b.addEventListener('click', async () => {
@@ -119,7 +121,7 @@ async function leadsTab(v) {
     toast('Quote ' + r.quoteNumber + ' created'); state.tab = 'quotes'; state.quoteId = r.quoteId; shell();
   }));
   v.querySelectorAll('[data-lq]').forEach(b => b.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = b.dataset.lq; shell(); }));
-  v.querySelectorAll('[data-le]').forEach(b => b.addEventListener('click', () => editLead(rows.find(x => x.id === b.dataset.le), v)));
+  v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen; leadConsole(v); }));
   v.querySelectorAll('[data-ld]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this enquiry?')) { await api('/leads/' + b.dataset.ld, { method: 'DELETE' }); leadsTab(v); } }));
   const d = await api('/dashboard');
   $('#dashcards').innerHTML = `
@@ -328,6 +330,145 @@ async function openSendDialog(q) {
     }
     bg.remove(); toast('Quote sent to ' + $('#sd_to').value.trim());
     state.tab = 'quotes'; shell();
+  });
+}
+
+
+// ---------------- LEAD FOLLOW-UP CONSOLE ----------------
+const CHAN = { whatsapp: ['WhatsApp', '#25D366'], sms: ['SMS', '#888'], email: ['Email', '#143FB0'], call: ['Call', '#888'], note: ['Note', '#888'] };
+async function leadConsole(v) {
+  const [leadsData, stages, history] = await Promise.all([
+    api('/leads'), api('/leads/stages'), api(`/leads/${state.leadId}/history`)]);
+  const l = (leadsData.leads || []).find(x => x.id === state.leadId);
+  if (!l) { state.leadId = null; return leadsTab(v); }
+  const stage = state.leadStage || l.stage || 'noanswer';
+  const groups = [...new Set(stages.map(s => s.group))];
+  v.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div><h2>${esc(l.name || 'Lead')}</h2><div class="sub">${esc(l.suburb || l.address || '')}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
+        ${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" id="goQuote">Quote ${esc(l.quoteNumber)}</button>`
+          : '<button class="btn btn-blue btn-sm" id="toQuote">→ Convert to quote</button>'}
+      </div></div>
+    <div class="rule"></div>
+    <div class="grid2">
+      <div>
+        <div class="grid2">
+          <div class="field"><label>Name</label><input id="ld_name" value="${esc(l.name || '')}"></div>
+          <div class="field"><label>Mobile</label><input id="ld_phone" value="${esc(l.phone || '')}"></div>
+          <div class="field"><label>Email</label><input id="ld_email" value="${esc(l.email || '')}"></div>
+          <div class="field"><label>Suburb</label><input id="ld_suburb" value="${esc(l.suburb || '')}"></div>
+          <div class="field"><label>Job type</label><input id="ld_job" value="${esc(l.jobType || '')}" placeholder="e.g. turf and driveway"></div>
+          <div class="field"><label>Next follow-up</label><input id="ld_next" type="date" value="${esc(l.nextFollowup || '')}"></div>
+        </div>
+        <div class="field"><label>Notes</label><textarea id="ld_notes" rows="2">${esc(l.notes || '')}</textarea></div>
+        <button class="btn btn-ghost btn-sm" id="ld_save">Save details</button>
+      </div>
+      <div>
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">Where you're up to</div>
+        ${groups.map(g => `<div style="margin-bottom:7px;"><span class="muted" style="font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;">${esc(g)}</span><br>
+          ${stages.filter(s => s.group === g).map(s => `<span class="step ${s.id === stage ? 'on' : ''}" data-stage="${s.id}" title="${esc(s.when)}">${esc(s.label)}</span>`).join('')}</div>`).join('')}
+      </div>
+    </div>
+    <div class="rule" style="margin-top:14px;"></div>
+    <div class="grid2">
+      <div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <div class="field" style="margin:0;flex:1;min-width:130px;"><label>Date (if needed)</label><input id="ms_date" type="date"></div>
+          <div class="field" style="margin:0;flex:1;min-width:110px;"><label>Time</label><input id="ms_time" placeholder="9:00am"></div>
+        </div>
+        <div class="field"><label>Subject (email only)</label><input id="ms_subject"></div>
+        <div class="field"><label>Message</label><textarea id="ms_body" rows="11"></textarea></div>
+        <div id="ms_warn" class="legend"></div>
+      </div>
+      <div>
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">Send it</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px;">
+          <button class="btn" id="ms_wa" style="background:#25D366;color:#fff;">WhatsApp</button>
+          <button class="btn btn-blue" id="ms_email">Email</button>
+          <button class="btn btn-ghost" id="ms_sms">SMS</button>
+          <button class="btn btn-ghost" id="ms_call">📞 Log a call</button>
+        </div>
+        <div class="legend" style="margin-bottom:12px;">WhatsApp and SMS open on your phone with the message ready — press send there. The tool records it either way. Email is sent from here with your signature.</div>
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">History</div>
+        <div class="timeline">
+          ${history.length ? history.map(m => `<div class="tl" style="--c:${(CHAN[m.channel] || CHAN.note)[1]};">
+            <b>${esc(String(m.at || '').slice(0, 16))}</b> — ${esc((CHAN[m.channel] || CHAN.note)[0])}${m.outcome === 'sent' ? ' sent' : ''}
+            ${m.sentBy ? `<span class="muted"> · ${esc(m.sentBy)}</span>` : ''}
+            ${m.body ? `<div class="muted" style="font-size:10.5px;margin-top:2px;">${esc(m.body.slice(0, 90))}${m.body.length > 90 ? '…' : ''}</div>` : ''}
+            ${m.note ? `<div class="muted" style="font-size:10.5px;margin-top:2px;">${esc(m.note)}</div>` : ''}</div>`).join('')
+            : '<div class="muted" style="font-size:11.5px;">Nothing sent yet.</div>'}
+        </div>
+      </div>
+    </div></div>`;
+
+  $('#backLeads').addEventListener('click', () => { state.leadId = null; state.leadStage = null; leadsTab(v); });
+  const gq = $('#goQuote'); if (gq) gq.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = l.quoteId; state.leadId = null; shell(); });
+  const tq = $('#toQuote'); if (tq) tq.addEventListener('click', async () => {
+    const r = await api('/leads/' + l.id + '/convert', { method: 'POST' });
+    if (r.error) return toast(r.error);
+    state.leadId = null; state.tab = 'quotes'; state.quoteId = r.quoteId; toast('Quote ' + r.quoteNumber + ' created'); shell();
+  });
+  $('#ld_save').addEventListener('click', async () => {
+    await api('/leads/' + l.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: $('#ld_name').value, phone: $('#ld_phone').value, email: $('#ld_email').value,
+        suburb: $('#ld_suburb').value, jobType: $('#ld_job').value, notes: $('#ld_notes').value,
+        nextFollowup: $('#ld_next').value || null }) });
+    toast('Saved'); leadConsole(v);
+  });
+  v.querySelectorAll('[data-stage]').forEach(b => b.addEventListener('click', () => { state.leadStage = b.dataset.stage; loadMsg(); paintStage(b.dataset.stage); }));
+  function paintStage(id) { v.querySelectorAll('[data-stage]').forEach(x => x.classList.toggle('on', x.dataset.stage === id)); }
+
+  let msg = {};
+  async function loadMsg() {
+    const qs = new URLSearchParams({ stage: state.leadStage || stage });
+    if ($('#ms_date').value) qs.set('date', $('#ms_date').value);
+    if ($('#ms_time').value) qs.set('time', $('#ms_time').value);
+    msg = await api(`/leads/${l.id}/message?` + qs.toString());
+    $('#ms_subject').value = msg.subject || '';
+    $('#ms_body').value = msg.body || '';
+    const w = [];
+    if (!msg.phoneOk) w.push('No usable mobile number — WhatsApp and SMS are unavailable.');
+    if (!msg.emailOk) w.push('No email address on this lead.');
+    $('#ms_warn').innerHTML = w.length ? `<span style="color:var(--red);">${w.map(esc).join('<br>')}</span>` : '';
+    $('#ms_wa').style.opacity = msg.phoneOk ? '1' : '.4';
+    $('#ms_sms').style.opacity = msg.phoneOk ? '1' : '.4';
+  }
+  ['ms_date', 'ms_time'].forEach(id => $('#' + id).addEventListener('change', loadMsg));
+  await loadMsg();
+
+  const record = async (channel, extra) => {
+    await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, stage: state.leadStage || stage, subject: $('#ms_subject').value,
+        body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...extra }) });
+  };
+  $('#ms_wa').addEventListener('click', async () => {
+    if (!msg.phoneOk) return toast('Add a mobile number first');
+    // Rebuild the link from the edited text, not the original template.
+    const intl = String(l.phone).replace(/[^\d+]/g, '').replace(/^\+/, '').replace(/^0/, '61');
+    window.open(`https://wa.me/${intl}?text=${encodeURIComponent($('#ms_body').value)}`, '_blank');
+    await record('whatsapp'); toast('Opened WhatsApp — logged against this lead'); leadConsole(v);
+  });
+  $('#ms_sms').addEventListener('click', async () => {
+    if (!msg.phoneOk) return toast('Add a mobile number first');
+    window.open(`sms:${String(l.phone).replace(/[^\d+]/g, '')}?&body=${encodeURIComponent($('#ms_body').value)}`, '_self');
+    await record('sms'); toast('Opened Messages — logged'); leadConsole(v);
+  });
+  $('#ms_email').addEventListener('click', async () => {
+    const btn = $('#ms_email'); btn.disabled = true; btn.textContent = 'Sending…';
+    const r = await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: 'email', stage: state.leadStage || stage, to: $('#ld_email').value,
+        subject: $('#ms_subject').value, body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null }) });
+    btn.disabled = false; btn.textContent = 'Email';
+    if (r.error) return toast(r.error);
+    toast('Email sent'); leadConsole(v);
+  });
+  $('#ms_call').addEventListener('click', async () => {
+    const note = prompt('What happened on the call?');
+    if (note === null) return;
+    await record('call', { note, body: null, subject: null });
+    toast('Call logged'); leadConsole(v);
   });
 }
 
