@@ -108,6 +108,20 @@ function fullQuote(q) {
   };
 }
 
+// The list needs a total per quote, not a full costing. Recompute only when the
+// quote has actually changed since we last cached it.
+// Returns { inc, ex } — both stored, because ex-GST is not simply inc/1.1 once
+// fixed-dollar surcharges are in play.
+function cachedTotals(q) {
+  const rev = q.rev_no || 0;
+  if (q.cached_rev === rev && q.cached_value != null && q.cached_value_ex != null)
+    return { inc: q.cached_value, ex: q.cached_value_ex };
+  let inc = 0, ex = 0;
+  try { const fq = fullQuote(q); inc = fq.grandIncGst; ex = fq.grandExGst; } catch (e) {}
+  try { db.prepare('UPDATE quotes SET cached_value=?, cached_value_ex=?, cached_rev=? WHERE id=?').run(inc, ex, rev, q.id); } catch (e) {}
+  return { inc, ex };
+}
+function cachedValue(q) { return cachedTotals(q).inc; }
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM quotes ORDER BY parent_number DESC, created_at DESC').all();
   const mapped = rows.map(q => {
@@ -120,7 +134,8 @@ router.get('/', (req, res) => {
     const surchargeDecided = (applied.length > 0) || !!q.surcharges_na;
     const siteplanDecided = !!q.siteplan_data || !!q.siteplan_na;
     const complete = itemCount > 0 && surchargeDecided && siteplanDecided && uncheckedCritical === 0;
-    const fq = fullQuote(q);
+    // Was: fullQuote(q) for every row — the whole costing engine, per quote.
+    const value = cachedValue(q);
     const baseDate = new Date((q.quote_date ? q.quote_date + 'T00:00:00' : q.created_at) + 'Z');
     const ageDays = Math.max(0, Math.floor((Date.now() - baseDate.getTime()) / 864e5));
     const th = { flag: parseFloat(settingGet('age_flag') || '7'), chase: parseFloat(settingGet('age_chase') || '14'), dead: parseFloat(settingGet('age_dead') || '30') };
@@ -137,7 +152,7 @@ router.get('/', (req, res) => {
       client: q.client_name, projectTitle: q.project_title,
       status, acceptedPackage: q.accepted_package,
       lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
-      value: Math.round(fq.grandIncGst), complete, uncheckedCritical, ageDays, ageBand, customerTier: q.customer_tier || 'Silver',
+      value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand, customerTier: q.customer_tier || 'Silver',
       views, updatedAt: q.updated_at };
   });
   // Superseded and lost quotes are kept forever but hidden from the working list,
@@ -613,3 +628,4 @@ router.get('/:id/signed-preview', async (req, res) => {
 module.exports = router;
 module.exports.createQuote = createQuote;
 module.exports.fullQuote = fullQuote;
+module.exports.cachedTotals = cachedTotals;

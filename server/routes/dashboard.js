@@ -7,16 +7,12 @@ const router = express.Router();
 // This used to be a second, private copy of the totals maths — and it drifted: it still
 // applied percentage surcharges to Scope 1 only, and ignored site-specific line values.
 // It now calls the same code the quote itself uses, so the figures can never disagree.
+// EX-GST value of a quote. Uses the cached total where possible — running the costing
+// engine for every quote made this endpoint the slowest thing in the app.
 function quoteValue(q) {
-  const { fullQuote } = require('./quotes');
-  try {
-    const fq = fullQuote(q);
-    // For a won job use the price actually signed; otherwise the current build.
-    return (q.quoted_sell != null && q.status === 'accepted') ? q.quoted_sell : fq.grandExGst;
-  } catch (e) {
-    console.error('[dashboard] quoteValue failed for', q.quote_number, e.message);
-    return 0;
-  }
+  if (q.quoted_sell != null && q.status === 'accepted') return q.quoted_sell;
+  try { return require('./quotes').cachedTotals(q).ex; }
+  catch (e) { console.error('[dashboard] quoteValue failed for', q.quote_number, e.message); return 0; }
 }
 
 // Australian FY start (1 Jul)

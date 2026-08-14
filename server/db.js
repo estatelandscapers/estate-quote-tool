@@ -235,6 +235,12 @@ addColumn('quotes','lost_reason','TEXT');
 // concurrent edit. This increments on every change and never collides.
 addColumn('quotes','rev_no','INTEGER DEFAULT 0');
 addColumn('quotes','sent_by','TEXT');
+// Cached quote total. Listing 40 quotes was re-running the full costing engine for
+// every one — thousands of queries per page load. rev_no already bumps on every
+// change, so caching against it is self-invalidating.
+addColumn('quotes','cached_value','REAL');
+addColumn('quotes','cached_rev','INTEGER');
+addColumn('quotes','cached_value_ex','REAL');   // ex-GST, kept alongside — dividing by 1.1 is not safe once surcharges are involved
    // who emailed it — matters once more than one person can
 // Extra-wastage price uplift, held per tier so the client link, contract and totals agree
 addColumn('quote_items','waste_uplift_basic','REAL DEFAULT 0');
