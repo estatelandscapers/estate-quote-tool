@@ -12,6 +12,7 @@
   api('').then(d => {
     if (d.error) { root.innerHTML = smsg('Quote not found', 'This link may be incorrect. Please contact us on the number in your email.'); return; }
     D = d; tier = d.defaultPackage || 'Standard';
+    if (d.linkOff) { root.innerHTML = offPage(d); return; }
     if (d.superseded) { root.innerHTML = smsg('This quote has been updated', 'A newer version of this proposal has been issued. Please use the most recent link we sent you, or contact us.', true); return; }
     if (d.expired) { root.innerHTML = smsg('This quote has expired', `This proposal was valid for ${d.validityDays} days. Contact us and we'll be happy to refresh it for you.`, true); return; }
     render();
@@ -27,12 +28,74 @@
     return val - base;
   }
 
+  // The quote has been switched off. Show the client something that gets them to ring,
+  // not an error — and keep the credentials visible so trust survives the call.
+  function offPage(d) {
+    const c = d.company || {};
+    const cr = d.credentials || {};
+    return `<div class="frame">
+      <div class="hero">
+        <img class="logo-full" src="/assets/logo-full.png" alt="Estate Landscapers">
+        <div class="eyebrow">${esc(d.quoteNumber ? 'Quote ' + d.quoteNumber : 'Your proposal')}</div>
+        <div class="who">${esc(d.clientName || '')}</div>
+      </div>
+      <div class="box" style="text-align:center;">
+        <div class="box-title" style="justify-content:center;">Your quote is ready to discuss</div>
+        <div style="font-size:13.5px;line-height:1.8;white-space:pre-wrap;color:#333;margin:10px 0 4px;">${esc(d.message || '')}</div>
+        <div class="offcall">
+          <div class="offnum">${esc(c.phone || '')}</div>
+          <div class="offmail">${esc(c.email || '')}</div>
+        </div>
+      </div>
+      ${estateStandardHtml(d)}
+      ${trustBarHtml(d)}
+      <footer>${esc(c.tagline || 'Integrity. Precision. Value.')}</footer>
+    </div>`;
+  }
+
+  // THE ESTATE STANDARD — the six commitments, shown immediately before the price.
+  function estateStandardHtml(d) {
+    if (!d.estateStandard || !d.estateStandard.length) return '';
+    return `<div class="estd">
+      <div class="estd-head">
+        <div class="estd-t">THE ESTATE STANDARD</div>
+        <div class="estd-s">Built with Value. Delivered with Precision. Backed by Integrity.</div>
+      </div>
+      <div class="estd-intro">Choosing a landscaping contractor is about more than comparing a number at the bottom of a quotation. Every Estate Landscapers project is guided by six commitments that define how we work and how we look after our clients.</div>
+      ${d.estateStandard.map(e => `<div class="estd-i">
+        <div class="estd-n">${esc(e.n)}</div>
+        <div class="estd-b">
+          <div class="estd-ti">${esc(e.title)}</div>
+          <div class="estd-p">${esc(e.body)}</div>
+          <div class="estd-c">${esc(e.commit)}</div>
+        </div></div>`).join('')}
+      <div class="estd-vpi">
+        <div><b>VALUE</b><span>Investing where it makes the greatest difference — not simply the cheapest price.</span></div>
+        <div><b>PRECISION</b><span>From set-out to the final edge, level and planting position.</span></div>
+        <div><b>INTEGRITY</b><span>Doing what we say we will do, and standing behind it.</span></div>
+      </div>
+    </div>`;
+  }
+
+  // The last thing read before the number.
+  function trustBarHtml(d) {
+    const cr = d.credentials || {};
+    const bits = ['LICENSED CONTRACTOR'];
+    if (cr.projects) bits.push(esc(cr.projects) + ' PROJECTS DELIVERED');
+    if (cr.stars) bits.push('&#9733;&#9733;&#9733;&#9733;&#9733; ' + esc(cr.stars) + ' CLIENT RATING' + (cr.ratingCount ? ' (' + esc(cr.ratingCount) + ' REVIEWS)' : ''));
+    bits.push('DETAILED SCOPE');
+    bits.push('WORKMANSHIP ACCOUNTABILITY');
+    return `<div class="trustbar">${bits.join(' &nbsp;&bull;&nbsp; ')}</div>`;
+  }
+
   function render() {
     const c = D.company;
     const accepted = D.status === 'accepted';
     const badges = [];
     if (c.lic) badges.push(`<span class="badge green">&#10003; Licensed &mdash; ${esc(c.lic)}</span>`);
     if (c.association) badges.push(`<span class="badge green">&#10003; ${esc(c.association)}</span>`);
+    if (D.credentials && D.credentials.projects) badges.push(`<span class="badge green">&#10003; ${esc(D.credentials.projects)} projects delivered</span>`);
+    if (D.credentials && D.credentials.stars) badges.push(`<span class="badge green">&#9733; ${esc(D.credentials.stars)} client rating</span>`);
     badges.push(`<span class="badge amber">Valid ${D.validityDays} days &mdash; until ${esc(D.validUntil)}</span>`);
     const heading = `${esc(D.projectTitle || 'Landscape Works')} Fee Proposal</div><div class="eyebrow">Quote ${esc(D.quoteNumber)}`;
 
@@ -64,6 +127,8 @@
       ${D.scope2 && D.scope2.length ? `<div class="box s2"><div class="box-title">Scope 2 &mdash; Disposal of Construction Waste</div>
         <div style="font-size:12.5px;color:var(--grey);line-height:1.6;">Estimated ${esc(String(D.scope2[0].qty))} m&sup3; at <b style="color:var(--ink)">${money(D.scope2[0].perTier.Standard.rate)}/m&sup3; &mdash; remeasurable</b>. Completed at cost + 15%, substantiated by disposal invoices. Final cost adjusted on actual quantities removed.</div></div>` : ''}
       ${D.siteNotes ? `<div class="notes-box"><div class="nt">Site-specific notes from our team</div><div class="nb">${esc(D.siteNotes)}</div></div>` : ''}
+      ${estateStandardHtml(D)}
+      ${trustBarHtml(D)}
       <div class="total-card" id="totalCard"></div>
       <div class="pay"><b>Payment schedule</b><br>${esc(D.paymentScheduleText || '')}</div>
       ${accepted ? '' : `<div class="cta-wrap"><button class="btn btn-blue" id="acceptBtn">Accept <span id="acceptTier">${tier}</span> package &amp; review contract &rarr;</button>

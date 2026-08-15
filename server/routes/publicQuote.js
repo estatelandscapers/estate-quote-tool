@@ -117,6 +117,9 @@ router.get('/:token', (req, res) => {
       company: { name: settingGet('company_name'), phone: settingGet('company_phone'),
         email: settingGet('company_email'), tagline: settingGet('tagline') },
       message: settingGet('link_off_message') || '',
+      // The Estate Standard matters MORE here, not less — this is the page a hesitant
+      // client sees, and it's the only thing selling us while they decide whether to ring.
+      estateStandard: ESTATE_STANDARD,
       credentials: credentials() });
   }
   res.json(clientView(q));

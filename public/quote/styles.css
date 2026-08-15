@@ -128,13 +128,28 @@ footer{text-align:center;color:var(--grey);font-size:11px;letter-spacing:2px;tex
   .howto{padding:11px 12px;}
   .chg-badge{display:block;margin:4px 0 0;width:fit-content;}
 }
-.estd{margin-top:14px;}
-.estd-h{font-size:13px;font-weight:800;letter-spacing:2px;text-align:center;}
-.estd-s{font-size:11px;color:#888;text-align:center;margin:4px 0 14px;letter-spacing:.4px;}
-.estd-i{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid #F0F0F0;}
-.estd-i:last-child{border-bottom:none;}
-.estd-n{font-size:15px;font-weight:800;color:#1E5BFF;flex:0 0 30px;}
-.estd-i b{font-size:12.5px;text-transform:uppercase;letter-spacing:.3px;}
-.estd-i p{font-size:11.5px;line-height:1.65;color:#555;margin:4px 0 5px;}
-.estd-c{font-size:11.5px;font-weight:700;color:#143FB0;}
-.trustbar{background:#000;color:#fff;border-radius:10px;padding:11px 13px;text-align:center;font-size:9.5px;letter-spacing:.6px;margin:12px 0;line-height:1.9;}
+
+/* ---- THE ESTATE STANDARD ---- */
+.estd{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px 18px;margin:14px 0;}
+.estd-head{text-align:center;border-bottom:1px solid var(--line);padding-bottom:13px;margin-bottom:14px;}
+.estd-t{font-size:15px;font-weight:800;letter-spacing:3px;color:var(--ink);}
+.estd-s{font-size:11.5px;color:var(--blue);margin-top:5px;letter-spacing:.3px;font-weight:600;}
+.estd-intro{font-size:12.5px;line-height:1.75;color:#555;margin-bottom:16px;text-align:center;}
+.estd-i{display:flex;gap:13px;padding:13px 0;border-bottom:1px solid #F2F2F2;}
+.estd-i:last-of-type{border-bottom:none;}
+.estd-n{font-size:17px;font-weight:800;color:var(--blue);flex:0 0 30px;line-height:1.2;}
+.estd-b{flex:1;min-width:0;}
+.estd-ti{font-size:12.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;}
+.estd-p{font-size:12px;line-height:1.7;color:#555;margin:5px 0 6px;}
+.estd-c{font-size:12px;font-weight:700;color:var(--blue);}
+.estd-vpi{display:flex;gap:10px;margin-top:16px;padding-top:15px;border-top:1px solid var(--line);flex-wrap:wrap;}
+.estd-vpi > div{flex:1;min-width:150px;}
+.estd-vpi b{display:block;font-size:11px;letter-spacing:2px;color:var(--ink);margin-bottom:4px;}
+.estd-vpi span{font-size:11.5px;line-height:1.65;color:#666;}
+.trustbar{background:var(--ink);color:#fff;border-radius:11px;padding:13px 15px;text-align:center;
+  font-size:9.5px;letter-spacing:.7px;line-height:2;margin:0 0 14px;font-weight:700;}
+/* ---- link switched off ---- */
+.offcall{background:var(--soft,#E8EFFF);border-radius:12px;padding:16px;margin:16px 0 4px;}
+.offnum{font-size:23px;font-weight:800;color:var(--blue);letter-spacing:.5px;}
+.offmail{font-size:12.5px;color:var(--grey);margin-top:3px;}
+@media(max-width:520px){.estd{padding:16px 14px;}.estd-i{gap:10px;}.estd-n{flex:0 0 24px;font-size:15px;}}
