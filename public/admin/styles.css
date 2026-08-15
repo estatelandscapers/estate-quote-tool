@@ -205,3 +205,45 @@ tr.row-lost td{background:#FAFAFA;}
 .today.soon{border-left-color:#B5761E;}.today.ok{border-left-color:var(--green);}
 .wl{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--red);margin:12px 0 6px;}
 @media(max-width:760px){.ph{min-width:100%;border-right:1.5px solid var(--line);border-bottom:none;border-radius:0;}.ph:first-child{border-radius:9px 9px 0 0;}.ph:last-child{border-bottom:1.5px solid var(--line);border-radius:0 0 9px 9px;}}
+
+/* ---- call script ---- */
+.callpips{display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-bottom:10px;}
+.cpip{width:10px;height:10px;border-radius:50%;background:#DDD;cursor:pointer;}
+.cpip.on{background:var(--blue);width:26px;border-radius:5px;}
+.cpip.done{background:#9BB6FF;}
+.callhead{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--grey);margin-bottom:9px;}
+.saybox{background:#F7F9FF;border-left:5px solid var(--blue);padding:15px 17px;border-radius:0 10px 10px 0;margin-bottom:14px;}
+.saycue{font-size:9.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--blue);margin-bottom:6px;}
+.saytext{font-size:16px;line-height:1.7;white-space:pre-wrap;}
+.chips{display:flex;gap:7px;flex-wrap:wrap;}
+.cchip{border:2px solid var(--line);background:#fff;border-radius:22px;padding:10px 17px;font-size:13px;font-family:inherit;cursor:pointer;}
+.cchip.on{border-color:var(--blue);background:var(--soft);color:var(--deep);font-weight:700;}
+.agroup{margin-bottom:11px;}
+.alab{font-size:9.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--grey);margin-bottom:6px;}
+.callnav{display:flex;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);flex-wrap:wrap;}
+.btn-big{font-size:14px;padding:15px 24px;border-radius:10px;}
+.srow{border:1.5px solid var(--line);border-radius:11px;padding:13px 15px;margin-bottom:10px;background:#fff;}
+.srow.unk{background:#FAFAFA;border-style:dashed;}
+.shd{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
+.sname{font-size:13px;font-weight:800;}
+.qty{font-size:20px;font-weight:800;color:var(--deep);}
+.srow.unk .qty{color:var(--grey);font-size:15px;}
+.unkbtn{border:2px solid var(--line);background:#fff;border-radius:20px;padding:7px 14px;font-size:11.5px;font-family:inherit;cursor:pointer;font-weight:700;white-space:nowrap;}
+.unkbtn.on{border-color:#B5761E;background:#FFF8E8;color:#8A6A1E;}
+.scale{display:flex;justify-content:space-between;font-size:9.5px;color:#bbb;margin-top:3px;}
+input[type=range]{width:100%;-webkit-appearance:none;appearance:none;height:9px;border-radius:5px;background:#E4E4E4;outline:none;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:30px;height:30px;border-radius:50%;background:#fff;border:3px solid var(--blue);cursor:pointer;box-shadow:0 2px 5px rgba(0,0,0,.2);}
+input[type=range]::-moz-range-thumb{width:30px;height:30px;border-radius:50%;background:#fff;border:3px solid var(--blue);cursor:pointer;}
+.srow.unk input[type=range]{opacity:.3;}
+.verdict{border-radius:9px;padding:10px 13px;font-size:12.5px;line-height:1.6;margin-top:9px;}
+.verdict .v-ok,.v-ok{background:#F2F8F4;border:1px solid #CBE0D2;color:#1d5c33;border-radius:8px;padding:9px 12px;}
+.verdict .v-warn,.v-warn{background:#FFF8E8;border:1px solid #EAD9AC;color:#7a5e1a;border-radius:8px;padding:9px 12px;}
+.verdict .v-bad,.v-bad{background:#FBEEEC;border:1px solid #E9CCC7;color:#9c3128;border-radius:8px;padding:9px 12px;}
+.bpbox{background:#000;color:#fff;border-radius:13px;padding:17px 19px;}
+.bpstop{background:#7a2018;color:#fff;border-radius:13px;padding:17px 19px;}
+.bplab{font-size:9.5px;letter-spacing:.8px;text-transform:uppercase;color:#999;}
+.bpnum{font-size:29px;font-weight:800;margin:5px 0;line-height:1.15;}
+.surl{display:flex;justify-content:space-between;padding:5px 0;font-size:12.5px;}
+.surl .w{color:#999;font-size:10.5px;}
+.warnbox{background:#FFF8E8;border:1px solid #EAD9AC;border-radius:10px;padding:11px 13px;font-size:12px;line-height:1.7;color:#7a5e1a;}
+@media(max-width:760px){.saytext{font-size:15px;}.cchip{padding:11px 16px;}.btn-big{width:100%;}}

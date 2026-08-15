@@ -1,7 +1,7 @@
 // Leads / enquiries. Manual entry now; a public website form can POST to /api/public/lead later
 // without any rework (same table, same fields).
 const express = require('express');
-const { db } = require('../db');
+const { db, settingGet } = require('../db');
 const { newId } = require('../utils/ids');
 const router = express.Router();
 const STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
@@ -153,6 +153,92 @@ router.put('/:id/stage', (req, res) => {
   db.prepare("UPDATE leads SET stage=?, status=?, next_followup=?, updated_at=datetime('now') WHERE id=?")
     .run(s.id, status, (req.body || {}).nextFollowup || nextDueFrom(s.id), l.id);
   res.json({ ok: true, stage: s.id, status });
+});
+
+
+// ---- CALL SCRIPT -------------------------------------------------------------
+const CS = require('../utils/callScript');
+
+router.get('/call/script', (req, res) => {
+  res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2) });
+});
+
+// Everything the rep has tapped so far, plus the live ballpark.
+router.post('/:id/call', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const a = (req.body || {}).answers || {};
+  db.prepare("UPDATE leads SET call_answers=?, updated_at=datetime('now') WHERE id=?").run(JSON.stringify(a), l.id);
+  const bp = CS.ballpark(a);
+  res.json({ ok: true, ballpark: bp, script: CS.ballparkScript(bp, a) });
+});
+
+router.get('/:id/call', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  let a = {}; try { a = JSON.parse(l.call_answers || '{}'); } catch (e) {}
+  const bp = CS.ballpark(a);
+  res.json({ answers: a, ballpark: bp, script: CS.ballparkScript(bp, a), fridays: CS.nextFridays(2) });
+});
+
+// Finish the call: write the follow-up, move the lead, diarise the next step.
+router.post('/:id/call/finish', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const a = b.answers || {};
+  const bp = CS.ballpark(a);
+  const who = req.user ? (req.user.name || req.user.username) : '';
+  const first = String(l.name || 'there').trim().split(/\s+/)[0];
+  const me = settingGet('company_contact_name') || who || 'Smit';
+  const phone = settingGet('company_phone') || '';
+
+  let stage = l.stage || 'noanswer', status = l.status, next = null, msg = '', subject = '';
+
+  if (b.outcome && b.outcome !== 'talk') {
+    const map = { callback: 'callback', noanswer: 'noanswer', notint: 'closeout', wrong: 'closeout' };
+    stage = map[b.outcome] || stage;
+    if (b.outcome === 'callback') { next = b.callbackDate || null; msg = `Hi ${first},\n\nThanks for taking my call — I'll give you a ring back ${b.callbackWhen || 'as arranged'}.\n\n${me}`; }
+    if (b.outcome === 'noanswer') { const d = new Date(); d.setDate(d.getDate() + 1); next = d.toISOString().slice(0, 10);
+      msg = `Hi ${first},\n\n${me} from Estate Landscapers here. I tried calling about your enquiry — when would suit for a quick chat?\n\n${phone}`; }
+    if (b.outcome === 'notint') { status = 'Lost'; msg = `Hi ${first},\n\nNo problem at all — I'll close it off. If it comes back around, just give me a call.\n\n${me}`; }
+    if (b.outcome === 'wrong') { status = 'Lost'; msg = ''; }
+  } else if (bp.decline) {
+    stage = 'closeout'; status = 'Lost';
+    db.prepare('UPDATE leads SET declined_reason=? WHERE id=?').run(bp.reason, l.id);
+    msg = `Hi ${first},\n\nThanks for your time on the phone. As we discussed, with the access under 800mm we can't get machinery down the side, so it isn't a job we're able to take on.\n\nIf the access can be opened up at all, give me a call and we'll take another look.\n\nAll the best,\n${me}`;
+    subject = 'Your landscaping enquiry — Estate Landscapers';
+  } else if (b.visitOutcome === 'booked' && b.visitDate) {
+    stage = 'confirm'; status = 'Contacted'; next = b.visitDate;
+    const d = new Date(b.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
+    const plansWanted = (a.plans || []).filter(p => ['architectural', 'hydraulic', 'da', 'landscape'].includes(p));
+    const pn = { architectural: 'architectural drawings', hydraulic: 'hydraulic drawings', da: 'DA consent', landscape: 'landscape plan' };
+    const plansLine = plansWanted.length
+      ? `\n\nBefore then, could you send through the ${plansWanted.map(p => pn[p]).join(' and the ')}? It means I can give you a proper number on the day rather than going away to work it out.`
+      : '';
+    const range = bp.tooUnknown ? '' : `\n\nFrom what you've told me it would usually land somewhere between $${bp.incLo.toLocaleString()} and $${bp.incHi.toLocaleString()} including GST. That's indicative only and subject to the site visit, final measurements and finish selections.${bp.exc.length ? ` It excludes: ${bp.exc.join('; ')}.` : ''}`;
+    msg = `Hi ${first},\n\nThanks for your time on the phone just now.\n\nI'll come out ${d} to measure up and take a proper look.${range}${plansLine}\n\nAny questions in the meantime, just give me a call.\n\nThanks,\n${me}\n${phone}`;
+    subject = `Site visit ${d} — Estate Landscapers`;
+  } else {
+    stage = 'details'; status = 'Contacted';
+    const d = new Date(); d.setDate(d.getDate() + 2); next = d.toISOString().slice(0, 10);
+    msg = `Hi ${first},\n\nThanks for your time on the phone. I'll follow up shortly about getting out to measure up.\n\n${me}\n${phone}`;
+    subject = 'Following up — Estate Landscapers';
+  }
+
+  const sets = ['stage=?', 'status=?', 'next_followup=?', 'call_answers=?'];
+  const vals = [stage, status, next, JSON.stringify(a)];
+  if (a.source) { sets.push('source=?'); vals.push(a.source); }
+  if (b.referredBy) { sets.push('referred_by=?'); vals.push(b.referredBy); }
+  if (a.propertyType) { sets.push('job_type=?'); vals.push((a.scope || []).join(', ') || l.job_type); }
+  vals.push(l.id);
+  db.prepare(`UPDATE leads SET ${sets.join(',')}, updated_at=datetime('now') WHERE id=?`).run(...vals);
+
+  db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, 'call', stage, null, null, who, 'logged',
+    bp.decline ? 'DECLINED — ' + bp.reason : 'Call completed via script');
+
+  res.json({ ok: true, stage, status, nextFollowup: next, message: msg, subject, ballpark: bp, declined: !!bp.decline });
 });
 
 // The message for a lead at a given stage, ready to edit and send.

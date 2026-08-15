@@ -18,7 +18,7 @@ const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&
 const TIERS = ['Basic', 'Standard', 'Premium'];
 const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', optional: 'Optional', allowance: 'Allowance' };
 let USER = null;
-let state = { tab: 'leads', leadId: null, leadStage: null, leadPhase: null, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
+let state = { tab: 'leads', leadId: null, leadStage: null, leadPhase: null, callStep: 0, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
@@ -367,6 +367,289 @@ async function openSendDialog(q) {
 }
 
 
+
+// ---------------- CALL SCRIPT ----------------
+// The rep reads the blue box and taps what they hear. Everything else follows from that.
+let CALL = null;
+async function callScreen(v) {
+  const [sc, saved, leadsData] = await Promise.all([
+    api('/leads/call/script'), api(`/leads/${state.leadId}/call`), api('/leads')]);
+  const lead = (leadsData.leads || []).find(x => x.id === state.leadId) || {};
+  CALL = { sc, a: saved.answers || {}, lead, i: state.callStep || 0, outcome: null, fridays: sc.fridays };
+  paintCall(v);
+}
+
+function visibleSteps() {
+  return CALL.sc.steps.filter(s => {
+    if (!s.showIf) return true;
+    return Object.entries(s.showIf).every(([k, vals]) => vals.includes(CALL.a[k]));
+  });
+}
+
+async function saveCall() {
+  const r = await api(`/leads/${CALL.lead.id}/call`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers: CALL.a }) });
+  CALL.bp = r.ballpark; CALL.script = r.script;
+}
+
+function paintCall(v) {
+  const steps = visibleSteps();
+  if (CALL.i >= steps.length) CALL.i = steps.length - 1;
+  const s = steps[CALL.i];
+  const first = String(CALL.lead.name || 'there').trim().split(/\s+/)[0];
+  const say = String(s.say || '')
+    .replace(/\{\{first\}\}/g, first)
+    .replace(/\{\{me\}\}/g, (state.user && state.user.name) || 'Smit')
+    .replace(/\{\{via\}\}/g, CALL.lead.source ? ' through ' + CALL.lead.source : '')
+    .replace(/\{\{friday1\}\}/g, CALL.fridays[0] ? CALL.fridays[0].label : '')
+    .replace(/\{\{friday2\}\}/g, CALL.fridays[1] ? CALL.fridays[1].label : '');
+
+  v.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div><h2>Call — ${esc(CALL.lead.name || 'lead')}</h2>
+        <div class="sub">${esc(CALL.lead.phone || '')}${CALL.lead.suburb ? ' · ' + esc(CALL.lead.suburb) : ''}</div></div>
+      <button class="btn btn-ghost btn-sm" id="exitCall">Exit call</button></div>
+    <div class="rule"></div>
+    <div class="callpips">${steps.map((x, i) => `<span class="cpip ${i === CALL.i ? 'on' : i < CALL.i ? 'done' : ''}" data-goto="${i}" title="${esc(x.title)}"></span>`).join('')}</div>
+    <div class="callhead">${esc(s.section)} · ${esc(s.title)} <span class="muted">step ${CALL.i + 1} of ${steps.length}</span></div>
+    ${say ? `<div class="saybox"><div class="saycue">Say this</div><div class="saytext">${esc(say)}</div></div>` : ''}
+    <div id="ans"></div>
+    <div class="callnav">
+      <button class="btn btn-ghost btn-big" id="cBack" ${CALL.i === 0 ? 'disabled style="opacity:.4;"' : ''}>← Back</button>
+      <button class="btn btn-blue btn-big" id="cNext" style="flex:1;">${CALL.i === steps.length - 1 ? 'Finish the call →' : 'Next →'}</button>
+    </div>
+  </div>
+  <div id="bpPanel"></div>`;
+
+  $('#exitCall').addEventListener('click', () => { state.callStep = 0; leadConsole(v); });
+  v.querySelectorAll('[data-goto]').forEach(p => p.addEventListener('click', () => { CALL.i = +p.dataset.goto; paintCall(v); }));
+  $('#cBack').addEventListener('click', () => { if (CALL.i > 0) { CALL.i--; state.callStep = CALL.i; paintCall(v); } });
+  $('#cNext').addEventListener('click', async () => {
+    await saveCall();
+    if (CALL.i === steps.length - 1) return finishCall(v);
+    CALL.i++; state.callStep = CALL.i; paintCall(v);
+  });
+
+  renderAnswer(v, s);
+  refreshBp(v);
+}
+
+function renderAnswer(v, s) {
+  const box = $('#ans'); const a = CALL.a;
+  const chip = (val, label, on) => `<button class="cchip ${on ? 'on' : ''}" data-opt="${esc(val)}">${esc(label || val)}</button>`;
+
+  if (s.type === 'outcome') {
+    box.innerHTML = `<div class="chips">${s.options.map(o => chip(o.v, o.label, CALL.outcome === o.v)).join('')}</div>
+      <div id="cbWhen" style="margin-top:10px;${CALL.outcome === 'callback' ? '' : 'display:none;'}">
+        <div class="field" style="max-width:340px;"><label>When to call back</label><input id="cb_when" placeholder="e.g. Thursday about 4pm" value="${esc(CALL.callbackWhen || '')}"></div></div>`;
+    box.querySelectorAll('[data-opt]').forEach(b => b.addEventListener('click', () => {
+      CALL.outcome = b.dataset.opt;
+      const o = s.options.find(x => x.v === CALL.outcome);
+      CALL.endsCall = !!(o && o.ends);
+      renderAnswer(v, s);
+      if (CALL.endsCall) $('#cNext').textContent = 'Finish the call →';
+    }));
+    const cw = $('#cb_when'); if (cw) cw.addEventListener('input', () => { CALL.callbackWhen = cw.value; });
+    return;
+  }
+
+  if (s.type === 'single' || s.type === 'multi') {
+    const cur = a[s.key];
+    const isOn = val => s.type === 'multi' ? (cur || []).includes(val) : cur === val;
+    let html = '';
+    if (s.groups) {
+      html = s.groups.map(g => `<div class="agroup"><div class="alab">${esc(g.g)}</div>
+        <div class="chips">${g.o.map(o => chip(o, o, isOn(o))).join('')}</div></div>`).join('');
+    } else {
+      html = `<div class="chips">${s.options.map(o => chip(o.v, o.label || o.v, isOn(o.v))).join('')}</div>`;
+    }
+    if (s.other) html += `<div class="field" style="max-width:360px;margin-top:9px;"><label>Other — type it</label>
+      <input id="a_other" value="${esc(a[s.key + 'Other'] || '')}" placeholder="anything not listed"></div>`;
+    if (s.referrerFor) html += `<div class="field" id="refBox" style="max-width:360px;margin-top:9px;${s.referrerFor.includes(cur) ? '' : 'display:none;'}">
+      <label>Who referred them?</label><input id="a_ref" value="${esc(CALL.referredBy || '')}" placeholder="name"></div>`;
+    if (s.weeks) html += `<div class="field" style="max-width:220px;margin-top:9px;"><label>Or — approx weeks away</label>
+      <input id="a_weeks" type="number" min="0" max="200" value="${esc(a.startWeeks || '')}"></div>`;
+    if (s.month) html += `<div class="field" style="max-width:260px;margin-top:9px;"><label>Or — pick a month</label>
+      <input id="a_month" type="month" value="${esc(a.startMonth || '')}"></div>`;
+    box.innerHTML = html;
+    box.querySelectorAll('[data-opt]').forEach(b => b.addEventListener('click', () => {
+      const val = b.dataset.opt;
+      if (s.type === 'multi') {
+        const list = new Set(a[s.key] || []);
+        list.has(val) ? list.delete(val) : list.add(val);
+        a[s.key] = [...list];
+      } else a[s.key] = a[s.key] === val ? null : val;
+      renderAnswer(v, s); saveCall().then(() => refreshBp(v));
+    }));
+    const oth = $('#a_other'); if (oth) oth.addEventListener('change', () => { a[s.key + 'Other'] = oth.value; if (oth.value) a[s.key] = oth.value; saveCall(); });
+    const rf = $('#a_ref'); if (rf) rf.addEventListener('change', () => { CALL.referredBy = rf.value; });
+    const wk = $('#a_weeks'); if (wk) wk.addEventListener('change', () => { a.startWeeks = wk.value; saveCall(); });
+    const mo = $('#a_month'); if (mo) mo.addEventListener('change', () => { a.startMonth = mo.value; saveCall(); });
+    return;
+  }
+
+  if (s.type === 'slider') {
+    const unk = a[s.key] === 'unknown';
+    const val = unk || a[s.key] == null ? s.def : a[s.key];
+    box.innerHTML = `<div class="srow ${unk ? 'unk' : ''}">
+      <div class="shd"><span class="qty" id="sl_q">${unk ? 'not known' : sliderLabel(s, val)}</span>
+        ${s.unknown ? `<button class="unkbtn ${unk ? 'on' : ''}" id="sl_unk">${unk ? '✓ Not sure' : 'Not sure'}</button>` : ''}</div>
+      <input type="range" min="${s.min}" max="${s.max}" step="${s.step}" value="${val}" id="sl_r" ${unk ? 'disabled' : ''}>
+      <div class="scale"><span>${s.min}</span><span>${s.max} ${esc(s.unit)}</span></div>
+      <div class="verdict" id="sl_v"></div></div>`;
+    const r = $('#sl_r');
+    const upd = () => {
+      a[s.key] = +r.value; $('#sl_q').textContent = sliderLabel(s, +r.value);
+      $('#sl_v').innerHTML = sliderVerdict(s, +r.value, CALL.sc.thresholds);
+      fillRange(r);
+    };
+    r.addEventListener('input', upd);
+    r.addEventListener('change', () => saveCall().then(() => refreshBp(v)));
+    const ub = $('#sl_unk'); if (ub) ub.addEventListener('click', () => {
+      a[s.key] = (a[s.key] === 'unknown') ? s.def : 'unknown';
+      renderAnswer(v, s); saveCall().then(() => refreshBp(v));
+    });
+    if (!unk) upd();
+    return;
+  }
+
+  if (s.type === 'sizes') {
+    const picked = (a.scope || []).map(id => CALL.sc.sizes.find(x => x.id === id)).filter(Boolean);
+    if (!picked.length) { box.innerHTML = '<p class="muted">Nothing measurable selected at the scope question.</p>'; return; }
+    a.sizes = a.sizes || {};
+    box.innerHTML = picked.map(p => {
+      const unk = a.sizes[p.id] === 'unknown';
+      const val = unk || a.sizes[p.id] == null ? 0 : a.sizes[p.id];
+      return `<div class="srow ${unk ? 'unk' : ''}">
+        <div class="shd"><span class="sname">${esc(p.label)} — <span class="muted" style="font-weight:500;">${esc(p.ask)}</span></span>
+          <button class="unkbtn ${unk ? 'on' : ''}" data-sunk="${p.id}">${unk ? '✓ Not sure' : 'Not sure'}</button></div>
+        <div class="shd"><span class="qty" data-sq="${p.id}">${unk ? 'not known' : val + ' ' + p.unit}</span></div>
+        <input type="range" min="0" max="${p.max}" step="${p.step}" value="${val}" data-sr="${p.id}" ${unk ? 'disabled' : ''}>
+        <div class="scale"><span>0</span><span>${p.max} ${esc(p.unit)}</span></div></div>`;
+    }).join('');
+    box.querySelectorAll('[data-sr]').forEach(r => {
+      fillRange(r);
+      r.addEventListener('input', () => { a.sizes[r.dataset.sr] = +r.value;
+        box.querySelector(`[data-sq="${r.dataset.sr}"]`).textContent = r.value + ' ' + (picked.find(p => p.id === r.dataset.sr).unit);
+        fillRange(r); });
+      r.addEventListener('change', () => saveCall().then(() => refreshBp(v)));
+    });
+    box.querySelectorAll('[data-sunk]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.sunk;
+      a.sizes[id] = a.sizes[id] === 'unknown' ? 0 : 'unknown';
+      renderAnswer(v, s); saveCall().then(() => refreshBp(v));
+    }));
+    return;
+  }
+
+  if (s.type === 'ballpark') { box.innerHTML = '<div id="bpBig">Working it out…</div>'; refreshBp(v); return; }
+
+  if (s.type === 'booking') {
+    box.innerHTML = `<div class="chips">${s.options.map(o => chip(o.v, o.label, CALL.visitOutcome === o.v)).join('')}</div>
+      <div id="friBox" style="margin-top:10px;${CALL.visitOutcome === 'booked' ? '' : 'display:none;'}">
+        <div class="chips">${CALL.fridays.map(f => `<button class="cchip ${CALL.visitDate === f.iso ? 'on' : ''}" data-fri="${f.iso}">${esc(f.label)}</button>`).join('')}
+          <input type="date" id="friOther" value="${esc(CALL.visitDate || '')}" style="max-width:190px;"></div></div>`;
+    box.querySelectorAll('[data-opt]').forEach(b => b.addEventListener('click', () => {
+      CALL.visitOutcome = b.dataset.opt; renderAnswer(v, s);
+    }));
+    box.querySelectorAll('[data-fri]').forEach(b => b.addEventListener('click', () => {
+      CALL.visitDate = b.dataset.fri; renderAnswer(v, s);
+    }));
+    const fo = $('#friOther'); if (fo) fo.addEventListener('change', () => { CALL.visitDate = fo.value; });
+    return;
+  }
+  box.innerHTML = '';
+}
+
+function sliderLabel(s, val) {
+  if (s.key === 'accessMm') return val >= 1000 ? (val / 1000).toFixed(2) + ' m' : val + ' mm';
+  if (s.key === 'steps') return val + ' step' + (val === 1 ? '' : 's');
+  if (s.bodyScale) return val === 0 ? 'Level' : (val <= 500 ? 'About knee height' : val <= 1000 ? 'About waist height'
+    : val <= 1500 ? 'About chest height' : val <= 1800 ? 'About head height' : 'Over head height') + ' · ' + (val / 1000).toFixed(1) + ' m';
+  return val + ' ' + s.unit;
+}
+function sliderVerdict(s, val, t) {
+  if (s.key === 'accessMm') {
+    if (val < t.minAccess) return `<div class="v-bad">⛔ <b>Below ${t.minAccess}mm — we don't take these on.</b><br>Ask first: can a fence panel come out, or can you come through the neighbour for a day?</div>`;
+    if (val < t.difficultTo) return `<div class="v-warn"><b>Excavator fits</b> (needs ${t.minAccess}mm). Mini loader will not. → Difficult access +10%</div>`;
+    if (val < t.narrowTo) return `<div class="v-warn"><b>Both machines fit</b>, handling still constrained. → Narrow side access +$750</div>`;
+    return `<div class="v-ok"><b>Good access</b> — no surcharge.</div>`;
+  }
+  if (s.key === 'steps') {
+    if (!val) return `<div class="v-ok">Level access — material barrows straight in.</div>`;
+    if (val <= 4) return `<div class="v-warn"><b>${val} steps</b> — everything lifted. ≈ ${val * t.stepRise}mm of fall.</div>`;
+    return `<div class="v-bad"><b>${val} steps</b> — significant hand-carting. → Difficult access +10%</div>`;
+  }
+  if (s.key === 'fallMm') {
+    if (val < 300) return `<div class="v-ok">Effectively flat.</div>`;
+    if (val < t.steepFall) return `<div class="v-warn">Noticeable fall — retaining likely.</div>`;
+    if (val <= t.maxWallHeight) return `<div class="v-bad"><b>Steep</b> → Steep slope +15%. Retaining within your standard rate.</div>`;
+    return `<div class="v-bad"><b>Over ${t.maxWallHeight}mm</b> → Steep slope +15%. Retaining above ${t.maxWallHeight}mm needs engineering — excluded from the ballpark.</div>`;
+  }
+  return '';
+}
+function fillRange(r) {
+  const p = (r.value - r.min) / (r.max - r.min) * 100;
+  r.style.background = `linear-gradient(90deg,var(--blue) 0%,var(--blue) ${p}%,#E4E4E4 ${p}%,#E4E4E4 100%)`;
+}
+
+function refreshBp(v) {
+  const bp = CALL.bp; if (!bp) return;
+  const big = document.getElementById('bpBig');
+  const panel = document.getElementById('bpPanel');
+  const body = bp.decline
+    ? `<div class="bpstop"><div class="bplab" style="color:#f0a79c;">⛔ Below our minimum access</div>
+        <div style="font-size:17px;font-weight:800;margin:5px 0;">Don't quote this job</div>
+        <div style="font-size:12px;color:#ddd;line-height:1.6;">${esc(bp.reason)}</div></div>
+       <div class="saybox" style="margin-top:10px;"><div class="saycue" style="color:var(--red);">Say this — declining</div>
+        <div class="saytext">${esc(CALL.script)}</div></div>`
+    : bp.tooUnknown
+    ? `<div class="warnbox"><b>Not enough to price on the phone.</b><br>${esc(CALL.script)}</div>`
+    : `<div class="bpbox"><div class="bplab">Ballpark — say this range</div>
+        <div class="bpnum">$${bp.incLo.toLocaleString()} – $${bp.incHi.toLocaleString()}</div>
+        <div style="font-size:11.5px;color:#aaa;">including GST · ${bp.inc.length} item${bp.inc.length === 1 ? '' : 's'} priced${bp.exc.length ? ` · <span style="color:#e8c98a;">${bp.exc.length} excluded</span>` : ''}</div>
+        ${bp.sur.length ? `<div style="margin-top:9px;border-top:1px solid #333;padding-top:7px;">${bp.sur.map(s => `<div class="surl"><span>${esc(s.name)}<br><span class="w">${esc(s.why)}</span></span><b>${s.pct ? '+' + s.pct + '%' : '+$' + s.amount}</b></div>`).join('')}</div>` : ''}
+       </div>
+       ${bp.exc.length ? `<div class="warnbox" style="margin-top:10px;"><b>Not included — needs the site visit</b><br>${bp.exc.map(e => '• ' + esc(e)).join('<br>')}</div>` : ''}
+       <div class="saybox" style="margin-top:10px;"><div class="saycue">Say this</div><div class="saytext">${esc(CALL.script)}</div></div>`;
+  if (big) big.innerHTML = body;
+  else if (panel) panel.innerHTML = bp.decline || !bp.tooUnknown ? `<div class="card">${body}</div>` : '';
+}
+
+async function finishCall(v) {
+  const r = await api(`/leads/${CALL.lead.id}/call/finish`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers: CALL.a, outcome: CALL.outcome, callbackWhen: CALL.callbackWhen,
+      visitOutcome: CALL.visitOutcome, visitDate: CALL.visitDate, referredBy: CALL.referredBy }) });
+  if (r.error) return toast(r.error);
+  state.callStep = 0;
+  v.innerHTML = `<div class="card">
+    <h2>Call finished${r.declined ? ' — job declined' : ''}</h2>
+    <div class="sub">Lead moved to <b>${esc(r.stage)}</b>${r.nextFollowup ? ` · next follow-up ${esc(r.nextFollowup)}` : ''}</div>
+    <div class="rule"></div>
+    ${r.message ? `<div class="field"><label>Subject (email only)</label><input id="fc_sub" value="${esc(r.subject || '')}"></div>
+      <div class="field"><label>Message — edit if you like</label><textarea id="fc_msg" rows="13">${esc(r.message)}</textarea></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-big" id="fc_wa" style="background:#25D366;color:#fff;">Send on WhatsApp</button>
+        <button class="btn btn-blue btn-big" id="fc_em">Email it</button>
+        <button class="btn btn-ghost btn-big" id="fc_skip">Don't send</button></div>`
+      : '<p class="muted">No message for this outcome.</p><button class="btn btn-blue" id="fc_skip">Back to the lead</button>'}
+  </div>`;
+  const done = () => { state.leadId = CALL.lead.id; leadConsole(v); };
+  const rec = async ch => api(`/leads/${CALL.lead.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: ch, stage: r.stage, subject: $('#fc_sub') ? $('#fc_sub').value : '', body: $('#fc_msg').value, to: CALL.lead.email }) });
+  const wa = $('#fc_wa'); if (wa) wa.addEventListener('click', async () => {
+    const intl = String(CALL.lead.phone || '').replace(/[^\d+]/g, '').replace(/^\+/, '').replace(/^0/, '61');
+    window.open(`https://wa.me/${intl}?text=${encodeURIComponent($('#fc_msg').value)}`, '_blank');
+    await rec('whatsapp'); toast('Opened WhatsApp — logged'); done();
+  });
+  const em = $('#fc_em'); if (em) em.addEventListener('click', async () => {
+    const res = await rec('email');
+    if (res && res.error) return toast(res.error);
+    toast('Email sent'); done();
+  });
+  $('#fc_skip').addEventListener('click', done);
+}
+
 // ---------------- LEAD FOLLOW-UP CONSOLE ----------------
 const CHAN = { whatsapp: ['WhatsApp', '#25D366'], sms: ['SMS', '#888'], email: ['Email', '#143FB0'], call: ['Call', '#888'], note: ['Note', '#888'] };
 async function leadConsole(v) {
@@ -402,6 +685,7 @@ async function leadConsole(v) {
         ${st.suggestCloseout ? '<div style="font-size:11.5px;color:#f3d9a0;margin-top:7px;">Two follow-ups sent with no reply — worth closing this one out.</div>' : ''}
       </div>
       <div>
+        <button class="btn btn-blue btn-big" id="ld_call" style="width:100%;margin-bottom:9px;">📞 Start the call</button>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="ld_snooze">😴 Snooze 3 days</button>
           <button class="btn btn-ghost btn-sm" id="ld_close">✕ Close this enquiry</button>
@@ -475,6 +759,7 @@ async function leadConsole(v) {
         nextFollowup: $('#ld_next').value || null }) });
     toast('Saved'); leadConsole(v);
   });
+  $('#ld_call').addEventListener('click', () => { state.callStep = 0; callScreen(v); });
   $('#ld_snooze').addEventListener('click', async () => {
     const r = await api(`/leads/${l.id}/snooze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 3 }) });
     toast('Snoozed until ' + r.until); leadConsole(v);
@@ -908,7 +1193,18 @@ async function quoteEditor(v) {
     reload();
   }));
   const naChip = v.querySelector('[data-sur-na]'); if (naChip) naChip.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appliedSurcharges: [], surchargesNa: !q.surchargesNa }) }); reload(); });
-  $('#planFile').addEventListener('change', e => { const file = e.target.files[0]; if (!file) return; state.scrollY = window.scrollY; const rd = new FileReader(); rd.onload = async () => { await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: rd.result.split(',')[1], mime: file.type }) }); toast('Drawing uploaded'); reload(); }; rd.readAsDataURL(file); });
+  $('#planFile').addEventListener('change', async e => {
+    const file = e.target.files[0]; if (!file) return;
+    state.scrollY = window.scrollY;
+    const before = file.size;
+    toast('Preparing image…');
+    const { data, mime, size } = await shrinkImage(file);
+    await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data, mime }) });
+    const saved = before > size ? ` (${Math.round(before / 1024)}KB → ${Math.round(size / 1024)}KB)` : '';
+    toast('Drawing uploaded' + saved);
+    reload();
+  });
   const rmPlan = $('#removePlan'); if (rmPlan) rmPlan.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: null, mime: null }) }); reload(); });
   $('#planNa').addEventListener('change', async e => { await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteplanNa: e.target.checked }) }); });
 

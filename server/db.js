@@ -299,6 +299,9 @@ addColumn('leads','stage',"TEXT DEFAULT 'noanswer'");
 addColumn('leads','next_followup','TEXT');
 addColumn('leads','job_type','TEXT');
 addColumn('leads','suburb','TEXT');
+addColumn('leads','call_answers','TEXT');      // JSON — everything captured on the call
+addColumn('leads','referred_by','TEXT');
+addColumn('leads','declined_reason','TEXT');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

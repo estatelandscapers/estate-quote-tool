@@ -24,7 +24,7 @@ function createPOFromQuote(quoteId, opts = {}) {
   const c = costQuote(q, { useSelections: true });
   db.prepare(`INSERT INTO purchase_orders (id,quote_id,po_number,client_name,address,siteplan_data,siteplan_mime,site_challenges,status,site_hours,crew_size)
     VALUES (?,?,?,?,?,?,?,?, 'open', ?, ?)`).run(poId, quoteId, q.parent_number, q.client_name, q.address,
-    q.siteplan_data, q.siteplan_mime, JSON.stringify(challenges), c.hours, c.crew);
+    null, null, JSON.stringify(challenges), c.hours, c.crew);   // site plan is read from the quote, not copied
   db.prepare('UPDATE purchase_orders SET sub_days=?, revision=?, supersedes_id=? WHERE id=?')
     .run(c.subDays || 0, opts.revision || 1, opts.supersedes || null, poId);
   const ins = db.prepare('INSERT INTO po_items (id,po_id,code,name,spec,qty,unit,sort_order,vendor_name,kind,unit_cost) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
@@ -61,7 +61,7 @@ function poView(po, admin) {
   const costItems = items.filter(i => i.kind !== 'site' && !i.removed);
   const actualCost = costItems.reduce((a, i) => a + i.qty * (i.unit_cost || 0), 0);
   const view = { id: po.id, poNumber: po.po_number, client: po.client_name, address: po.address,
-    status: po.status, hasSiteplan: !!po.siteplan_data, siteChallenges: JSON.parse(po.site_challenges || '[]'),
+    status: po.status, hasSiteplan: !!poSiteplan(po), siteChallenges: JSON.parse(po.site_challenges || '[]'),
     siteHours: po.site_hours, crewSize: po.crew_size,
     crewDays: Math.round(po.site_hours / Math.max(1, po.crew_size) / parseFloat(settingGet('hours_per_day') || '8') * 10) / 10,
     subDays: Math.round((po.sub_days || 0) * 10) / 10,
@@ -113,11 +113,19 @@ router.get('/:id', (req, res) => {
   if (!po) return res.status(404).json({ error: 'not found' });
   res.json(poView(po, isAdmin(req)));
 });
+// Resolve the site plan from the PO's own copy if it has one (older records), else
+// from its quote. Copying the image onto every PO was pure duplication.
+function poSiteplan(po) {
+  if (po.siteplan_data) return { data: po.siteplan_data, mime: po.siteplan_mime };
+  const q = po.quote_id ? db.prepare('SELECT siteplan_data, siteplan_mime FROM quotes WHERE id=?').get(po.quote_id) : null;
+  return q && q.siteplan_data ? { data: q.siteplan_data, mime: q.siteplan_mime } : null;
+}
 router.get('/:id/siteplan', (req, res) => {
-  const po = db.prepare('SELECT siteplan_data, siteplan_mime FROM purchase_orders WHERE id=?').get(req.params.id);
-  if (!po || !po.siteplan_data) return res.status(404).end();
-  res.setHeader('Content-Type', po.siteplan_mime || 'image/png');
-  res.send(Buffer.from(po.siteplan_data, 'base64'));
+  const po = db.prepare('SELECT siteplan_data, siteplan_mime, quote_id FROM purchase_orders WHERE id=?').get(req.params.id);
+  const sp = po ? poSiteplan(po) : null;
+  if (!sp) return res.status(404).end();
+  res.setHeader('Content-Type', sp.mime || 'image/png');
+  res.send(Buffer.from(sp.data, 'base64'));
 });
 // edits (admin) — the edited PO becomes the ACTUAL cost record
 router.post('/:id/items', (req, res) => {
@@ -230,7 +238,7 @@ router.get('/:id/print/site', (req, res) => {
   <table><thead><tr><th>Code</th><th>Deliverable / spec</th><th>Qty</th></tr></thead><tbody>
   ${v.siteItems.map(i => `<tr><td><b>${i.code || ''}</b></td><td>${i.name}${i.spec ? `<br><span class="muted">${i.spec}</span>` : ''}</td><td>${i.qty} ${i.unit || ''}</td></tr>`).join('')}
   </tbody></table>
-  ${po.siteplan_data ? `<h2>Approved site plan</h2><img src="data:${po.siteplan_mime || 'image/png'};base64,${po.siteplan_data}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;">` : ''}
+  ${(() => { const sp = poSiteplan(po); return sp ? `<h2>Approved site plan</h2><img src="data:${sp.mime || 'image/png'};base64,${sp.data}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;">` : ''; })()}
   ${v.siteChallenges.length ? `<h2>Site challenges</h2><p>${v.siteChallenges.join(' · ')}</p>` : ''}
   <p class="muted">No pricing on this document. Refer to the approved drawing for layout.</p>`;
   db.prepare('INSERT INTO po_prints (id,po_id,printed_by) VALUES (?,?,?)').run(newId(), po.id, (req.user ? req.user.name : 'Team') + ' (site copy)');

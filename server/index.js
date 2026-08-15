@@ -67,6 +67,31 @@ app.get('/api/backup', (req, res) => {
   }
 });
 
+// One-off cleanup: drop site plan copies that are duplicated from the quote, then
+// VACUUM to actually give the space back. Safe to run any time.
+app.post('/api/maintenance/compact', (req, res) => {
+  const key = process.env.BACKUP_KEY || 'CHANGE-ME';
+  const admin = req.user && req.user.role === 'admin';
+  if (!admin && (req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
+  const { db: liveDb } = require('./db');
+  const fsc = require('node:fs');
+  const dbPath = process.env.DB_PATH || path2.join(process.env.DATA_DIR || path2.join(__dirname, '..', 'data'), 'estate.db');
+  const before = (() => { try { return fsc.statSync(dbPath).size; } catch (e) { return 0; } })();
+  let freedRows = 0;
+  try {
+    // A PO whose photo is byte-identical to its quote's is pure duplication.
+    const dupes = liveDb.prepare(`SELECT po.id FROM purchase_orders po JOIN quotes q ON q.id=po.quote_id
+      WHERE po.siteplan_data IS NOT NULL AND po.siteplan_data = q.siteplan_data`).all();
+    const clr = liveDb.prepare('UPDATE purchase_orders SET siteplan_data=NULL, siteplan_mime=NULL WHERE id=?');
+    dupes.forEach(r => { clr.run(r.id); freedRows++; });
+  } catch (e) { console.error('[compact]', e.message); }
+  try { liveDb.exec('VACUUM'); } catch (e) { console.error('[compact] vacuum', e.message); }
+  const after = (() => { try { return fsc.statSync(dbPath).size; } catch (e) { return 0; } })();
+  console.log(`[compact] cleared ${freedRows} duplicate site plan(s); ${Math.round(before / 1048576)}MB -> ${Math.round(after / 1048576)}MB`);
+  res.json({ ok: true, duplicatesCleared: freedRows,
+    beforeMB: Math.round(before / 104857.6) / 10, afterMB: Math.round(after / 104857.6) / 10 });
+});
+
 // Lightweight check for the backup script: confirms the key works and reports size,
 // so a scheduled task can verify without downloading the whole database.
 app.get('/api/backup/status', (req, res) => {
