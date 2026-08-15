@@ -302,6 +302,13 @@ addColumn('leads','suburb','TEXT');
 addColumn('leads','call_answers','TEXT');      // JSON — everything captured on the call
 addColumn('leads','referred_by','TEXT');
 addColumn('leads','declined_reason','TEXT');
+addColumn('materials','retired','INTEGER DEFAULT 0');
+// Client link on/off — the quote is never deleted, just hidden behind a "call us" page
+addColumn('quotes','link_off','INTEGER DEFAULT 0');
+// Documents (drawings) received, and where they live in OneDrive
+addColumn('leads','docs_received','TEXT');
+addColumn('leads','docs_note','TEXT');
+addColumn('leads','docs_channel','TEXT');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');
@@ -454,6 +461,8 @@ if (!settingGet2('seed_v7')) {
  ['default_crew_size','3'],['default_customer_tier','Silver'],
  ['email_signature','Smit Gajera\nEstate Landscapers\nT: +61 414 147 008\nE: info@estatelandscapers.com.au\nA: Unit 33/275 Annangrove Rd, Rouse Hill NSW 2155'],
  ['quote_email_subject','Landscape Works Fee Proposal — Quote {{number}} — Estate Landscapers'],
+ ['projects_delivered','300+'],['rating_stars','5.0'],['rating_source','Google'],['rating_count',''],
+ ["link_off_message","We have prepared a detailed proposal for your project and we would like to walk you through it.\n\nPlease give us a call and we will go through the scope, answer any questions and get your quote back in front of you."],
  ['quote_email_body','Hi {{firstname}},\n\nThank you for the opportunity to quote on your project. Your proposal is ready to view using the link below.\n\nThe quote shows three levels of finish so you can compare — tap through and let me know your thoughts.\n\nHappy to walk you through any of it.']
 ].forEach(([k,v]) => { const cur = settingGet2(k); if (cur === null || cur === undefined || cur === '') settingSet2(k,v); });
 

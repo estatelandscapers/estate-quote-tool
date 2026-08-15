@@ -84,7 +84,7 @@ router.get('/board', (req, res) => {
   const weekEnd = wk.toISOString().slice(0, 10);
   const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') ORDER BY next_followup").all();
   const decorate = l => {
-    const s = stageById(l.stage || 'noanswer');
+    const s = stageById(require('../utils/leadTemplates').normalise(l.stage || 'call1'));
     let quote = null;
     if (l.quote_id) quote = db.prepare('SELECT quote_number, status FROM quotes WHERE id=?').get(l.quote_id);
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '',
@@ -107,7 +107,9 @@ router.get('/board', (req, res) => {
 router.get('/:id/state', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'not found' });
-  const s = stageById(l.stage || 'noanswer');
+  // Old databases carry pre-v21 stage names — map them onto the four-step process.
+  const { normalise } = require('../utils/leadTemplates');
+  const s = stageById(normalise(l.stage || 'call1'));
   const phase = s.phase;
   const nextPhase = Math.min(5, phase + 1);
   let quote = null;
@@ -124,6 +126,20 @@ router.get('/:id/state', (req, res) => {
     quote: quote ? { id: quote.id, number: quote.quote_number, status: quote.status } : null,
     chases, suggestCloseout: chases >= 2 && phase === 2,
   });
+});
+
+// Undo an accidental Skip ahead — moves the lead back one stage and restores its date.
+router.post('/:id/stepback', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const order = STAGES.map(s => s.id);
+  const cur = require('../utils/leadTemplates').normalise(l.stage || 'call1');
+  const i = order.indexOf(cur);
+  if (i <= 0) return res.status(400).json({ error: 'Already at the first step.' });
+  const prev = STAGES[i - 1];
+  db.prepare("UPDATE leads SET stage=?, next_followup=?, status=CASE WHEN status IN ('Won','Lost') THEN 'Contacted' ELSE status END, updated_at=datetime('now') WHERE id=?")
+    .run(prev.id, nextDueFrom(prev.id), l.id);
+  res.json({ ok: true, stage: prev.id, label: prev.label });
 });
 
 // Snooze — the client asked you to come back later.
@@ -156,9 +172,98 @@ router.put('/:id/stage', (req, res) => {
 });
 
 
+
+// ---- DOCUMENTATION (Step 3) --------------------------------------------------
+// Drawings live in OneDrive, not in this database — the tool records that they arrived,
+// how they came in, and the exact filename to save them under so the naming stays
+// consistent. Replying goes back down the channel they arrived on.
+function docFileName(l) {
+  const clean = s => String(s || '').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim();
+  return `${clean(l.name)} - ${clean(l.address || l.suburb)}.pdf`;
+}
+router.get('/:id/docs', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  let a = {}; try { a = JSON.parse(l.call_answers || '{}'); } catch (e) {}
+  const NAMES = { architectural: 'Architectural drawings', hydraulic: 'Hydraulic drawings',
+    da: 'DA consent', landscape: 'Landscape plan' };
+  const expected = (a.plans || []).filter(p => NAMES[p]).map(p => ({ key: p, label: NAMES[p] }));
+  let got = []; try { got = JSON.parse(l.docs_received || '[]'); } catch (e) {}
+  res.json({ expected, received: got, note: l.docs_note || '', channel: l.docs_channel || '',
+    fileName: docFileName(l), allIn: expected.length > 0 && expected.every(e => got.includes(e.key)),
+    fridays: CS.nextFridays(2) });
+});
+router.post('/:id/docs', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const got = Array.isArray(b.received) ? b.received : [];
+  db.prepare("UPDATE leads SET docs_received=?, docs_note=?, docs_channel=?, updated_at=datetime('now') WHERE id=?")
+    .run(JSON.stringify(got), b.note || '', b.channel || l.docs_channel || '', l.id);
+  // Everything in? Move to Step 3 and book the visit.
+  if (b.allIn) {
+    db.prepare("UPDATE leads SET stage='docsin', status='Contacted', next_followup=?, updated_at=datetime('now') WHERE id=?")
+      .run(nextDueFrom('docsin'), l.id);
+  }
+  db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, b.channel || 'note', 'docsin', null, null,
+    req.user ? (req.user.name || req.user.username) : '', 'logged',
+    `Drawings received: ${got.join(', ') || 'none'}${b.note ? ' — ' + b.note : ''}`);
+  res.json({ ok: true, fileName: docFileName(l) });
+});
+
+// Reply on the same channel the drawings arrived on, offering the next two Fridays.
+router.get('/:id/docs/reply', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const f = CS.nextFridays(2);
+  const first = String(l.name || 'there').trim().split(/\s+/)[0];
+  const me = settingGet('company_contact_name') || (req.user ? req.user.name || req.user.username : 'Smit');
+  const body = `Hi ${first},
+
+Thanks for sending the drawings through — I've got everything I need to come and take a look.
+
+Site visits are Fridays. I have ${f[0].label} or ${f[1].label} available. Which suits you better?
+
+It takes about half an hour and there's no cost. Once I've measured up I'll have the detailed quote across to you within 48 hours.
+
+Thanks,
+${me}
+${settingGet('company_phone') || ''}`;
+  res.json({ subject: 'Thanks for the drawings — booking your site visit', body,
+    channel: l.docs_channel || 'email', fridays: f });
+});
+
+// Client said no after hearing the ballpark. This needs a definite no, not a maybe.
+router.post('/:id/disqualify', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  if (!b.confirmed) return res.status(400).json({ error: 'Needs a definite no from the client before closing this out.' });
+  db.prepare("UPDATE leads SET stage='disqualified', status='Lost', next_followup=NULL, declined_reason=?, updated_at=datetime('now') WHERE id=?")
+    .run(b.reason || 'Client declined after ballpark', l.id);
+  if (l.quote_id) { try { db.prepare("UPDATE quotes SET link_off=1 WHERE id=?").run(l.quote_id); } catch (e) {} }
+  db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, 'note', 'disqualified', null, null,
+    req.user ? (req.user.name || req.user.username) : '', 'logged', 'Disqualified — ' + (b.reason || ''));
+  res.json({ ok: true });
+});
+
+// Lost / closed leads whose OneDrive folders can be cleared out.
+router.get('/cleanup/onedrive', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const rows = db.prepare("SELECT * FROM leads WHERE status='Lost' AND docs_received IS NOT NULL AND docs_received <> '[]'").all();
+  res.json(rows.map(l => ({ id: l.id, name: l.name, address: l.address, fileName: docFileName(l),
+    reason: l.declined_reason || 'closed', closedAt: l.updated_at })));
+});
+
 // ---- CALL SCRIPT -------------------------------------------------------------
 const CS = require('../utils/callScript');
 
+router.get('/sources', (req, res) => {
+  const { groups, REFERRAL } = require('../utils/sources');
+  res.json({ groups: groups(), referral: REFERRAL });
+});
 router.get('/call/script', (req, res) => {
   res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2) });
 });

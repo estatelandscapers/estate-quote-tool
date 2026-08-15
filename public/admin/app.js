@@ -104,7 +104,8 @@ async function leadsTab(v) {
         <br><span class="muted" style="font-size:11px;">Phase ${l.phase} · ${esc(l.stageLabel)} · <b>${esc(l.nextAction)}</b>${l.due ? ' · due ' + esc(l.due) : ''}${l.quoteNumber ? ' · quote ' + esc(l.quoteNumber) : ''}</span></div>
       <div style="display:flex;gap:6px;"><button class="btn btn-blue btn-sm" data-lopen="${l.id}">Open</button></div>
     </div>`;
-  v.innerHTML = `<div class="card">
+  v.innerHTML = `<div class="card"><h2>Figures</h2><div class="sub">All values exclude GST. Superseded revisions are not counted.</div><div class="rule"></div><div id="dashcards">Loading…</div></div>
+    <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <div><h2>What needs doing</h2><div class="sub">Clear this list and every enquiry has been chased properly today.</div></div>
         <button class="btn btn-blue" id="addLead">+ New enquiry</button></div>
@@ -128,8 +129,7 @@ async function leadsTab(v) {
       ${state.leadPhase ? '<div class="legend">Showing phase ' + state.leadPhase + ' only. <a href="#" id="clearPhase">Show all</a></div>' : ''}
     </div>
 
-    <div class="card"><h2>All enquiries</h2><div class="rule"></div><div id="leadTable"></div></div>
-    <div class="card"><h2>Figures</h2><div class="sub">All values exclude GST.</div><div class="rule"></div><div id="dashcards">Loading…</div></div>`;
+    <div class="card"><h2>All enquiries</h2><div class="rule"></div><div id="leadTable"></div></div>`;
 
   $('#addLead').addEventListener('click', () => editLead(null, v));
   v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen; leadConsole(v); }));
@@ -180,13 +180,34 @@ function editLead(l, v) {
       <div class="field"><label>Phone</label><input id="l_phone" value="${esc(l?.phone || '')}"></div>
       <div class="field"><label>Email</label><input id="l_email" value="${esc(l?.email || '')}"></div>
       <div class="field"><label>Site address</label><input id="l_address" value="${esc(l?.address || '')}"></div>
-      <div class="field"><label>Source</label><select id="l_source">${['Phone', 'Email', 'Website', 'Referral', 'Walk-in', 'Repeat client'].map(s => `<option ${l?.source === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+      <div class="field"><label>How did they find us?</label><div id="l_srcbox" class="muted" style="font-size:11px;">loading…</div>
+        <input id="l_source" type="hidden" value="${esc(l?.source || '')}">
+        <input id="l_srcother" placeholder="Other — type it" style="margin-top:7px;display:none;">
+        <input id="l_refby" placeholder="Who referred them?" style="margin-top:7px;display:none;" value="${esc(l?.referredBy || '')}"></div>
       <div class="field"><label>Status</label><select id="l_status">${LEAD_STATUS.map(s => `<option ${l?.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
     </div>
     <div class="field"><label>Notes — what they asked for</label><textarea id="l_notes" rows="3">${esc(l?.notes || '')}</textarea></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="l_cancel">Cancel</button><button class="btn btn-blue" id="l_save">Save</button></div></div>`;
   document.body.appendChild(bg);
   $('#l_cancel').addEventListener('click', () => bg.remove());
+  // Source picker — grouped buttons, learns anything typed into Other.
+  api('/leads/sources').then(sd => {
+    const cur = $('#l_source').value;
+    $('#l_srcbox').innerHTML = (sd.groups || []).map(g => `<div style="margin-bottom:6px;">
+      <div class="alab">${esc(g.g)}</div><div class="chips">${g.o.map(o => `<button class="cchip ${cur === o ? 'on' : ''}" data-src="${esc(o)}">${esc(o)}</button>`).join('')}</div></div>`).join('')
+      + `<div class="chips"><button class="cchip ${cur && !(sd.groups || []).some(g => g.o.includes(cur)) ? 'on' : ''}" data-src="__other">Other — type it</button></div>`;
+    const sync = () => {
+      const val = $('#l_source').value;
+      $('#l_refby').style.display = (sd.referral || []).includes(val) ? '' : 'none';
+      $('#l_srcother').style.display = val === '__other' ? '' : 'none';
+    };
+    $('#l_srcbox').querySelectorAll('[data-src]').forEach(b => b.addEventListener('click', () => {
+      $('#l_source').value = b.dataset.src;
+      $('#l_srcbox').querySelectorAll('[data-src]').forEach(x => x.classList.remove('on'));
+      b.classList.add('on'); sync();
+    }));
+    sync();
+  });
   $('#l_save').addEventListener('click', async () => {
     const body = { name: $('#l_name').value, phone: $('#l_phone').value, email: $('#l_email').value,
       address: $('#l_address').value, source: $('#l_source').value, status: $('#l_status').value, notes: $('#l_notes').value };
@@ -685,11 +706,12 @@ async function leadConsole(v) {
         ${st.suggestCloseout ? '<div style="font-size:11.5px;color:#f3d9a0;margin-top:7px;">Two follow-ups sent with no reply — worth closing this one out.</div>' : ''}
       </div>
       <div>
-        <button class="btn btn-blue btn-big" id="ld_call" style="width:100%;margin-bottom:9px;">📞 Start the call</button>
+        <button class="btn btn-blue btn-big" id="ld_call" style="width:100%;margin-bottom:9px;">📞 Discovery Call Script</button>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="ld_snooze">😴 Snooze 3 days</button>
           <button class="btn btn-ghost btn-sm" id="ld_close">✕ Close this enquiry</button>
-          ${st.phase < 4 ? '<button class="btn btn-ghost btn-sm" id="ld_skip">⏭ Skip ahead</button>' : ''}
+          <button class="btn btn-ghost btn-big" id="ld_stepback">← Step back</button>
+          ${st.phase < 4 ? '<button class="btn btn-ghost btn-big" id="ld_skip">⏭ Skip ahead</button>' : ''}
         </div>
         <div class="legend">Skipping, snoozing and closing are always available — the steps guide you, they don't trap you.</div>
       </div>
@@ -713,6 +735,7 @@ async function leadConsole(v) {
           ${stages.filter(s => s.group === g).map(s => `<span class="step ${s.id === stage ? 'on' : ''}" data-stage="${s.id}" title="${esc(s.when)}">${esc(s.label)}</span>`).join('')}</div>`).join('')}
       </div>
     </div>
+    <div id="docsPanel"></div>
     <div class="rule" style="margin-top:14px;"></div>
     <div class="grid2">
       <div>
@@ -769,6 +792,11 @@ async function leadConsole(v) {
     await api(`/leads/${l.id}/stage`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: 'closeout' }) });
     toast('Enquiry closed'); state.leadId = null; leadsTab(v);
   });
+  const sb = $('#ld_stepback'); if (sb) sb.addEventListener('click', async () => {
+    const r = await api(`/leads/${l.id}/stepback`, { method: 'POST' });
+    if (r.error) return toast(r.error);
+    toast('Moved back to ' + r.label); leadConsole(v);
+  });
   const skip = $('#ld_skip'); if (skip) skip.addEventListener('click', async () => {
     const target = st.phase === 1 ? 'details' : st.phase === 2 ? 'propose' : 'aftervisit';
     await api(`/leads/${l.id}/stage`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: target }) });
@@ -776,6 +804,40 @@ async function leadConsole(v) {
   });
   v.querySelectorAll('[data-stage]').forEach(b => b.addEventListener('click', () => { state.leadStage = b.dataset.stage; loadMsg(); paintStage(b.dataset.stage); }));
   function paintStage(id) { v.querySelectorAll('[data-stage]').forEach(x => x.classList.toggle('on', x.dataset.stage === id)); }
+
+  // Documents panel — only once the discovery call has happened.
+  if (st.phase >= 2 && st.phase <= 3) {
+    const dd = await api(`/leads/${l.id}/docs`);
+    $('#docsPanel').innerHTML = `<div class="card" style="margin:12px 0 0;padding:14px;">
+      <h2>Step 3 — Documentation</h2>
+      <div class="sub">Save to OneDrive as <b>${esc(dd.fileName)}</b> — same naming as your existing files.</div>
+      <div class="rule"></div>
+      ${dd.expected.length ? dd.expected.map(e => `<label class="checkrow"><input type="checkbox" data-doc="${e.key}" ${dd.received.includes(e.key) ? 'checked' : ''} style="width:auto;"> ${esc(e.label)}</label>`).join('')
+        : '<p class="muted">The client said they have no drawings. You can still book the visit.</p>'}
+      <div class="field" style="margin-top:9px;"><label>How did they arrive?</label>
+        <select id="doc_ch"><option value="">—</option><option value="email" ${dd.channel === 'email' ? 'selected' : ''}>Email</option>
+        <option value="whatsapp" ${dd.channel === 'whatsapp' ? 'selected' : ''}>WhatsApp</option></select></div>
+      <div class="field"><label>Note</label><input id="doc_note" value="${esc(dd.note || '')}" placeholder="e.g. hydraulic still to come"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-ghost" id="doc_save">Save</button>
+        <button class="btn btn-blue" id="doc_all" ${dd.expected.length && !dd.allIn ? '' : ''}>All drawings in — reply &amp; book the Friday</button>
+      </div></div>`;
+    const collect = () => [...document.querySelectorAll('[data-doc]')].filter(c => c.checked).map(c => c.dataset.doc);
+    $('#doc_save').addEventListener('click', async () => {
+      await api(`/leads/${l.id}/docs`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ received: collect(), channel: $('#doc_ch').value, note: $('#doc_note').value }) });
+      toast('Saved'); leadConsole(v);
+    });
+    $('#doc_all').addEventListener('click', async () => {
+      await api(`/leads/${l.id}/docs`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ received: collect(), channel: $('#doc_ch').value, note: $('#doc_note').value, allIn: true }) });
+      const rep = await api(`/leads/${l.id}/docs/reply`);
+      state.leadStage = 'docsin';
+      leadConsole(v).then(() => {
+        setTimeout(() => { const b = $('#ms_body'); if (b) { b.value = rep.body; const s = $('#ms_subject'); if (s) s.value = rep.subject; toast('Reply ready — offering the next two Fridays'); } }, 300);
+      });
+    });
+  }
 
   let msg = {};
   async function loadMsg() {
@@ -947,6 +1009,7 @@ async function quoteEditor(v) {
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      ${isAdmin() ? `<button class="btn btn-ghost" id="linkTog">${q.linkOff ? '🔒 Link is OFF — turn on' : 'Turn link off'}</button>` : ''}
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
         : `<button class="btn btn-ghost" id="lostQuote">Mark lost</button>`) : ''}
@@ -954,6 +1017,8 @@ async function quoteEditor(v) {
       <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
     </div>
     <div class="rule"></div>
+    ${q.linkOff && !q.lostAt ? `<div class="emailbar failed" style="background:#FFF8E8;border-color:#EAD9AC;color:#7a5e1a;">
+      <b>The client link is switched off</b><br><span style="font-size:11px;">Anyone opening it sees a "please call us" page instead of the price. The quote is unchanged — turn it back on any time.</span></div>` : ''}
     ${q.lostAt ? `<div class="emailbar failed" style="background:#F6F6F6;border-color:#DDD;color:#666;">
       <b>This quote is marked as LOST</b>${q.lostReason ? ` — ${esc(q.lostReason)}` : ''}
       <br><span style="font-size:11px;">Hidden from the quotes list and can't be sent. Everything is kept — press Reopen to bring it back.</span></div>` : ''}
@@ -1125,6 +1190,10 @@ async function quoteEditor(v) {
   $('#segPkg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPkg').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave().then(reload); }));
   $('#segPay').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { $('#segPay').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); autosave(); }));
 
+  const lt = $('#linkTog'); if (lt) lt.addEventListener('click', async () => {
+    const r = await api('/quotes/' + q.id + '/link', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: !!q.linkOff }) });
+    toast(r.linkOff ? 'Link off — client sees "call us"' : 'Link back on'); reload();
+  });
   const lq = $('#lostQuote'); if (lq) lq.addEventListener('click', () => markLost(q.id, () => { state.quoteId = null; state.tab = 'quotes'; shell(); }));
   const rq = $('#reopenQuote'); if (rq) rq.addEventListener('click', async () => {
     await api('/quotes/' + q.id + '/lost', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lost: false }) });
@@ -1618,7 +1687,19 @@ async function vendorsTab(v) {
     });
     // Compliance fields only make sense for subcontractors — show them as you tick.
     $('#v_sub').addEventListener('change', e => { $('#compliance').style.display = e.target.checked ? '' : 'none'; });
-    const gc = $('#v_gocosts'); if (gc) gc.addEventListener('click', () => { state.tab = 'materials'; state.matCat = 'material'; shell(); });
+    const md = $('#m_del'); if (md) md.addEventListener('click', async () => {
+    const u = await api('/materials/' + id + '/usage');
+    if (u.count) {
+      const go = confirm(`This item is used in ${u.count} recipe(s):\n\n${u.usedIn.join('\n')}\n\nDeleting it changes what those recipes cost.\n\nOK = delete anyway.\nCancel = keep it (you can retire it instead).`);
+      if (!go) return;
+      await api('/materials/' + id + '?force=1', { method: 'DELETE' });
+    } else {
+      if (!confirm('Delete this item? It is not used in any recipe.')) return;
+      await api('/materials/' + id, { method: 'DELETE' });
+    }
+    toast('Deleted'); $('#matDetail').innerHTML = ''; materialsTab(v);
+  });
+  const gc = $('#v_gocosts'); if (gc) gc.addEventListener('click', () => { state.tab = 'materials'; state.matCat = 'material'; shell(); });
     $('#vDetail').scrollIntoView({ behavior: 'smooth' });
   }
 }
@@ -1751,7 +1832,10 @@ async function materialsTab(v) {
   v.querySelectorAll('[data-em]').forEach(b => b.addEventListener('click', () => openMat(b.dataset.em)));
   async function openMat(id) {
     const all = await api('/materials'); const m = all.find(x => x.id === id); if (!m) return;
-    $('#matDetail').innerHTML = `<div class="card"><h2>${esc(m.code)} — ${esc(m.name)}</h2><div class="rule"></div>
+    $('#matDetail').innerHTML = `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <h2>${esc(m.code)} — ${esc(m.name)}</h2>
+        <button class="btn btn-danger btn-sm" id="m_del">Delete this item</button></div><div class="rule"></div>
       <div class="grid4">
         <div class="field"><label>Name</label><input id="m_name" value="${esc(m.name)}"></div>
         <div class="field"><label>Unit</label><input id="m_unit" value="${esc(m.unit || '')}"></div>
@@ -2071,10 +2155,17 @@ async function pricingSheet(v) {
       <td data-l="Basic" class="right">${money((p.tiers && p.tiers.Basic) ? p.tiers.Basic.sell : 0)}</td>
       <td data-l="Standard" class="right">${money((p.tiers && p.tiers.Standard) ? p.tiers.Standard.sell : 0)}</td>
       <td data-l="Premium" class="right">${money((p.tiers && p.tiers.Premium) ? p.tiers.Premium.sell : 0)}</td>
-      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}
+      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-mv="up|${p.id}" title="Move up">↑</button>
+        <button class="btn btn-ghost btn-sm" data-mv="down|${p.id}" title="Move down">↓</button>
+        <button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}
     </tbody></table>`;
   const ap = $('#addPi'); if (ap) ap.addEventListener('click', () => editPriceItem(null, v));
   body.querySelectorAll('[data-pi]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(x => x.id === b.dataset.pi), v)));
+  body.querySelectorAll('[data-mv]').forEach(b => b.addEventListener('click', async () => {
+    const [dir, id] = b.dataset.mv.split('|');
+    await api('/price-list/' + id + '/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }) });
+    pricingSheet(v);
+  }));
 }
 function editPriceItem(item, v) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';

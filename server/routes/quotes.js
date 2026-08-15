@@ -100,7 +100,7 @@ function fullQuote(q) {
     updatedAt: q.updated_at, createdAt: q.created_at,
     customerTier: q.customer_tier || 'Silver', crewSize: q.crew_size || 2,
     siteplanNa: !!q.siteplan_na, surchargesNa: !!q.surcharges_na,
-    rev: q.rev_no || 0,
+    rev: q.rev_no || 0, linkOff: !!q.link_off,
     emailStatus: q.email_status || null, emailDetail: q.email_detail || null,
     ...viewStats(q.id),
     sentAt: q.sent_at || null, sentTo: q.sent_to || null, sentBy: q.sent_by || null, sendCount: q.send_count || 0,
@@ -174,11 +174,11 @@ router.put('/:id/lost', (req, res) => {
   if (!q) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
   if (b.lost === false) {
-    db.prepare("UPDATE quotes SET lost_at=NULL, lost_reason=NULL, updated_at=datetime('now') WHERE id=?").run(q.id);
+    db.prepare("UPDATE quotes SET lost_at=NULL, lost_reason=NULL, link_off=0, updated_at=datetime('now') WHERE id=?").run(q.id);
     return res.json({ ok: true, lost: false });
   }
   if (q.status === 'accepted') return res.status(400).json({ error: 'That quote has been accepted and signed — it can\'t be marked lost.' });
-  db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, updated_at=datetime('now') WHERE id=?")
+  db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, link_off=1, updated_at=datetime('now') WHERE id=?")
     .run(String(b.reason || '').slice(0, 200), q.id);
   // Keep the lead in step, if this quote came from one.
   if (q.lead_id) { try { db.prepare("UPDATE leads SET status='Lost', stage='lost', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(q.lead_id); } catch (e) {} }
@@ -344,6 +344,15 @@ router.put('/:id/surcharges/:index', (req, res) => {
   if (applied[i].mode === 'whole') { delete applied[i].lines; delete applied[i].basis; }
   db.prepare("UPDATE quotes SET applied_surcharges=?, updated_at=datetime('now') WHERE id=?").run(JSON.stringify(applied), q.id);
   res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id)));
+});
+
+// Switch the client link off (and back on). Used when a client won't answer — they get
+// a "please call us" page instead of the price.
+router.put('/:id/link', (req, res) => {
+  if (!req.user) return res.status(403).json({ error: 'sign in required' });
+  const on = (req.body || {}).on !== false;
+  db.prepare("UPDATE quotes SET link_off=?, updated_at=datetime('now') WHERE id=?").run(on ? 0 : 1, req.params.id);
+  res.json({ ok: true, linkOff: !on });
 });
 
 // ---- Renumbering -------------------------------------------------------------

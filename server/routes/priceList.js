@@ -66,4 +66,23 @@ router.put('/surcharges/:id', (req, res) => {
 });
 router.delete('/surcharges/:id', (req, res) => { db.prepare('DELETE FROM surcharges WHERE id=?').run(req.params.id); res.status(204).end(); });
 
+// Order flows through to the quote builder, client link and contract.
+router.put('/reorder', (req, res) => {
+  const ids = (req.body || {}).ids || [];
+  const up = db.prepare('UPDATE price_items SET sort_order=? WHERE id=?');
+  ids.forEach((id, i) => up.run(i + 1, id));
+  res.json({ ok: true, count: ids.length });
+});
+router.post('/:id/move', (req, res) => {
+  const dir = (req.body || {}).dir === 'up' ? -1 : 1;
+  const all = db.prepare('SELECT id, sort_order FROM price_items ORDER BY sort_order, code').all();
+  const i = all.findIndex(x => x.id === req.params.id);
+  if (i < 0) return res.status(404).json({ error: 'not found' });
+  const j = i + dir;
+  if (j < 0 || j >= all.length) return res.json({ ok: true, moved: false });
+  const up = db.prepare('UPDATE price_items SET sort_order=? WHERE id=?');
+  all.forEach((x, k) => up.run(k + 1, x.id));
+  up.run(j + 1, all[i].id); up.run(i + 1, all[j].id);
+  res.json({ ok: true, moved: true });
+});
 module.exports = router;

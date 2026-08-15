@@ -61,10 +61,18 @@ router.put('/:id', (req, res) => {
       b.monthlyCost !== undefined ? b.monthlyCost : m.monthly_cost, m.id);
   res.json({ ok: true });
 });
+// Deleting a material used in recipes silently changes what every quote built from
+// those recipes costs — so say so, and let the user decide.
 router.delete('/:id', (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
   const used = usedIn(req.params.id);
-  if (used.length) return res.status(400).json({ error: 'in use by recipe(s): ' + used.join(', ') });
-  db.prepare('DELETE FROM materials WHERE id=?').run(req.params.id); res.status(204).end();
+  if (used.length && !req.query.force) {
+    return res.status(409).json({ error: 'in use', usedCount: used.length, usedIn: used,
+      hint: 'Retire it instead, or pass force=1 to delete anyway.' });
+  }
+  db.prepare('DELETE FROM material_vendors WHERE material_id=?').run(req.params.id);
+  db.prepare('DELETE FROM materials WHERE id=?').run(req.params.id);
+  res.status(204).end();
 });
 // vendor pricing for a material
 router.post('/:id/vendors', (req, res) => {

@@ -53,7 +53,8 @@ const STEPS = [
     say: "When's handover?",
     type: 'single', key: 'handover',
     options: [{ v: 'done', label: 'Already handed over' }, { v: '1m', label: 'Within a month' },
-              { v: '1-3m', label: '1–3 months' }, { v: '3-6m', label: '3–6 months' }, { v: 'unknown', label: 'Not sure yet' }] },
+              { v: '1-3m', label: '1–3 months' }, { v: '3-6m', label: '3–6 months' },
+              { v: '6m+', label: 'More than 6 months' }, { v: 'unknown', label: 'Not sure yet' }] },
 
   { id: 'start', section: 'Property', title: 'When on site', showIf: { propertyType: ['new'] },
     say: "And when would you want us on site?",

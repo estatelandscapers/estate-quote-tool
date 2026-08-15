@@ -4,6 +4,38 @@ const { db, settingGet } = require('../db');
 const { newId } = require('../utils/ids');
 const { TIERS, resolveItem, lineTotal, surchargeAmount, surchargeList } = require('../utils/pricing');
 const { costQuote: cq2 } = require('../utils/costing');
+
+// What sets Estate apart — shown on the client link above the price.
+function credentials() {
+  return {
+    projects: settingGet('projects_delivered') || '300+',
+    stars: settingGet('rating_stars') || '5.0',
+    ratingSource: settingGet('rating_source') || 'Google',
+    ratingCount: settingGet('rating_count') || '',
+    licence: settingGet('company_lic') || '',
+    association: settingGet('association_line') || '',
+  };
+}
+const ESTATE_STANDARD = [
+  { n: '01', title: 'Clear scope. Clear pricing.',
+    body: 'A cheaper quote becomes an expensive project when works are excluded, underestimated or left unclear. You see what is included, what is excluded and what has been assumed — before construction begins.',
+    commit: 'Transparency from quotation to completion.' },
+  { n: '02', title: 'Precision from the ground up',
+    body: 'Levels, drainage, excavation, compaction, reinforcement and soil preparation decide how a landscape performs years later — not the finish you see on handover day.',
+    commit: 'Build it properly, not just beautifully.' },
+  { n: '03', title: 'Quality without shortcuts',
+    body: 'Straight lines. Correct levels. Clean finishes. Proper preparation. We would rather address something during construction than leave it for you to discover later.',
+    commit: 'Quality is part of the process, not inspected in at the end.' },
+  { n: '04', title: 'Professional project management',
+    body: 'Earthworks, retaining, drainage, concrete, paving, fencing, turf and planting — coordinated by one organised team, so you deal with us rather than managing numerous trades.',
+    commit: 'We manage the project so you don\'t have to manage us.' },
+  { n: '05', title: 'Compliance & construction confidence',
+    body: 'We treat landscaping as a construction service. Where drawings, engineering, approvals or certification are required, we identify them and bring in the right professionals.',
+    commit: 'If something needs doing properly, we plan for it properly.' },
+  { n: '06', title: 'We stand behind our work',
+    body: 'We review the completed works with you, hand over care and maintenance information, and address any legitimate workmanship issue professionally.',
+    commit: 'Proud of the project years later, not just on handover day.' },
+];
 const { sendMail } = require('../utils/email');
 const { buildSignedPdf } = require('../utils/signedPdf');
 const { costQuote } = require('../utils/costing');
@@ -55,6 +87,7 @@ function clientView(q) {
     paymentScheduleText: settingGet(q.payment_schedule === 'small' ? 'pay_sched_small' : 'pay_sched_standard'),
     siteNotes: q.site_notes, hasSiteplan: !!q.siteplan_data,
     surcharges: surchargeList(applied).map(s => ({ code: s.code, name: s.name, kind: s.kind, rate: s.rate })),
+    credentials: credentials(), estateStandard: ESTATE_STANDARD,
     surchargePerTier: surPerTier,
     scope1, scope2, tierTotals, scope2Total: s2,
     company: {
@@ -72,9 +105,20 @@ function clientView(q) {
   };
 }
 
+// The quote can be switched off without being deleted — the client gets a "call us"
+// page instead of the price, and the same link works again when it's switched back on.
 router.get('/:token', (req, res) => {
   const q = getQ(req.params.token);
   if (!q) return res.status(404).json({ error: 'Quote not found' });
+  // Switched off: the client gets a "call us" page, never the price. The quote itself
+  // is untouched and the same link works again the moment it's switched back on.
+  if (q.link_off) {
+    return res.json({ linkOff: true, clientName: q.client_name, quoteNumber: q.quote_number,
+      company: { name: settingGet('company_name'), phone: settingGet('company_phone'),
+        email: settingGet('company_email'), tagline: settingGet('tagline') },
+      message: settingGet('link_off_message') || '',
+      credentials: credentials() });
+  }
   res.json(clientView(q));
 });
 
