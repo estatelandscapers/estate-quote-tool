@@ -104,7 +104,7 @@ async function leadsTab(v) {
         <br><span class="muted" style="font-size:11px;">Phase ${l.phase} · ${esc(l.stageLabel)} · <b>${esc(l.nextAction)}</b>${l.due ? ' · due ' + esc(l.due) : ''}${l.quoteNumber ? ' · quote ' + esc(l.quoteNumber) : ''}</span></div>
       <div style="display:flex;gap:6px;"><button class="btn btn-blue btn-sm" data-lopen="${l.id}">Open</button></div>
     </div>`;
-  v.innerHTML = `<div class="card"><h2>Figures</h2><div class="sub">All values exclude GST. Superseded revisions are not counted.</div><div class="rule"></div><div id="dashcards">Loading…</div></div>
+  v.innerHTML = `<div id="ingestBar"></div><div class="card"><h2>Figures</h2><div class="sub">All values exclude GST. Superseded revisions are not counted.</div><div class="rule"></div><div id="dashcards">Loading…</div></div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <div><h2>What needs doing</h2><div class="sub">Clear this list and every enquiry has been chased properly today.</div></div>
@@ -131,6 +131,24 @@ async function leadsTab(v) {
 
     <div class="card"><h2>All enquiries</h2><div class="rule"></div><div id="leadTable"></div></div>`;
 
+  // Mailbox status — only shown to admin, and only when there's something to say.
+  if (isAdmin()) api('/leads/ingest/status').then(st => {
+    const bar = $('#ingestBar'); if (!bar) return;
+    // Deliberately silent when no mailbox is connected — adding leads by hand is a
+    // perfectly good way to work, and a permanent banner nagging about an optional
+    // feature is just noise. The setting is still there in Editor when it's wanted.
+    if (!st.configured) { bar.innerHTML = ''; return; }
+    bar.innerHTML = `<div class="emailbar sent" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <span><b>Mailbox connected</b> — ${esc(st.user)} · checked every ${st.pollMinutes} min</span>
+      ${st.needsReview ? `<span class="tag age-flag">${st.needsReview} enquiry needs checking</span>` : ''}
+      <button class="btn btn-ghost btn-sm" id="ingNow" style="margin-left:auto;">Check now</button></div>`;
+    const b = $('#ingNow'); if (b) b.addEventListener('click', async () => {
+      b.textContent = 'Checking…'; b.disabled = true;
+      const r = await api('/leads/ingest/run', { method: 'POST' });
+      toast(r.ok ? `${r.created} new enquir${r.created === 1 ? 'y' : 'ies'}` : (r.reason || 'Could not read the mailbox'));
+      leadsTab(v);
+    });
+  }).catch(() => {});
   $('#addLead').addEventListener('click', () => editLead(null, v));
   v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen; leadConsole(v); }));
   v.querySelectorAll('[data-phase]').forEach(b => b.addEventListener('click', () => {

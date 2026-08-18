@@ -69,7 +69,7 @@ app.get('/api/backup', (req, res) => {
 
 // One-off cleanup: drop site plan copies that are duplicated from the quote, then
 // VACUUM to actually give the space back. Safe to run any time.
-app.post('/api/maintenance/compact', (req, res) => {
+app.post('/api/maintenance/compact', async (req, res) => {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
   const admin = req.user && req.user.role === 'admin';
   if (!admin && (req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
@@ -85,12 +85,20 @@ app.post('/api/maintenance/compact', (req, res) => {
     const clr = liveDb.prepare('UPDATE purchase_orders SET siteplan_data=NULL, siteplan_mime=NULL WHERE id=?');
     dupes.forEach(r => { clr.run(r.id); freedRows++; });
   } catch (e) { console.error('[compact]', e.message); }
+  // Compress every image already stored, then reclaim the space.
+  let img = null;
+  try { img = await require('./utils/images').compressExisting({ db: liveDb }); }
+  catch (e) { console.error('[compact] image pass failed:', e.message); }
   try { liveDb.exec('VACUUM'); } catch (e) { console.error('[compact] vacuum', e.message); }
   const after = (() => { try { return fsc.statSync(dbPath).size; } catch (e) { return 0; } })();
   console.log(`[compact] cleared ${freedRows} duplicate site plan(s); ${Math.round(before / 1048576)}MB -> ${Math.round(after / 1048576)}MB`);
   res.json({ ok: true, duplicatesCleared: freedRows,
+    imagesCompressed: img ? img.rows - img.skipped : 0,
+    imageSavingMB: img ? img.savedMB : 0,
     beforeMB: Math.round(before / 104857.6) / 10, afterMB: Math.round(after / 104857.6) / 10 });
 });
+
+app.get('/api/maintenance/compact', (req, res, next) => { req.method = 'POST'; next(); });
 
 // Lightweight check for the backup script: confirms the key works and reports size,
 // so a scheduled task can verify without downloading the whole database.
@@ -167,6 +175,9 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// Watch the enquiry mailbox, if one is configured.
+try { require('./utils/mailIngest').startPolling(); } catch (e) { console.error('[mail] not started:', e.message); }
+
 app.listen(PORT, () => {
   console.log(`Estate Landscapers quote tool running on http://localhost:${PORT}`);
   console.log(`  Admin:  http://localhost:${PORT}/admin`);

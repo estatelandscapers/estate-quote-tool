@@ -1,7 +1,7 @@
 const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId, newToken } = require('../utils/ids');
-const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeBase, surchargeGaps, surchargeList } = require('../utils/pricing');
+const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, lineDisplay, surchargeAmount, surchargeBase, surchargeGaps, surchargeList } = require('../utils/pricing');
 const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
@@ -17,7 +17,8 @@ function computeQuote(q) {
   items.forEach(it => {
     const pi = getPI(it.price_item_id);
     const perTier = {};
-    TIERS.forEach(t => { const r = resolveItem(it, pi, t); perTier[t] = { spec: r.spec, rate: r.rate, total: lineTotal(it, r, t) }; });
+    TIERS.forEach(t => { const r = resolveItem(it, pi, t); const disp = lineDisplay(it, r, t);
+      perTier[t] = { spec: r.spec, rate: r.rate, total: lineTotal(it, r, t), shownPrice: disp.shownPrice, inTotal: disp.inTotal, label: disp.label }; });
     const eff = it.tier_override || q.default_package;
     const rEff = resolveItem(it, pi, eff);
     const row = {
@@ -25,7 +26,10 @@ function computeQuote(q) {
       qty: it.qty, behaviour: rEff.behaviour, tierOverride: it.tier_override,
       method: it.method || null, subDays: it.sub_days, wastageOverride: it.wastage_override,
       description: it.desc_override || (pi ? pi.description : '') || it.custom_desc || '', descIsCustom: !!it.desc_override,
-      valueOverride: !!it.value_override,
+      valueOverride: !!it.value_override, valueLump: !!it.value_lump,
+      instanceNo: it.instance_no || 1, locationNote: it.location_note || '',
+      displayCode: (it.instance_no && it.instance_no > 1) || hasSiblings(q.id, it)
+        ? `${it.custom_code || (pi ? pi.code : '')}-${it.instance_no || 1}` : (it.custom_code || (pi ? pi.code : '')),
       value: { Basic: it.val_basic, Standard: it.val_standard, Premium: it.val_premium },
       lineCost: { Basic: it.cost_basic, Standard: it.cost_standard, Premium: it.cost_premium },
       isCustom: !it.price_item_id,
@@ -86,6 +90,12 @@ function viewStats(quoteId) {
   const first = client[0];
   return { clientViews: counted, clientVisitors: seen.size, internalViews: internal,
     legacyViews: legacy, firstViewedAt: first ? first.created_at : null };
+}
+// Is this deliverable on the quote more than once? If so its code is shown as RW-1, RW-2.
+function hasSiblings(quoteId, it) {
+  if (!it.price_item_id) return false;
+  return db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?')
+    .get(quoteId, it.price_item_id).n > 1;
 }
 function fullQuote(q) {
   const c = computeQuote(q);
@@ -455,9 +465,18 @@ router.delete('/:id', (req, res) => {
   res.status(204).end();
 });
 
-router.post('/:id/siteplan', (req, res) => {
+router.post('/:id/siteplan', async (req, res) => {
   const { data, mime } = req.body || {};
-  db.prepare("UPDATE quotes SET siteplan_data=?, siteplan_mime=?, updated_at=datetime('now') WHERE id=?").run(data || null, mime || null, req.params.id);
+  // Compress before storing — a raw phone photo is 4-8 MB and would sit in the database
+  // (and in every backup) forever.
+  let store = data || null, storeMime = mime || null;
+  if (data) {
+    const { compressBase64 } = require('../utils/images');
+    const r = await compressBase64(data, mime);
+    store = r.data; storeMime = r.mime;
+    if (!r.skipped) console.log(`[img] site plan ${Math.round(r.before / 1024)}KB -> ${Math.round(r.after / 1024)}KB`);
+  }
+  db.prepare("UPDATE quotes SET siteplan_data=?, siteplan_mime=?, updated_at=datetime('now') WHERE id=?").run(store, storeMime, req.params.id);
   res.json({ ok: true });
 });
 
@@ -533,6 +552,11 @@ router.post('/:id/items', (req, res) => {
       (b.cost || {}).Basic ?? null, (b.cost || {}).Standard ?? null, (b.cost || {}).Premium ?? null,
       1, b.saveToPricing === false ? 'declined' : 'pending', id);
   }
+  // Same deliverable already on the quote? Number this one so RW-1 / RW-2 read clearly.
+  if (b.priceItemId) {
+    const n = db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?').get(req.params.id, b.priceItemId).n;
+    db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?').run(n, b.locationNote || '', id);
+  }
   res.status(201).json({ id, code: db.prepare('SELECT custom_code c FROM quote_items WHERE id=?').get(id).c });
 });
 router.put('/:id/items/:itemId', (req, res) => {
@@ -569,6 +593,8 @@ router.put('/:id/items/:itemId', (req, res) => {
     const [key, col] = pair.split(':');
     if (b[key] !== undefined) db.prepare(`UPDATE quote_items SET ${col}=? WHERE id=?`).run(b[key], req.params.itemId);
   });
+  if (b.locationNote !== undefined) db.prepare('UPDATE quote_items SET location_note=? WHERE id=?').run(b.locationNote, req.params.itemId);
+  if (b.valueLump !== undefined) db.prepare('UPDATE quote_items SET value_lump=? WHERE id=?').run(b.valueLump ? 1 : 0, req.params.itemId);
   if (b.customTiered !== undefined)
     db.prepare('UPDATE quote_items SET custom_tiered=? WHERE id=?').run(b.customTiered ? 1 : 0, req.params.itemId);
   res.json({ ok: true });

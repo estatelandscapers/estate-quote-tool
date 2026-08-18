@@ -84,9 +84,10 @@ router.get('/board', (req, res) => {
   const weekEnd = wk.toISOString().slice(0, 10);
   const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') ORDER BY next_followup").all();
   const decorate = l => {
-    const s = stageById(require('../utils/leadTemplates').normalise(l.stage || 'call1'));
     let quote = null;
     if (l.quote_id) quote = db.prepare('SELECT quote_number, status FROM quotes WHERE id=?').get(l.quote_id);
+    let docs = []; try { docs = JSON.parse(l.docs_received || '[]'); } catch (e) {}
+    const s = stageById(require('../utils/leadTemplates').derivedStage(l, quote, docs.length > 0));
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '',
       phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase,
       nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup,
@@ -99,7 +100,12 @@ router.get('/board', (req, res) => {
   // How many enquiries sit in each phase
   const phaseCounts = {};
   PHASES.forEach(p => phaseCounts[p.id] = 0);
-  rows.forEach(l => { const p = phaseOf(l.stage || 'noanswer'); phaseCounts[p] = (phaseCounts[p] || 0) + 1; });
+  rows.forEach(l => {
+    const q = l.quote_id ? db.prepare('SELECT status FROM quotes WHERE id=?').get(l.quote_id) : null;
+    let d = []; try { d = JSON.parse(l.docs_received || '[]'); } catch (e) {}
+    const p = phaseOf(require('../utils/leadTemplates').derivedStage(l, q, d.length > 0));
+    phaseCounts[p] = (phaseCounts[p] || 0) + 1;
+  });
   res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES });
 });
 
@@ -108,12 +114,13 @@ router.get('/:id/state', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'not found' });
   // Old databases carry pre-v21 stage names — map them onto the four-step process.
-  const { normalise } = require('../utils/leadTemplates');
-  const s = stageById(normalise(l.stage || 'call1'));
+  const { derivedStage } = require('../utils/leadTemplates');
+  let quoteRow = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
+  let docsList = []; try { docsList = JSON.parse(l.docs_received || '[]'); } catch (e) {}
+  const s = stageById(derivedStage(l, quoteRow, docsList.length > 0));
   const phase = s.phase;
   const nextPhase = Math.min(5, phase + 1);
-  let quote = null;
-  if (l.quote_id) quote = db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id);
+  const quote = quoteRow;
   const today = new Date().toISOString().slice(0, 10);
   // How many chasing messages have gone out at this phase without a reply
   const chases = db.prepare("SELECT COUNT(*) c FROM lead_messages WHERE lead_id=? AND stage IN ('follow1','follow2')").get(l.id).c;
@@ -172,6 +179,115 @@ router.put('/:id/stage', (req, res) => {
 });
 
 
+
+
+// ---- SITE VISIT CALENDAR -----------------------------------------------------
+// Standalone — no Google or Outlook connection. Fridays are the default visit day but
+// any date can be booked.
+const SLOTS = ['7:30am', '9:00am', '10:30am', '12:00pm', '1:30pm', '3:00pm'];
+
+router.get('/calendar', (req, res) => {
+  const from = req.query.from || new Date().toISOString().slice(0, 8) + '01';
+  const to = req.query.to || (() => { const d = new Date(from); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10); })();
+  const rows = db.prepare(`SELECT v.*, l.name, l.suburb, l.address, l.phone, q.quote_number
+    FROM site_visits v LEFT JOIN leads l ON l.id=v.lead_id LEFT JOIN quotes q ON q.id=v.quote_id
+    WHERE v.visit_date >= ? AND v.visit_date < ? AND v.status <> 'cancelled'
+    ORDER BY v.visit_date, v.visit_time`).all(from, to);
+  res.json({ from, to, slots: SLOTS,
+    visits: rows.map(v => ({ id: v.id, leadId: v.lead_id, date: v.visit_date, time: v.visit_time,
+      status: v.status, name: v.name, suburb: v.suburb || v.address || '', phone: v.phone,
+      quoteNumber: v.quote_number, note: v.note, bookedBy: v.booked_by })) });
+});
+
+router.post('/calendar/book', (req, res) => {
+  const b = req.body || {};
+  if (!b.leadId || !b.date) return res.status(400).json({ error: 'Pick a lead and a date' });
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(b.leadId);
+  if (!l) return res.status(404).json({ error: 'lead not found' });
+  const clash = db.prepare("SELECT COUNT(*) n FROM site_visits WHERE visit_date=? AND visit_time=? AND status='booked'").get(b.date, b.time || '');
+  if (clash.n && !b.force) return res.status(409).json({ error: `Something is already booked at ${b.time} on ${b.date}.` });
+  const id = newId();
+  db.prepare(`INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,note,booked_by)
+    VALUES (?,?,?,?,?,?,?)`).run(id, l.id, l.quote_id || null, b.date, b.time || '', b.note || '',
+    req.user ? (req.user.name || req.user.username) : '');
+  // Booking a visit moves the lead and diarises the reminder.
+  db.prepare("UPDATE leads SET stage='visitbooked', status='Contacted', next_followup=?, updated_at=datetime('now') WHERE id=?")
+    .run(b.date, l.id);
+  db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, 'note', 'visitbooked', null, null,
+    req.user ? (req.user.name || req.user.username) : '', 'logged', `Site visit booked ${b.date} ${b.time || ''}`);
+  res.status(201).json({ ok: true, id });
+});
+
+router.put('/calendar/:id', (req, res) => {
+  const b = req.body || {};
+  const v = db.prepare('SELECT * FROM site_visits WHERE id=?').get(req.params.id);
+  if (!v) return res.status(404).json({ error: 'not found' });
+  db.prepare(`UPDATE site_visits SET visit_date=?, visit_time=?, status=?, note=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.date || v.visit_date, b.time !== undefined ? b.time : v.visit_time,
+      b.status || v.status, b.note !== undefined ? b.note : v.note, v.id);
+  // Visit done -> the clock starts on the 48-hour quote rule.
+  if (b.status === 'done' && v.lead_id) {
+    db.prepare("UPDATE leads SET stage='visitdone', next_followup=?, updated_at=datetime('now') WHERE id=?")
+      .run(nextDueFrom('visitdone'), v.lead_id);
+  }
+  if (b.status === 'cancelled' && v.lead_id) {
+    db.prepare("UPDATE leads SET stage='docsin', updated_at=datetime('now') WHERE id=?").run(v.lead_id);
+  }
+  res.json({ ok: true });
+});
+
+// Leads that could be booked in — anything past qualifying without a visit yet.
+router.get('/calendar/bookable', (req, res) => {
+  const rows = db.prepare(`SELECT l.* FROM leads l WHERE l.status NOT IN ('Won','Lost')
+    AND l.id NOT IN (SELECT lead_id FROM site_visits WHERE status='booked') ORDER BY l.updated_at DESC`).all();
+  res.json(rows.map(l => ({ id: l.id, name: l.name, suburb: l.suburb || l.address || '',
+    stage: l.stage, jobType: l.job_type })));
+});
+
+// ---- AUTOMATIC EMAIL INGESTION ----------------------------------------------
+const MAIL = require('../utils/mailIngest');
+
+router.get('/ingest/status', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const c = MAIL.mailConfig();
+  const recent = db.prepare(`SELECT m.*, l.name FROM mail_ingest m LEFT JOIN leads l ON l.id=m.lead_id
+    ORDER BY m.created_at DESC LIMIT 20`).all();
+  const counts = db.prepare(`SELECT platform, COUNT(*) n FROM mail_ingest GROUP BY platform`).all();
+  res.json({ configured: MAIL.configured(), host: c.host, user: c.user, folder: c.folder,
+    pollMinutes: parseInt(settingGet('imap_poll_minutes') || '10', 10),
+    needsReview: db.prepare('SELECT COUNT(*) n FROM mail_ingest WHERE needs_review=1 AND reviewed=0').get().n,
+    byPlatform: counts,
+    recent: recent.map(r => ({ id: r.id, leadId: r.lead_id, name: r.name, platform: r.platform,
+      subject: r.subject, needsReview: !!r.needs_review, reviewed: !!r.reviewed, at: r.created_at })) });
+});
+
+// Read the mailbox now, rather than waiting for the timer.
+router.post('/ingest/run', async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const r = await MAIL.pollOnce({ limit: 50 });
+  res.json(r);
+});
+
+// Paste an enquiry by hand — for testing the parser, or a platform without email.
+router.post('/ingest/paste', (req, res) => {
+  const b = req.body || {};
+  if (!b.text) return res.status(400).json({ error: 'Nothing pasted' });
+  const r = MAIL.createFromEmail({ messageId: null, from: b.from || '', subject: b.subject || '',
+    text: b.text, receivedAt: new Date() });
+  res.status(201).json(r);
+});
+
+// See what the parser makes of something, without creating anything.
+router.post('/ingest/preview', (req, res) => {
+  const b = req.body || {};
+  res.json({ platform: MAIL.detectPlatform(b.from, b.subject), parsed: MAIL.parseEnquiry(b.text || '', b.subject) });
+});
+
+router.post('/ingest/:id/reviewed', (req, res) => {
+  db.prepare('UPDATE mail_ingest SET reviewed=1 WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
 
 // ---- DOCUMENTATION (Step 3) --------------------------------------------------
 // Drawings live in OneDrive, not in this database — the tool records that they arrived,

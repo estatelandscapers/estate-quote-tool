@@ -268,4 +268,23 @@ function nextDueFrom(stageId, base) {
   d.setDate(d.getDate() + s.nextIn);
   return d.toISOString().slice(0, 10);
 }
-module.exports = { STAGES, PHASES, GATES, normalise, DEFAULTS, buildMessage, niceDate, gapsFor, stageById, phaseOf, nextDueFrom };
+// A lead's real step is whatever its evidence says, not whichever button happened to be
+// pressed. Building a quote outside the tool used to leave a lead stuck on Step 1.
+function derivedStage(lead, quote, docsIn) {
+  if (quote && quote.status === 'accepted') return 'won';
+  if (lead.status === 'Lost') return lead.stage && ['lost','closeout','disqualified'].includes(lead.stage) ? lead.stage : 'lost';
+  if (quote) {
+    // A quote exists. If the recorded stage is already inside Step 4, keep it — the
+    // chase position matters. Otherwise pull the lead forward to "quote sent".
+    const cur = normalise(lead.stage || '');
+    const inStep4 = ['quotesent','quotechase1','quotechase2','quotefinal'].includes(cur);
+    return inStep4 ? cur : 'quotesent';
+  }
+  const cur = normalise(lead.stage || 'call1');
+  // Anything from Step 3 onward is a position the user has explicitly reached — a booked
+  // visit, a completed visit — so never pull it backwards just because docs are missing.
+  if (['docsin', 'visitbooked', 'visitdone'].includes(cur)) return cur;
+  if (docsIn) return 'docsin';
+  return cur;
+}
+module.exports = { STAGES, PHASES, GATES, normalise, derivedStage, DEFAULTS, buildMessage, niceDate, gapsFor, stageById, phaseOf, nextDueFrom };

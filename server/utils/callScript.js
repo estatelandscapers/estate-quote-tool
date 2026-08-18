@@ -158,7 +158,7 @@ const STEPS = [
     say: "Last thing — how did you come across us?",
     type: 'single', key: 'source', other: true, referrerFor: ['Past client', 'Builder', 'Architect / designer', 'Friend or family', 'Another trade', 'Supplier / nursery', 'Real estate agent'],
     groups: [
-      { g: 'Lead sites', o: ['hipages', 'ServiceSeeking', 'Oneflare', 'Airtasker', 'Bark', 'Houzz', 'Yellow Pages'] },
+      { g: 'Lead sites', o: ['hipages', 'ServiceSeeking', 'Airtasker', 'Bark', 'Houzz', 'Yellow Pages'] },
       { g: 'Online', o: ['Google search', 'Google Maps', 'Our website', 'Facebook', 'Instagram', 'TikTok', 'Local Facebook group'] },
       { g: 'Referral — who?', o: ['Past client', 'Builder', 'Architect / designer', 'Friend or family', 'Another trade', 'Supplier / nursery', 'Real estate agent'] },
       { g: 'Seen us', o: ['Vehicle signage', 'Site sign at a job', 'Working in the street', 'Letterbox flyer'] },

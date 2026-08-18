@@ -15,8 +15,11 @@
   "license": "ISC",
   "dependencies": {
     "express": "^5.2.1",
+    "imapflow": "^1.7.1",
+    "mailparser": "^3.9.15",
     "nodemailer": "^9.0.3",
     "pdfkit": "^0.19.1",
+    "sharp": "^0.35.3",
     "xlsx": "^0.18.5"
   }
 }

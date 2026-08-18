@@ -26,7 +26,9 @@ function resolveItem(item, pi, tier) {
   return {
     code: item.custom_code || 'C?', name: item.custom_name || 'Custom item', unit: item.custom_unit || 'ea',
     spec: item.custom_name || '', rate: item.custom_rate || 0,
-    behaviour: item.behaviour_override || 'none',
+    // A custom line has no price-list entry, so its behaviour lives on the line itself.
+    // This was falling through to 'none', which is why "Optional" did nothing.
+    behaviour: item.behaviour_override || item.custom_behaviour || 'none',
   };
 }
 
@@ -42,11 +44,22 @@ function snapshotFromPriceItem(pi) {
 }
 
 function lineTotal(item, resolved, tier) {
-  // A site-specific value replaces qty x rate entirely — used for things priced from a
-  // supplier quote (plant schedules, one-off features) rather than from the rate card.
+  const T = String(tier || 'Standard').toLowerCase();
+  // A site-specific value. Two modes:
+  //   value_lump = 1  -> the figure IS the line total, whatever the quantity (a lump sum,
+  //                      a plant schedule priced as one number)
+  //   otherwise       -> the figure is a UNIT rate, so qty x rate applies and setting the
+  //                      quantity to zero correctly gives zero. This was the bug: the
+  //                      stored total was returned regardless of quantity.
   if (item.value_override) {
-    const v = item['val_' + String(tier || 'Standard').toLowerCase()];
-    if (v != null) return v;
+    const v = item['val_' + T];
+    if (v != null) {
+      let t0 = item.value_lump ? v : (item.qty || 0) * v;
+      if (resolved.behaviour === 'rate_only' || resolved.behaviour === 'optional') t0 = 0;
+      if (item.shared_enabled) t0 = t0 * ((item.shared_pct || 50) / 100);
+      if (t0 > 0) t0 += (item['waste_uplift_' + T] || 0);
+      return t0;
+    }
   }
   let t = item.qty * resolved.rate;
   if (resolved.behaviour === 'rate_only' || resolved.behaviour === 'optional') t = 0;
@@ -102,9 +115,28 @@ function surchargeGaps(applied, scope1Items) {
   return gaps;
 }
 // Site-specific surcharge codes: SS1, SS2... in applied order.
+// Optional and rate-only lines are shown to the client with their price but sit OUTSIDE
+// the total. This tells the view layer how to present each line.
+function lineDisplay(item, resolved, tier) {
+  const b = resolved.behaviour;
+  const T = String(tier || 'Standard').toLowerCase();
+  const raw = item.value_override && item['val_' + T] != null
+    ? (item.value_lump ? item['val_' + T] : (item.qty || 0) * item['val_' + T])
+    : (item.qty || 0) * resolved.rate;
+  return {
+    behaviour: b,
+    inTotal: !(b === 'optional' || b === 'rate_only'),
+    shownPrice: raw,
+    label: b === 'optional' ? 'Optional — not included in the total'
+      : b === 'rate_only' ? 'Rate only — charged if used'
+      : b === 'allowance' ? 'Allowance — provisional sum'
+      : b === 'remeasurable' ? 'Remeasurable — measured on completion' : null,
+  };
+}
+
 function surchargeList(applied) {
   return (applied || []).map((s, i) => ({ code: 'SS' + (i + 1), name: s.name, kind: s.kind, rate: s.rate,
     mode: s.mode || 'whole', basis: s.basis || 'full', lines: s.lines || {} }));
 }
 
-module.exports = { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, surchargeAmount, surchargeBase, surchargeGaps, surchargeList };
+module.exports = { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, lineDisplay, surchargeAmount, surchargeBase, surchargeGaps, surchargeList };

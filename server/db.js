@@ -218,6 +218,12 @@ addColumn('quote_items','custom_spec_basic','TEXT');
 addColumn('quote_items','custom_spec_standard','TEXT');
 addColumn('quote_items','custom_spec_premium','TEXT');
 addColumn('quote_items','promoted_price_item_id','TEXT');
+// A site-specific value is a UNIT rate by default so qty x rate works; tick lump to hold
+// the figure regardless of quantity.
+addColumn('quote_items','value_lump','INTEGER DEFAULT 0');
+// Same deliverable more than once — RW-1, RW-2 — each with its own location note.
+addColumn('quote_items','instance_no','INTEGER DEFAULT 1');
+addColumn('quote_items','location_note','TEXT');
 addColumn('quote_items','promo_status',"TEXT DEFAULT 'none'");
 // View attribution: internal (us) vs client, plus a visitor key for de-duping
 addColumn('quote_events','viewer',"TEXT DEFAULT 'client'");
@@ -261,6 +267,19 @@ CREATE TABLE IF NOT EXISTS leads (
   quote_id TEXT, stage TEXT DEFAULT 'noanswer', next_followup TEXT,
   job_type TEXT, suburb TEXT,
   created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS site_visits (
+  id TEXT PRIMARY KEY, lead_id TEXT, quote_id TEXT,
+  visit_date TEXT, visit_time TEXT, duration_min INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'booked',        -- booked | done | cancelled
+  note TEXT, booked_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS mail_ingest (
+  id TEXT PRIMARY KEY, message_id TEXT UNIQUE, lead_id TEXT, platform TEXT,
+  subject TEXT, sender TEXT, raw TEXT, parsed TEXT,
+  needs_review INTEGER DEFAULT 0, reviewed INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS lead_messages (
   id TEXT PRIMARY KEY, lead_id TEXT REFERENCES leads(id) ON DELETE CASCADE,
@@ -458,7 +477,7 @@ if (!settingGet2('seed_v7')) {
  ['age_flag','7'],['age_chase','14'],['age_dead','30'],
  ['crew_day_rate','1150'],['crew_people','3'],['extra_person_rate','420'],['hours_per_day','8'],
  ['work_days_per_month','21'],['quote_number_start','1410'],
- ['default_crew_size','3'],['default_customer_tier','Silver'],
+ ['default_crew_size','3'],['default_customer_tier','Silver'],['imap_poll_minutes','10'],['imap_folder','INBOX'],['imap_port','993'],
  ['email_signature','Smit Gajera\nEstate Landscapers\nT: +61 414 147 008\nE: info@estatelandscapers.com.au\nA: Unit 33/275 Annangrove Rd, Rouse Hill NSW 2155'],
  ['quote_email_subject','Landscape Works Fee Proposal — Quote {{number}} — Estate Landscapers'],
  ['projects_delivered','300+'],['rating_stars','5.0'],['rating_source','Google'],['rating_count',''],
