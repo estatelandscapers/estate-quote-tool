@@ -18,7 +18,10 @@ function getUser(req) {
 // Require a signed-in user for all /api routes except public/auth/backup/restore.
 function requireAuth(req, res, next) {
   const p = req.path;
-  if (p.startsWith('/api/public/') || p.startsWith('/api/auth/') || p.startsWith('/api/backup') || p.startsWith('/api/restore')) return next();
+  // Maintenance guards itself with BACKUP_KEY, so it can be run from a browser address
+  // bar without signing in — same as the backup download.
+  if (p.startsWith('/api/public/') || p.startsWith('/api/auth/') || p.startsWith('/api/backup')
+    || p.startsWith('/api/restore') || p.startsWith('/api/maintenance/')) return next();
   if (!p.startsWith('/api/')) return next();
   const u = getUser(req);
   if (!u) return res.status(401).json({ error: 'auth required' });

@@ -69,7 +69,7 @@ app.get('/api/backup', (req, res) => {
 
 // One-off cleanup: drop site plan copies that are duplicated from the quote, then
 // VACUUM to actually give the space back. Safe to run any time.
-app.post('/api/maintenance/compact', async (req, res) => {
+async function runCompact(req, res) {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
   const admin = req.user && req.user.role === 'admin';
   if (!admin && (req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
@@ -96,9 +96,10 @@ app.post('/api/maintenance/compact', async (req, res) => {
     imagesCompressed: img ? img.rows - img.skipped : 0,
     imageSavingMB: img ? img.savedMB : 0,
     beforeMB: Math.round(before / 104857.6) / 10, afterMB: Math.round(after / 104857.6) / 10 });
-});
-
-app.get('/api/maintenance/compact', (req, res, next) => { req.method = 'POST'; next(); });
+}
+// Both verbs: POST from the app, GET so it can be run from a browser address bar.
+app.post('/api/maintenance/compact', runCompact);
+app.get('/api/maintenance/compact', runCompact);
 
 // Lightweight check for the backup script: confirms the key works and reports size,
 // so a scheduled task can verify without downloading the whole database.
