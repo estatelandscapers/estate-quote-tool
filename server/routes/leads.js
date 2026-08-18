@@ -74,6 +74,7 @@ router.post('/:id/convert', (req, res) => {
 
 // ---- Follow-up console ------------------------------------------------------
 const { STAGES, PHASES, buildMessage, gapsFor, stageById, phaseOf, nextDueFrom } = require('../utils/leadTemplates');
+const { fullQuote } = require('./quotes');
 
 
 
@@ -180,6 +181,78 @@ router.put('/:id/stage', (req, res) => {
 
 
 
+
+// ---- CALL ANSWERS, AND CHECKING THEM AGAINST THE QUOTE -----------------------
+// Before a quote goes out, the rep should be able to see what the client actually said
+// beside what was built. Anything on the quote that never came up — or came up and is
+// missing — is flagged.
+router.get('/:id/answers', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  let a = {}; try { a = JSON.parse(l.call_answers || '{}'); } catch (e) {}
+  const CS2 = require('../utils/callScript');
+  const bp = CS2.ballpark(a);
+  const label = (v) => Array.isArray(v) ? v.join(', ') : (v === 'unknown' ? 'not known' : v);
+  const SIZE = {}; (CS2.SIZES || []).forEach(s => SIZE[s.id] = s);
+
+  const rows = [];
+  const push = (k, v) => { if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length)) rows.push({ k, v: label(v) }); };
+  push('Property', [a.propertyType, a.builder, a.handover && 'handover ' + a.handover].filter(Boolean).join(' · '));
+  push('Drawings', a.plans);
+  push('To remove', a.toRemove);
+  push('Wants done', (a.scope || []).map(s => (SIZE[s] || {}).label || s));
+  push('Part of block', a.areaOfBlock);
+  Object.entries(a.sizes || {}).forEach(([k, v]) => {
+    const s = SIZE[k]; if (!s) return;
+    rows.push({ k: s.label, v: v === 'unknown' ? 'not known — excluded' : `${v} ${s.unit}`.trim() });
+  });
+  push('Access', a.accessMm === 'unknown' ? 'not measured' : (a.accessMm ? a.accessMm + ' mm' : null));
+  push('Steps', a.steps === 'unknown' ? 'not counted' : (a.steps != null ? a.steps + ' steps' : null));
+  push('Fall', a.fallMm === 'unknown' ? 'not assessed' : (a.fallMm != null ? (a.fallMm / 1000).toFixed(1) + ' m' : null));
+  push('Vehicle access', a.vehicle);
+  push('Services', a.services);
+  push('Timing', a.timing || a.startWhen);
+  push('Driver', a.driver);
+  push('Other quotes', a.otherQuotes);
+  push('Decision', a.decisionMaker);
+  push('Source', a.source);
+  if (!bp.decline && !bp.tooUnknown) rows.push({ k: 'Ballpark given', v: `$${bp.incLo.toLocaleString()} – $${bp.incHi.toLocaleString()} inc GST` });
+  if (a.priceReaction) rows.push({ k: 'Their reaction', v: a.priceReaction });
+  if (a.notes) rows.push({ k: 'Notes', v: a.notes });
+
+  // Compare against the quote, if one exists.
+  let compare = null;
+  if (l.quote_id) {
+    const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(l.quote_id);
+    if (q) {
+      const fq = fullQuote(q);
+      const tier = q.default_package || 'Standard';
+      const discussed = new Set((a.scope || []).map(s => ((SIZE[s] || {}).code) || null).filter(Boolean));
+      const lines = [...(fq.items.scope1 || []), ...(fq.items.scope2 || [])];
+      const onQuote = lines.map(it => {
+        const code = String(it.code || '').replace(/-\d+$/, '');
+        const said = discussed.has(code);
+        // Quantity check where we captured a size on the call
+        const sizeEntry = Object.entries(a.sizes || {}).find(([k]) => (SIZE[k] || {}).code === code);
+        let qtyNote = null;
+        if (sizeEntry && sizeEntry[1] !== 'unknown' && it.qty != null) {
+          const told = Number(sizeEntry[1]);
+          if (told && Math.abs(told - it.qty) / told > 0.1) qtyNote = `call said ${told}, quote has ${it.qty}`;
+        }
+        return { code: it.displayCode || it.code, name: it.name, qty: it.qty,
+          discussed: said, qtyNote,
+          status: !said ? 'not-discussed' : qtyNote ? 'differs' : 'ok' };
+      });
+      const missing = [...discussed].filter(c => !lines.some(it => String(it.code || '').replace(/-\d+$/, '') === c));
+      const inBallpark = !bp.tooUnknown && fq.grandIncGst >= bp.incLo * 0.9 && fq.grandIncGst <= bp.incHi * 1.1;
+      compare = { quoteId: q.id, quoteNumber: q.quote_number, tier,
+        totalIncGst: Math.round(fq.grandIncGst), onQuote, missing,
+        ballparkLo: bp.incLo, ballparkHi: bp.incHi, inBallpark,
+        excludedOnCall: bp.exc || [] };
+    }
+  }
+  res.json({ hasCall: Object.keys(a).length > 0, rows, compare, ballpark: bp });
+});
 
 // ---- SITE VISIT CALENDAR -----------------------------------------------------
 // Standalone — no Google or Outlook connection. Fridays are the default visit day but

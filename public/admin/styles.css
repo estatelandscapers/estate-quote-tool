@@ -247,3 +247,29 @@ input[type=range]::-moz-range-thumb{width:30px;height:30px;border-radius:50%;bac
 .surl .w{color:#999;font-size:10.5px;}
 .warnbox{background:#FFF8E8;border:1px solid #EAD9AC;border-radius:10px;padding:11px 13px;font-size:12px;line-height:1.7;color:#7a5e1a;}
 @media(max-width:760px){.saytext{font-size:15px;}.cchip{padding:11px 16px;}.btn-big{width:100%;}}
+
+/* ---- leads: pipeline expansion ---- */
+.phasebox{border:1.5px solid var(--blue);border-top:none;border-radius:0 0 10px 10px;padding:12px;background:#FBFCFF;}
+.stepTag{padding:3px 9px;border-radius:20px;font-size:9px;font-weight:700;}
+.stepTag.s1{background:var(--soft);color:var(--deep);}
+.stepTag.s2{background:#FBF1DA;color:#8A6A1E;}
+.stepTag.s3{background:#EFE6F7;color:#6A3E9C;}
+.stepTag.s4{background:#DEEBE2;color:#2E7D46;}
+.stepTag.s5{background:#EDEDED;color:#777;}
+.today.q{border-left-color:#6A3E9C;}
+/* ---- calendar ---- */
+.calhd{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;}
+.cal{border:1px solid var(--line);border-radius:11px;overflow:hidden;}
+.calgrid{display:grid;grid-template-columns:repeat(7,1fr);}
+.caldow{padding:7px;text-align:center;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);border-bottom:1px solid var(--line);background:#FAFAFA;}
+.calday{min-height:92px;border-right:1px solid #F1F1F1;border-bottom:1px solid #F1F1F1;padding:5px 6px;}
+.calday.fri{background:#FBFCFF;}
+.calday.out{background:#FAFAFA;}
+.caldn{font-size:11px;font-weight:700;color:var(--grey);}
+.calday.today .caldn{background:var(--blue);color:#fff;border-radius:50%;width:21px;height:21px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;}
+.ev{background:var(--soft);border-left:3px solid var(--blue);border-radius:4px;padding:3px 5px;font-size:10px;margin-top:3px;line-height:1.35;cursor:pointer;}
+.ev.done{background:#F2F8F4;border-left-color:var(--green);}
+.ev .muted{font-size:9px;}
+.slot{font-size:9.5px;color:#c5c5c5;margin-top:4px;cursor:pointer;font-weight:700;}
+.calday.fri:hover .slot,.slot:hover{color:var(--blue);}
+@media(max-width:760px){.calday{min-height:64px;padding:3px;}.ev{font-size:9px;}.caldow{font-size:8px;}}

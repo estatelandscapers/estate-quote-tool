@@ -28,7 +28,7 @@ const SIZES = [
 // ---- the questions -----------------------------------------------------------
 const STEPS = [
   { id: 'open', section: 'Open', title: 'Reach the person',
-    say: "Hi, is that {{first}}? It's {{me}} calling from Estate Landscapers — you put through an enquiry{{via}}. Is now an alright time for a quick chat?",
+    say: "Hi, is that {{first}}? It's {{me}} calling from Estate Landscapers — you put through an enquiry{{via}}. Is now an alright time for a quick chat?{{confirm}}",
     type: 'outcome',
     options: [
       { v: 'talk',    label: 'Happy to talk' },
@@ -147,7 +147,10 @@ const STEPS = [
     options: [{ v: 'them', label: 'Just them' }, { v: 'partner', label: 'Partner too' },
               { v: 'builder', label: 'Builder decides' }, { v: 'owner', label: 'Landlord / owner' }] },
 
-  { id: 'ballpark', section: 'Close', title: 'Give the ballpark', type: 'ballpark' },
+  { id: 'ballpark', section: 'Close', title: 'Give the ballpark', type: 'ballpark', key: 'priceReaction',
+    reactions: [{ v: 'works', label: 'Yes — that works' }, { v: 'high', label: 'Higher than expected' },
+                { v: 'low', label: 'Lower than expected' }, { v: 'cheaper', label: 'Wants it cheaper' },
+                { v: 'nocommit', label: "Won't commit" }, { v: 'definite-no', label: 'Definite no — out of budget' }] },
 
   { id: 'book', section: 'Close', title: 'Book the Friday', type: 'booking', key: 'visitOutcome',
     say: "Great — site visits are Fridays. I've got {{friday1}} or {{friday2}} free. Which suits?",
