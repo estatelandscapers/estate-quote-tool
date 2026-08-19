@@ -4,6 +4,18 @@
   const api = (p, opts) => fetch(`/api/public/quote/${token}${p}`, opts).then(r => r.json());
   const money = n => '$' + Math.round(n).toLocaleString('en-AU');
   const esc = s => (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // Scope descriptions are written one inclusion per line. HTML collapses newlines, so the
+  // whole scope arrived as one unreadable paragraph however carefully it was laid out.
+  // Each line becomes a bullet. Any leading "-" or "*" the owner typed is stripped so it
+  // doesn't sit next to the bullet we add.
+  const scopeHtml = txt => {
+    const lines = String(txt || '').split(/\r?\n/)
+      .map(s => s.replace(/^\s*[-–—*•]\s*/, '').trim())
+      .filter(Boolean);
+    if (!lines.length) return '';
+    if (lines.length === 1) return `<div class="desc-line">${esc(lines[0])}</div>`;
+    return `<ul class="desc-list">${lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+  };
   const TIERS = ['Basic', 'Standard', 'Premium'];
   let D = null, tier = 'Standard';
 
@@ -180,7 +192,7 @@
         <div class="t"><span class="code">${esc(d.code)}</span>${esc(d.name)}${d.changes ? '<span class="chg-badge">changes with package</span>' : ''}</div>
         <div class="spec-line"><div class="n">${esc(pt.spec || d.name)}</div><div class="p">${money(pt.price)}</div></div>
         ${alts ? `<div class="alt-line">Other packages &mdash; ${esc(alts)}</div>` : ''}
-        ${d.description ? `<div class="desc-line">${esc(d.description)}</div>` : ''}
+        ${scopeHtml(d.description)}
         ${isRem ? `<div class="rem-line">&#9878; ${esc(String(d.qty))} ${esc(d.unit)} @ ${money(pt.rate)}/${esc(d.unit)} &mdash; remeasurable: final quantity measured on site${shared}</div>` : ''}
         ${eo > 0 ? `<div class="eo-line">+${money(eo)} over the Basic spec for this item</div>` : ''}</div>`;
     }).join('');

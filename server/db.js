@@ -260,6 +260,36 @@ addColumn('price_items','recipe_status',"TEXT DEFAULT 'none'");
 addColumn('price_items','entered_cost_basic','REAL');
 addColumn('price_items','entered_cost_standard','REAL');
 addColumn('price_items','entered_cost_premium','REAL');
+
+// ---- Deliverable sections (admin organisation only — NOT shown on the client link) ----
+// A flat list of 20+ deliverables was unworkable to reorder. Sections group them in the
+// Pricing tab; the client quote and contract are unchanged and still read straight from
+// sort_order, which is recomputed as section order then position within the section.
+db.exec(`CREATE TABLE IF NOT EXISTS price_sections (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')))`);
+addColumn('price_items','section_id','TEXT');
+
+// Seed the starting sections once, and file the existing deliverables into them by code.
+// Guarded so it never runs again — the owner can rename, add and delete sections freely.
+if (db.prepare('SELECT COUNT(*) c FROM price_sections').get().c === 0) {
+  const SECTIONS = [
+    ['Preliminaries',        ['PL','EW']],
+    ['Soft landscaping',     ['GT','GA','GM','TR','PW','ST']],
+    ['Hard landscaping',     ['RW','CP','PC']],
+    ['Fencing & gates',      ['FC','FA','FG','FT']],
+    ['Demolition & disposal',['RM','RD','SC2']],
+    ['Accessories',          ['AL','AC']],
+  ];
+  const insS = db.prepare('INSERT INTO price_sections (id,name,sort_order) VALUES (?,?,?)');
+  const setI = db.prepare('UPDATE price_items SET section_id=? WHERE code=?');
+  SECTIONS.forEach(([name, codes], i) => {
+    const sid = 'sec_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    insS.run(sid, name, i + 1);
+    codes.forEach(c => setI.run(sid, c));
+  });
+  console.log('[db] seeded ' + SECTIONS.length + ' deliverable sections');
+}
 db.exec(`
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY, name TEXT, phone TEXT, email TEXT, address TEXT,

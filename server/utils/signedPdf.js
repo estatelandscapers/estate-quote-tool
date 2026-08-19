@@ -4,6 +4,16 @@
 const PDFDocument = require('pdfkit');
 
 function money(n) { return '$' + Math.round(n || 0).toLocaleString('en-AU'); }
+// Scope descriptions are one inclusion per line. pdfkit honours newlines, so we only need
+// to add the bullet and strip any dash the owner typed so they don't double up.
+function bulletise(txt) {
+  const lines = String(txt || '').split(/\r?\n/)
+    .map(s => s.replace(/^\s*[-–—*•]\s*/, '').trim())
+    .filter(Boolean);
+  if (!lines.length) return '';
+  if (lines.length === 1) return lines[0];
+  return lines.map(l => '• ' + l).join('\n');
+}
 // Sydney local time for the signature record (AEST/AEDT handled automatically)
 function sydneyTime(utcStr) {
   if (!utcStr) return '';
@@ -59,14 +69,17 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
         doc.fontSize(9);
         const nameH = doc.heightOfString(d.name || '', { width: wName });
         const specH = d.spec ? doc.fontSize(7.8).heightOfString(d.spec, { width: wName }) : 0;
-        const descH = d.description ? doc.fontSize(7.4).heightOfString(d.description, { width: wName }) : 0;
+        // One inclusion per line, bulleted — same treatment as the client quote page so the
+        // contract reads identically to what the client accepted.
+        const descTxt = bulletise(d.description);
+        const descH = descTxt ? doc.fontSize(7.4).heightOfString(descTxt, { width: wName }) : 0;
         const rowH = nameH + (specH ? specH + 2 : 0) + (descH ? descH + 2 : 0) + 8;
         if (doc.y + rowH > doc.page.height - 70) { doc.addPage(); headRow(); }
         const y = doc.y;
         doc.fontSize(9).font('Helvetica-Bold').fillColor('#000').text(d.code || '', cCode, y, { width: 32, lineBreak: false });
         doc.font('Helvetica').text(d.name || '', cName, y, { width: wName });
         if (d.spec) doc.fontSize(7.8).fillColor('#666').text(d.spec, cName, y + nameH + 1, { width: wName });
-        if (d.description) doc.fontSize(7.4).fillColor('#888').text(d.description, cName, y + nameH + (specH ? specH + 3 : 1), { width: wName });
+        if (descTxt) doc.fontSize(7.4).fillColor('#888').text(descTxt, cName, y + nameH + (specH ? specH + 3 : 1), { width: wName });
         doc.fontSize(9).fillColor('#000');
         doc.text(d.showQty ? `${d.qty} ${d.unit || ''}` : '', cQty, y, { width: 74, lineBreak: false });
         doc.text(d.price ? money(d.price) : '—', cPrice, y, { width: 92, align: 'right', lineBreak: false });

@@ -6,18 +6,41 @@ const { newId } = require('../utils/ids');
 const router = express.Router();
 const STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
 
+// Single place where a lead's true step is worked out AND written back.
+//
+// The stored `stage` column drifts: a quote gets sent from the quote builder and nothing
+// updates the lead, so it sits on "call1" while a quote is live. Every read now recomputes
+// from evidence and persists the correction, so the column is the source of truth again
+// rather than a stale second opinion.
+//
+// Deliberately conservative: it never touches a lead whose derived stage already matches,
+// and derivedStage preserves the chase position (quotechase1/2/final) rather than
+// collapsing everything back to "quote sent".
+function syncLeadStage(l) {
+  const { derivedStage } = require('../utils/leadTemplates');
+  const quote = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
+  let docs = []; try { docs = JSON.parse(l.docs_received || '[]') || []; } catch (e) {}
+  const want = derivedStage(l, quote, docs.length > 0);
+  if (want && want !== l.stage) {
+    db.prepare("UPDATE leads SET stage=?, updated_at=datetime('now') WHERE id=?").run(want, l.id);
+    console.log(`[lead] ${l.name}: stage ${l.stage} -> ${want}${!quote && l.quote_id ? ' (linked quote no longer exists)' : ''}`);
+    l.stage = want;
+  }
+  return { stage: want, quote, docsIn: docs.length > 0 };
+}
+
 function view(l) {
   const ageDays = Math.max(0, Math.floor((Date.now() - new Date(l.created_at + 'Z').getTime()) / 864e5));
-  let q = null;
-  if (l.quote_id) q = db.prepare('SELECT quote_number, status FROM quotes WHERE id=?').get(l.quote_id);
+  const { stage, quote: q } = syncLeadStage(l);
   const today = new Date().toISOString().slice(0, 10);
   return { id: l.id, name: l.name, phone: l.phone, email: l.email, address: l.address,
     source: l.source, notes: l.notes, status: l.status, ageDays,
-    stage: l.stage || 'noanswer', nextFollowup: l.next_followup || null,
+    stage, nextFollowup: l.next_followup || null,
     followupOverdue: !!(l.next_followup && l.next_followup < today && !['Won', 'Lost'].includes(l.status)),
     jobType: l.job_type || '', suburb: l.suburb || '',
     msgCount: db.prepare('SELECT COUNT(*) c FROM lead_messages WHERE lead_id=?').get(l.id).c,
     quoteId: l.quote_id, quoteNumber: q ? q.quote_number : null, quoteStatus: q ? q.status : null,
+    quoteMissing: !!(l.quote_id && !q),
     createdAt: l.created_at };
 }
 // literal path must be declared before any '/:id' route
@@ -85,13 +108,12 @@ router.get('/board', (req, res) => {
   const weekEnd = wk.toISOString().slice(0, 10);
   const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') ORDER BY next_followup").all();
   const decorate = l => {
-    let quote = null;
-    if (l.quote_id) quote = db.prepare('SELECT quote_number, status FROM quotes WHERE id=?').get(l.quote_id);
-    let docs = []; try { docs = JSON.parse(l.docs_received || '[]'); } catch (e) {}
-    const s = stageById(require('../utils/leadTemplates').derivedStage(l, quote, docs.length > 0));
+    const { stage, quote } = syncLeadStage(l);
+    const s = stageById(stage);
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '',
       phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase,
       nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup,
+      quoteMissing: !!(l.quote_id && !quote),
       quoteNumber: quote ? quote.quote_number : null, quoteStatus: quote ? quote.status : null };
   };
   const overdue = rows.filter(l => l.next_followup && l.next_followup < today).map(decorate);
@@ -102,9 +124,9 @@ router.get('/board', (req, res) => {
   const phaseCounts = {};
   PHASES.forEach(p => phaseCounts[p.id] = 0);
   rows.forEach(l => {
-    const q = l.quote_id ? db.prepare('SELECT status FROM quotes WHERE id=?').get(l.quote_id) : null;
-    let d = []; try { d = JSON.parse(l.docs_received || '[]'); } catch (e) {}
-    const p = phaseOf(require('../utils/leadTemplates').derivedStage(l, q, d.length > 0));
+    // Not every row goes through decorate() — a follow-up dated beyond this week falls in
+    // none of the four buckets — so sync here too. It is a no-op when already correct.
+    const p = phaseOf(syncLeadStage(l).stage);
     phaseCounts[p] = (phaseCounts[p] || 0) + 1;
   });
   res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES });
@@ -115,10 +137,9 @@ router.get('/:id/state', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'not found' });
   // Old databases carry pre-v21 stage names — map them onto the four-step process.
-  const { derivedStage } = require('../utils/leadTemplates');
-  let quoteRow = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
-  let docsList = []; try { docsList = JSON.parse(l.docs_received || '[]'); } catch (e) {}
-  const s = stageById(derivedStage(l, quoteRow, docsList.length > 0));
+  const sync = syncLeadStage(l);
+  const quoteRow = sync.quote;
+  const s = stageById(sync.stage);
   const phase = s.phase;
   const nextPhase = Math.min(5, phase + 1);
   const quote = quoteRow;

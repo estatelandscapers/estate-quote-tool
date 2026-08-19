@@ -21,6 +21,46 @@ let USER = null;
 let state = { tab: 'leads', leadsSub: 'summary', precallDone: false, hideClosed: true, calMonth: null, leadId: null, leadStage: null, leadPhase: null, callStep: 0, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
+// Downscale a picked image in the browser before it goes near the network.
+// This was CALLED but never defined — every site-plan upload threw silently and
+// nothing ever reached the server. A 4-8MB phone photo would also blow past the
+// 15MB JSON body limit once base64 inflates it by a third, so shrinking here is
+// not cosmetic. The server compresses again; this just makes the upload survivable.
+const UPLOAD_MAX_DIM = 2000;
+function shrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('No file'));
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('Could not read that file'));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('That file is not a readable image'));
+      img.onload = () => {
+        try {
+          const longest = Math.max(img.width, img.height);
+          const scale = longest > UPLOAD_MAX_DIM ? UPLOAD_MAX_DIM / longest : 1;
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          const cx = cv.getContext('2d');
+          // PNGs may carry transparency; flatten onto white so it doesn't go black as JPEG.
+          cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h);
+          cx.drawImage(img, 0, 0, w, h);
+          // Line drawings keep PNG; photographs become JPEG. Same rule as the server.
+          const keepPng = /png/i.test(file.type) && scale === 1;
+          const outMime = keepPng ? 'image/png' : 'image/jpeg';
+          const url = cv.toDataURL(outMime, 0.85);
+          const data = url.split(',')[1] || '';
+          if (!data) return reject(new Error('Could not encode that image'));
+          resolve({ data, mime: outMime, size: Math.round((data.length * 3) / 4) });
+        } catch (e) { reject(e); }
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
 const isAdmin = () => USER && USER.role === 'admin';
 
@@ -207,7 +247,7 @@ async function leadsEnquiries(v) {
         <td data-l="Site">${esc(l.suburb || l.address || '')}</td>
         <td data-l="Step"><span class="tag stepTag s${ph}">STEP ${ph}</span>${['Won', 'Lost'].includes(l.status) ? `<br><span class="muted" style="font-size:10px;">${esc(l.status)}</span>` : ''}</td>
         <td data-l="Next">${l.followupOverdue ? '<span class="tag age-flag">overdue</span> ' : ''}${esc(l.nextFollowup || '—')}${l.msgCount ? `<br><span class="muted" style="font-size:10px;">${l.msgCount} msg</span>` : ''}</td>
-        <td data-l="Quote">${l.quoteNumber ? esc(l.quoteNumber) : '<span class="muted">—</span>'}</td>
+        <td data-l="Quote">${l.quoteNumber ? esc(l.quoteNumber) : (l.quoteMissing ? '<span class="tag age-flag" title="The quote linked to this enquiry no longer exists">quote missing</span>' : '<span class="muted">—</span>')}</td>
         <td class="right"><button class="btn btn-ghost btn-sm" data-lopen2="${l.id}">Open</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`; }).join('')}
       </tbody></table>` : '<p class="muted">No open enquiries.</p>';
     v.querySelectorAll('[data-lopen2]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen2; leadConsole(v); }));
@@ -1413,6 +1453,7 @@ async function quoteEditor(v) {
     <div id="siteplanArea">${q.hasSiteplan ? `<img src="/api/public/quote/${q.token}/siteplan?t=${Date.now()}" style="max-width:100%;border:1px solid var(--line);border-radius:10px;margin-bottom:10px;">` : '<p class="muted">No drawing uploaded.</p>'}</div>
     <div class="row" style="gap:14px;flex-wrap:wrap;">
       <input type="file" id="planFile" accept="image/png,image/jpeg" style="max-width:300px;width:auto;">
+      <button class="btn btn-blue btn-sm" id="uploadPlan">Upload</button>
       ${q.hasSiteplan ? '<button class="btn btn-ghost btn-sm" id="removePlan">Remove</button>' : ''}
       <label style="font-size:11px;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="planNa" ${q.siteplanNa ? 'checked' : ''} style="width:auto;"> Mark N/A</label>
     </div>
@@ -1494,8 +1535,17 @@ async function quoteEditor(v) {
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
   $('#newRev').addEventListener('click', async () => { const r = await api('/quotes/' + q.id + '/revision', { method: 'POST' }); state.quoteId = r.id; state.scrollY = 0; toast('Revision ' + r.quoteNumber + ' created — old link superseded'); route(); });
-  $('#saveDraft').addEventListener('click', async () => { await autosave(); toast('Draft saved'); });
-  $('#saveSend').addEventListener('click', async () => { await autosave(); toast('Saved — live link ready'); });
+  $('#saveDraft').addEventListener('click', async () => {
+    const ok = await uploadPlan(true);          // flush a picked-but-not-uploaded drawing
+    await autosave();
+    toast(ok ? 'Draft saved' : 'Draft saved — but the drawing did not upload');
+    if (ok && !pendingPlan) reload();
+  });
+  $('#saveSend').addEventListener('click', async () => {
+    const ok = await uploadPlan(true);
+    await autosave();
+    toast(ok ? 'Saved — live link ready' : 'Saved — but the drawing did not upload');
+  });
 
   // tick to stage, one Save to add them all — no page reload per click
   const staged = new Set();
@@ -1550,17 +1600,47 @@ async function quoteEditor(v) {
     reload();
   }));
   const naChip = v.querySelector('[data-sur-na]'); if (naChip) naChip.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appliedSurcharges: [], surchargesNa: !q.surchargesNa }) }); reload(); });
-  $('#planFile').addEventListener('change', async e => {
-    const file = e.target.files[0]; if (!file) return;
-    state.scrollY = window.scrollY;
+  // Upload is now an explicit button, not a side-effect of picking a file. A picked-but-
+  // not-uploaded file is remembered so Save draft can flush it — losing a drawing because
+  // the wrong button was pressed is exactly the failure this is meant to prevent.
+  let pendingPlan = null;
+  const planStatus = () => {
+    let el = $('#planStatus');
+    if (!el) { el = document.createElement('div'); el.id = 'planStatus';
+      el.style.cssText = 'font-size:11.5px;margin-top:7px;'; $('#planFile').parentNode.appendChild(el); }
+    return el;
+  };
+  const uploadPlan = async (quiet) => {
+    if (!pendingPlan) return true;
+    const file = pendingPlan;
     const before = file.size;
-    toast('Preparing image…');
-    const { data, mime, size } = await shrinkImage(file);
-    await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, mime }) });
-    const saved = before > size ? ` (${Math.round(before / 1024)}KB → ${Math.round(size / 1024)}KB)` : '';
-    toast('Drawing uploaded' + saved);
-    reload();
+    try {
+      if (!quiet) toast('Preparing image…');
+      const { data, mime, size } = await shrinkImage(file);
+      const r = await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data, mime }) });
+      if (r && r.error) throw new Error(r.error);
+      pendingPlan = null;
+      const saved = before > size ? ` (${Math.round(before / 1024)}KB → ${Math.round(size / 1024)}KB)` : '';
+      toast('Drawing uploaded' + saved);
+      return true;
+    } catch (err) {
+      // Never fail silently again — that was the original bug.
+      planStatus().innerHTML = `<span style="color:var(--red);font-weight:700;">Upload failed — ${esc(err.message || 'unknown error')}. The file is still selected; try Upload again.</span>`;
+      toast('Upload failed');
+      return false;
+    }
+  };
+  $('#planFile').addEventListener('change', e => {
+    pendingPlan = e.target.files[0] || null;
+    planStatus().innerHTML = pendingPlan
+      ? `<b>${esc(pendingPlan.name)}</b> ready — click <b>Upload</b> (or Save draft) to store it.`
+      : '';
+  });
+  $('#uploadPlan').addEventListener('click', async () => {
+    if (!pendingPlan) return toast('Choose a file first');
+    state.scrollY = window.scrollY;
+    if (await uploadPlan()) reload();
   });
   const rmPlan = $('#removePlan'); if (rmPlan) rmPlan.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: null, mime: null }) }); reload(); });
   $('#planNa').addEventListener('change', async e => { await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteplanNa: e.target.checked }) }); });
@@ -1828,7 +1908,7 @@ async function poEditor(v) {
       <div>
         <div class="scope-title">Site copy — approved deliverables (no $)</div>
         <table><thead><tr><th>Code</th><th>Item / spec + hrs</th><th>Qty</th></tr></thead><tbody>
-          ${po.siteItems.map(i => `<tr><td><b>${esc(i.code || '')}</b></td><td>${esc(i.name)}${i.spec ? `<br><span class="muted" style="font-size:11px;">${esc(i.spec)}</span>` : ''}</td><td>${i.qty} ${esc(i.unit || '')}</td></tr>`).join('')}
+          ${po.siteItems.map(i => `<tr><td><b>${esc(i.code || '')}</b></td><td>${esc(i.name)}${i.spec ? `<br><span class="muted" style="font-size:11px;white-space:pre-line;">${esc(i.spec)}</span>` : ''}</td><td>${i.qty} ${esc(i.unit || '')}</td></tr>`).join('')}
         </tbody></table>
         ${po.siteChallenges.length ? `<div style="margin-top:8px;">${po.siteChallenges.map(c => `<span class="chip on">${esc(c)}</span>`).join('')}</div>` : ''}
       </div>
@@ -2396,7 +2476,7 @@ async function selectionDetail(v) {
 // ---------------- PRICING ----------------
 async function pricingSheet(v) {
   const sub = state.pricingSub || 'live';
-  const [items, pending] = await Promise.all([api('/price-list'), isAdmin() ? api('/quotes/pending/price-items') : Promise.resolve([])]);
+  const [items, pending, sections] = await Promise.all([api('/price-list'), isAdmin() ? api('/quotes/pending/price-items') : Promise.resolve([]), isAdmin() ? api('/price-list/sections') : Promise.resolve([])]);
   const pendCount = (pending || []).length;
   v.innerHTML = `<div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -2435,32 +2515,109 @@ async function pricingSheet(v) {
     return;
   }
 
-  body.innerHTML = `<table class="resp"><thead><tr><th>Code</th><th>Deliverable</th><th>Unit</th><th>Behaviour</th><th class="right">Basic</th><th class="right">Standard</th><th class="right">Premium</th><th></th></tr></thead><tbody>
-    ${items.map(p => `<tr><td data-l="Code"><b>${esc(p.code)}</b></td>
+  // Grouped by section, with a typed position number per row. Reordering 20 deliverables
+  // with one-step-at-a-time arrows meant up to 19 clicks and a full reload each; typing the
+  // numbers and pressing Apply once is a single round trip. Sections are admin-only — the
+  // client link and contract are unchanged.
+  const SEC = (sections || []);
+  const groups = SEC.map(s => ({ id: s.id, name: s.name, items: items.filter(p => p.sectionId === s.id) }));
+  const unsorted = items.filter(p => !p.sectionId || !SEC.some(s => s.id === p.sectionId));
+  if (unsorted.length) groups.push({ id: '', name: 'Unsorted', items: unsorted });
+
+  const secOpts = (selId) => `<option value="">Unsorted</option>` +
+    SEC.map(s => `<option value="${s.id}" ${s.id === selId ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+
+  const rowFor = (p, i) => `<tr data-row="${p.id}">
+      ${isAdmin() ? `<td data-l="#" style="width:62px;"><input type="number" min="1" step="1" value="${i + 1}" data-pos="${p.id}" style="width:52px;text-align:center;"></td>` : ''}
+      <td data-l="Code"><b>${esc(p.code)}</b></td>
       <td data-l="Deliverable">${esc(p.name)}${p.fromCustom ? ' <span class="tag t-cust">from custom</span>' : ''}${p.recipeStatus === 'pending' ? ' <span class="tag tag-incomplete">recipe pending</span>' : ''}
-        ${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(p.description.slice(0, 80))}</span>` : ''}</td>
-      <td data-l="Unit">${esc(p.unit || '')}</td><td data-l="Behaviour" class="muted">${esc(p.behaviour || 'none')}</td>
+        ${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(String(p.description).split(/\r?\n/)[0].slice(0, 80))}${String(p.description).includes('\n') ? ' …' : ''}</span>` : ''}</td>
+      ${isAdmin() ? `<td data-l="Section"><select data-sec="${p.id}" style="font-size:11px;max-width:150px;">${secOpts(p.sectionId)}</select></td>` : ''}
+      <td data-l="Unit">${esc(p.unit || '')}</td>
       <td data-l="Basic" class="right">${money((p.tiers && p.tiers.Basic) ? p.tiers.Basic.sell : 0)}</td>
       <td data-l="Standard" class="right">${money((p.tiers && p.tiers.Standard) ? p.tiers.Standard.sell : 0)}</td>
       <td data-l="Premium" class="right">${money((p.tiers && p.tiers.Premium) ? p.tiers.Premium.sell : 0)}</td>
-      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-mv="up|${p.id}" title="Move up">↑</button>
-        <button class="btn btn-ghost btn-sm" data-mv="down|${p.id}" title="Move down">↓</button>
-        <button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}
-    </tbody></table>`;
-  const ap = $('#addPi'); if (ap) ap.addEventListener('click', () => editPriceItem(null, v));
-  body.querySelectorAll('[data-pi]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(x => x.id === b.dataset.pi), v)));
-  body.querySelectorAll('[data-mv]').forEach(b => b.addEventListener('click', async () => {
-    const [dir, id] = b.dataset.mv.split('|');
-    await api('/price-list/' + id + '/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }) });
-    pricingSheet(v);
-  }));
+      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`;
+
+  const head = `<thead><tr>${isAdmin() ? '<th>#</th>' : ''}<th>Code</th><th>Deliverable</th>${isAdmin() ? '<th>Section</th>' : ''}<th>Unit</th><th class="right">Basic</th><th class="right">Standard</th><th class="right">Premium</th><th></th></tr></thead>`;
+
+  body.innerHTML = `
+    ${isAdmin() ? `<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      <span class="muted" style="font-size:11.5px;">Type the position numbers, change a section, then Apply. Order flows through to the quote builder, client link and contract.</span>
+      <span style="flex:1;"></span>
+      <button class="btn btn-blue btn-sm" id="applyOrder">Apply order</button>
+      <button class="btn btn-ghost btn-sm" id="manageSecs">Manage sections</button>
+    </div><div id="secMgr"></div>` : ''}
+    ${groups.map(g => `<div style="margin-bottom:14px;">
+      <div class="wl" style="margin-bottom:4px;">${esc(g.name)} <span class="muted" style="font-weight:400;">· ${g.items.length}</span></div>
+      ${g.items.length ? `<table class="resp">${head}<tbody>${g.items.map(rowFor).join('')}</tbody></table>`
+        : '<p class="muted" style="font-size:11.5px;margin:0 0 6px;">Nothing in this section yet.</p>'}
+    </div>`).join('')}`;
+
+  const ap = $('#addPi'); if (ap) ap.addEventListener('click', () => editPriceItem(null, v, SEC));
+  body.querySelectorAll('[data-pi]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(x => x.id === b.dataset.pi), v, SEC)));
+
+  const applyBtn = $('#applyOrder');
+  if (applyBtn) applyBtn.addEventListener('click', async () => {
+    const payload = items.map(p => {
+      const pos = body.querySelector(`[data-pos="${p.id}"]`);
+      const sel = body.querySelector(`[data-sec="${p.id}"]`);
+      return { id: p.id, sectionId: sel ? (sel.value || null) : p.sectionId, position: pos ? parseInt(pos.value) || 9999 : 9999 };
+    });
+    const r = await api('/price-list/arrange', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: payload }) });
+    if (r && r.error) return toast(r.error);
+    toast('Order applied'); pricingSheet(v);
+  });
+
+  const mgr = $('#manageSecs');
+  if (mgr) mgr.addEventListener('click', () => {
+    const box = $('#secMgr');
+    if (box.innerHTML) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="card" style="padding:11px 13px;margin-bottom:10px;">
+      <div class="wl" style="margin:0 0 7px;">Sections</div>
+      <table><tbody>${SEC.map(s => `<tr>
+        <td><input value="${esc(s.name)}" data-sname="${s.id}" style="font-size:12px;"></td>
+        <td style="width:70px;"><input type="number" min="1" value="${s.sortOrder}" data-sord="${s.id}" style="width:58px;text-align:center;"></td>
+        <td class="right" style="width:40px;"><button class="btn btn-danger btn-sm" data-sdel="${s.id}">✕</button></td></tr>`).join('')}
+      </tbody></table>
+      <div class="row" style="gap:7px;margin-top:8px;flex-wrap:wrap;">
+        <input id="newSecName" placeholder="New section name" style="max-width:220px;font-size:12px;">
+        <button class="btn btn-ghost btn-sm" id="addSec">+ Add section</button>
+      </div>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">Deleting a section keeps its deliverables — they move to Unsorted.</div></div>`;
+    $('#addSec').addEventListener('click', async () => {
+      const name = $('#newSecName').value.trim();
+      if (!name) return toast('Give the section a name');
+      const r = await api('/price-list/sections', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      if (r && r.error) return toast(r.error);
+      toast('Section added'); pricingSheet(v);
+    });
+    box.querySelectorAll('[data-sname]').forEach(i => i.addEventListener('change', async () => {
+      await api('/price-list/sections/' + i.dataset.sname, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: i.value }) });
+      toast('Renamed'); pricingSheet(v);
+    }));
+    box.querySelectorAll('[data-sord]').forEach(i => i.addEventListener('change', async () => {
+      await api('/price-list/sections/' + i.dataset.sord, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sortOrder: i.value }) });
+      pricingSheet(v);
+    }));
+    box.querySelectorAll('[data-sdel]').forEach(b => b.addEventListener('click', async () => {
+      const n = items.filter(x => x.sectionId === b.dataset.sdel).length;
+      if (!confirm(n ? `Delete this section? Its ${n} deliverable(s) move to Unsorted — none are deleted.` : 'Delete this section?')) return;
+      const r = await api('/price-list/sections/' + b.dataset.sdel, { method: 'DELETE' });
+      toast(r && r.moved ? `Section deleted — ${r.moved} moved to Unsorted` : 'Section deleted');
+      pricingSheet(v);
+    }));
+  });
 }
-function editPriceItem(item, v) {
+function editPriceItem(item, v, sections) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   const t = item ? item.tiers : { Basic: {}, Standard: {}, Premium: {} };
+  const SEC = sections || [];
   bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${item ? 'Edit' : 'Add'} deliverable</h2>
     <div class="grid3"><div class="field"><label>Code</label><input id="p_code" value="${esc(item?.code || '')}"></div><div class="field"><label>Unit</label><input id="p_unit" value="${esc(item?.unit || 'ea')}"></div><div class="field"><label>Behaviour</label><select id="p_behav">${Object.entries(BEHAV).map(([k, val]) => `<option value="${k}" ${item?.behaviour === k ? 'selected' : ''}>${val || 'Standard'}</option>`).join('')}</select></div></div>
     <div class="field"><label>Name</label><input id="p_name" value="${esc(item?.name || '')}"></div>
+    <div class="field"><label>Section <span class="muted" style="font-weight:400;">— organises the Pricing tab only, not shown to the client</span></label>
+      <select id="p_sec"><option value="">Unsorted</option>${SEC.map(s => `<option value="${s.id}" ${item && item.sectionId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
     <div class="field"><label>Scope description — shown to the client, on the contract and the site PO</label>
       <textarea id="p_desc" rows="3" placeholder="e.g. Supply and install turf to prepared areas including underlay sand, starter fertiliser and consolidation.">${esc(item?.description || '')}</textarea>
       <span class="muted" style="font-size:10px;">This is the default. It can be tailored per quote in the builder, and again at Selections for the site team.</span></div>
@@ -2469,7 +2626,7 @@ function editPriceItem(item, v) {
   document.body.appendChild(bg);
   $('#p_cancel').addEventListener('click', () => bg.remove());
   $('#p_save').addEventListener('click', async () => {
-    const body = { code: $('#p_code').value, name: $('#p_name').value, unit: $('#p_unit').value, behaviour: $('#p_behav').value, description: $('#p_desc').value, tiers: { Basic: { spec: $('#p_Basic_spec').value, sell: +$('#p_Basic_sell').value }, Standard: { spec: $('#p_Standard_spec').value, sell: +$('#p_Standard_sell').value }, Premium: { spec: $('#p_Premium_spec').value, sell: +$('#p_Premium_sell').value } } };
+    const body = { code: $('#p_code').value, name: $('#p_name').value, unit: $('#p_unit').value, behaviour: $('#p_behav').value, description: $('#p_desc').value, sectionId: $('#p_sec').value || null, tiers: { Basic: { spec: $('#p_Basic_spec').value, sell: +$('#p_Basic_sell').value }, Standard: { spec: $('#p_Standard_spec').value, sell: +$('#p_Standard_sell').value }, Premium: { spec: $('#p_Premium_spec').value, sell: +$('#p_Premium_sell').value } } };
     if (item) await api('/price-list/' + item.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); else await api('/price-list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     bg.remove(); toast('Saved'); pricingSheet(v || $('#view'));
   });

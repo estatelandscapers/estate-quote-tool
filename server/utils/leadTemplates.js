@@ -270,21 +270,37 @@ function nextDueFrom(stageId, base) {
 }
 // A lead's real step is whatever its evidence says, not whichever button happened to be
 // pressed. Building a quote outside the tool used to leave a lead stuck on Step 1.
+// Default stage to land on when a lead is pulled to a step it has no recorded position in.
+const PHASE_DEFAULT = { 1: 'call1', 2: 'qualified', 3: 'docsin', 4: 'quotesent' };
+
+// Where the EVIDENCE says a lead is, ignoring whatever stage was last clicked.
+// Step 4 is deliberately excluded — it is granted only by a live quote, in derivedStage.
+function evidencePhase(lead, docsIn) {
+  const cur = normalise(lead.stage || '');
+  let answers = 0;
+  try { answers = Object.keys(JSON.parse(lead.call_answers || '{}') || {}).length; } catch (e) {}
+  // Step 3: drawings in, or a site visit already booked or completed.
+  if (docsIn || ['docsin', 'visitbooked', 'visitdone'].includes(cur)) return 3;
+  // Step 2: the discovery call was actually run — either recorded in the tool, or the
+  // owner moved the lead there by hand. Most calls are made from a mobile and leave no
+  // answers behind, so the recorded stage has to count as evidence too.
+  if (answers > 0 || ['qualified', 'docsasked'].includes(cur)) return 2;
+  return 1;
+}
+
 function derivedStage(lead, quote, docsIn) {
   if (quote && quote.status === 'accepted') return 'won';
   if (lead.status === 'Lost') return lead.stage && ['lost','closeout','disqualified'].includes(lead.stage) ? lead.stage : 'lost';
+  const cur = normalise(lead.stage || 'call1');
   if (quote) {
-    // A quote exists. If the recorded stage is already inside Step 4, keep it — the
-    // chase position matters. Otherwise pull the lead forward to "quote sent".
-    const cur = normalise(lead.stage || '');
+    // A LIVE quote exists. If the recorded stage is already inside Step 4, keep it — the
+    // chase position (3 / 5 / 14 days) is real information and must not be reset.
     const inStep4 = ['quotesent','quotechase1','quotechase2','quotefinal'].includes(cur);
     return inStep4 ? cur : 'quotesent';
   }
-  const cur = normalise(lead.stage || 'call1');
-  // Anything from Step 3 onward is a position the user has explicitly reached — a booked
-  // visit, a completed visit — so never pull it backwards just because docs are missing.
-  if (['docsin', 'visitbooked', 'visitdone'].includes(cur)) return cur;
-  if (docsIn) return 'docsin';
-  return cur;
+  // No live quote — Step 4 is not available, even if the stage says otherwise. This is how
+  // a lead whose quote was deleted falls back instead of sitting at a step it can't prove.
+  const ph = evidencePhase(lead, docsIn);
+  return phaseOf(cur) === ph ? cur : PHASE_DEFAULT[ph];
 }
-module.exports = { STAGES, PHASES, GATES, normalise, derivedStage, DEFAULTS, buildMessage, niceDate, gapsFor, stageById, phaseOf, nextDueFrom };
+module.exports = { STAGES, PHASES, GATES, normalise, derivedStage, evidencePhase, DEFAULTS, buildMessage, niceDate, gapsFor, stageById, phaseOf, nextDueFrom };

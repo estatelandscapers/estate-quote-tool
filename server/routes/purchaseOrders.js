@@ -35,7 +35,11 @@ function createPOFromQuote(quoteId, opts = {}) {
     const note = l.method === 'sub' ? ' — subcontractor' : (l.method === 'mixed' ? ' — mixed (crew + subcontractor)' : '');
     const qi = db.prepare('SELECT desc_override, price_item_id FROM quote_items WHERE id=?').get(l.id);
     const dpi = qi && qi.price_item_id ? db.prepare('SELECT description FROM price_items WHERE id=?').get(qi.price_item_id) : null;
-    const desc = (qi && qi.desc_override) || (dpi && dpi.description) || '';
+    // One inclusion per line, bulleted — same as the client page and contract, so the crew
+    // is reading the identical scope the client accepted.
+    const rawDesc = (qi && qi.desc_override) || (dpi && dpi.description) || '';
+    const descLines = String(rawDesc).split(/\r?\n/).map(s => s.replace(/^\s*[-–—*•]\s*/, '').trim()).filter(Boolean);
+    const desc = descLines.length > 1 ? descLines.map(s => '• ' + s).join('\n') : (descLines[0] || '');
     ins.run(newId(), poId, l.code, l.name, [(t.spec || '') + note, desc].filter(Boolean).join('\n'), l.qty, l.unit, i, null, 'site', 0);
   });
   // cost lines (vendor take-off, incl wastage) — these become the ACTUALS when edited
