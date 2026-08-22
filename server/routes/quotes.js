@@ -28,6 +28,8 @@ function computeQuote(q) {
       description: it.desc_override || (pi ? pi.description : '') || it.custom_desc || '', descIsCustom: !!it.desc_override,
       valueOverride: !!it.value_override, valueLump: !!it.value_lump,
       instanceNo: it.instance_no || 1, locationNote: it.location_note || '',
+      priceItemId: it.price_item_id || null,
+      hasSiblings: hasSiblings(q.id, it),
       displayCode: (it.instance_no && it.instance_no > 1) || hasSiblings(q.id, it)
         ? `${it.custom_code || (pi ? pi.code : '')}-${it.instance_no || 1}` : (it.custom_code || (pi ? pi.code : '')),
       value: { Basic: it.val_basic, Standard: it.val_standard, Premium: it.val_premium },
@@ -96,6 +98,21 @@ function hasSiblings(quoteId, it) {
   if (!it.price_item_id) return false;
   return db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?')
     .get(quoteId, it.price_item_id).n > 1;
+}
+// Renumber a deliverable's instances 1..n in their current order. Only ever called for a
+// DRAFT quote — once the quote is sent the numbers are frozen, because the client's drawings
+// refer to them by name ("RW-2, side of garage") and a shifting label would be a real-world
+// mix-up on site.
+function renumberSiblings(quoteId, priceItemId) {
+  if (!priceItemId) return;
+  const sibs = db.prepare('SELECT id FROM quote_items WHERE quote_id=? AND price_item_id=? ORDER BY sort_order, instance_no, rowid')
+    .all(quoteId, priceItemId);
+  const up = db.prepare('UPDATE quote_items SET instance_no=? WHERE id=?');
+  sibs.forEach((s, i) => up.run(i + 1, s.id));
+}
+// True once the client has been sent the quote — the point after which codes stop moving.
+function quoteIsSent(q) {
+  return !!(q && (q.sent_at || ['sent', 'viewed', 'accepted'].includes(q.status)));
 }
 function fullQuote(q) {
   const c = computeQuote(q);
@@ -529,6 +546,7 @@ router.post('/pending/:itemId/dismiss', (req, res) => {
 router.post('/:id/items', (req, res) => {
   try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
   const b = req.body || {};
+  const qrow = db.prepare('SELECT id, status, sent_at FROM quotes WHERE id=?').get(req.params.id);
   const id = newId();
   const pi = b.priceItemId ? db.prepare('SELECT * FROM price_items WHERE id=?').get(b.priceItemId) : null;
   const snap = snapshotFromPriceItem(pi); // lock current rates onto this quote line
@@ -553,9 +571,22 @@ router.post('/:id/items', (req, res) => {
       1, b.saveToPricing === false ? 'declined' : 'pending', id);
   }
   // Same deliverable already on the quote? Number this one so RW-1 / RW-2 read clearly.
+  //
+  // Numbering rule: a DRAFT quote renumbers its siblings 1..n so the codes stay tidy while
+  // the quote is being built. Once the quote has been SENT the numbers are frozen — the
+  // client's drawings reference "RW-2, side of garage", so that label must never move. New
+  // instances added after sending take MAX+1 and gaps left by deletions stay as gaps.
+  //
+  // MAX+1 rather than COUNT+1: with COUNT, adding after a deletion reissues a number that is
+  // already in use (1,2,3 → delete 2 → add → 1,3,3), which put two different walls under one
+  // code on the same quote.
   if (b.priceItemId) {
-    const n = db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?').get(req.params.id, b.priceItemId).n;
-    db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?').run(n, b.locationNote || '', id);
+    const sent = !!(qrow && (qrow.sent_at || ['sent', 'viewed', 'accepted'].includes(qrow.status)));
+    const max = db.prepare('SELECT MAX(instance_no) m FROM quote_items WHERE quote_id=? AND price_item_id=? AND id<>?')
+      .get(req.params.id, b.priceItemId, id).m || 0;
+    db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?')
+      .run(max + 1, b.locationNote || '', id);
+    if (!sent) renumberSiblings(req.params.id, b.priceItemId);
   }
   res.status(201).json({ id, code: db.prepare('SELECT custom_code c FROM quote_items WHERE id=?').get(id).c });
 });
@@ -600,7 +631,39 @@ router.put('/:id/items/:itemId', (req, res) => {
   res.json({ ok: true });
 });
 router.delete('/:id/items/:itemId', (req, res) => {
-  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {} db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
+  const gone = db.prepare('SELECT price_item_id FROM quote_items WHERE id=?').get(req.params.itemId);
+  db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId);
+  // Tidy the remaining codes on a draft. After sending, leave the gap — deleting RW-2 must
+  // not turn the client's RW-3 into RW-2 when their drawings already say otherwise.
+  const q = db.prepare('SELECT id, status, sent_at FROM quotes WHERE id=?').get(req.params.id);
+  if (gone && gone.price_item_id && !quoteIsSent(q)) renumberSiblings(req.params.id, gone.price_item_id);
+  res.status(204).end();
+});
+
+// Duplicate a line — "another one of these, somewhere else on the property".
+// Copies what describes the deliverable (tier, method, spec overrides) but deliberately NOT
+// the quantity: each retaining wall is a different length, and a carried-over number that
+// looks plausible is worse than an empty box that has to be filled in.
+router.post('/:id/items/:itemId/duplicate', (req, res) => {
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
+  const src = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
+  if (!src) return res.status(404).json({ error: 'Not found' });
+  const q = db.prepare('SELECT id, status, sent_at FROM quotes WHERE id=?').get(req.params.id);
+  const id = newId();
+  const cols = Object.keys(src).filter(k => !['id', 'qty', 'instance_no', 'location_note', 'sort_order'].includes(k));
+  const sort = (db.prepare('SELECT MAX(sort_order) m FROM quote_items WHERE quote_id=?').get(req.params.id).m || 0) + 1;
+  db.prepare(`INSERT INTO quote_items (id, qty, sort_order, ${cols.join(',')}) VALUES (?,?,?,${cols.map(() => '?').join(',')})`)
+    .run(id, 0, sort, ...cols.map(c => src[c]));
+  if (src.price_item_id) {
+    const max = db.prepare('SELECT MAX(instance_no) m FROM quote_items WHERE quote_id=? AND price_item_id=? AND id<>?')
+      .get(req.params.id, src.price_item_id, id).m || 0;
+    db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?').run(max + 1, '', id);
+    if (!quoteIsSent(q)) renumberSiblings(req.params.id, src.price_item_id);
+  }
+  const row = db.prepare('SELECT instance_no FROM quote_items WHERE id=?').get(id);
+  res.status(201).json({ id, instanceNo: row.instance_no });
+});
 
 router.get('/:id/analytics', (req, res) => {
   const ev = db.prepare('SELECT * FROM quote_events WHERE quote_id=? ORDER BY created_at DESC LIMIT 300').all(req.params.id);

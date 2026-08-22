@@ -1677,10 +1677,11 @@ async function quoteEditor(v) {
       } else tierCells = `<td class="center muted" colspan="3">—</td>`;
       const diff = cl && cl.selected !== c.base;
       const up = diff && TIERS.indexOf(cl.selected) > TIERS.indexOf(c.base);
-      return `<tr>
-        <td><b>${esc(it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
+      return `<tr data-line="${it.id}" data-pi="${it.priceItemId || ''}" title="Double-click to add another one of these">
+        <td><b>${esc(it.displayCode || it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
         <td>${esc(it.name)}
           ${behav ? `<br><span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${behav}</span>` : ''}
+          ${it.hasSiblings ? `<input data-loc="${it.id}" value="${esc(it.locationNote || '')}" placeholder="where on site? e.g. front boundary" style="font-size:10.5px;margin-top:4px;width:100%;max-width:260px;" title="Shown to the client and on the crew's site PO">` : ''}
           <textarea data-desc="${it.id}" rows="2" placeholder="Scope description shown to the client…" style="font-size:10.5px;margin-top:4px;width:100%;">${esc(it.description || '')}</textarea>
           <label style="font-size:10px;display:flex;align-items:center;gap:6px;margin-top:4px;" title="Price this line from a supplier quote instead of the rate card">
             <input type="checkbox" data-vo="${it.id}" ${it.valueOverride ? 'checked' : ''} style="width:auto;"> site-specific value</label>
@@ -1701,7 +1702,7 @@ async function quoteEditor(v) {
         </td>
         <td><input type="number" step="0.01" value="${it.qty}" data-qty="${it.id}" style="width:70px;"> ${esc(it.unit)}</td>
         ${tierCells}
-        <td class="right">${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
+        <td class="right">${it.priceItemId ? `<button class="btn btn-ghost btn-sm" data-dup="${it.id}" title="Add another one of these — e.g. a second retaining wall elsewhere on the property">+</button> ` : ''}${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
     };
     const head = `<table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
     $('#scope1').innerHTML = q.items.scope1.length ? head + q.items.scope1.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 1 items yet.</p>';
@@ -1722,6 +1723,26 @@ async function quoteEditor(v) {
     }));
     v.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.qty}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qty: parseFloat(i.value) || 0 }) }); refreshCosting(); }));
     v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
+    // "Another one of these, somewhere else on the property." Two ways in: the + button and
+    // a double-click on the row. Quantity starts empty so it has to be measured, not assumed.
+    const duplicate = async id => {
+      state.scrollY = window.scrollY;
+      const r = await api(`/quotes/${q.id}/items/${id}/duplicate`, { method: 'POST' });
+      if (r && r.error) return toast(r.error);
+      toast('Added — set the quantity and where it is on site');
+      reload();
+    };
+    v.querySelectorAll('[data-dup]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); duplicate(b.dataset.dup); }));
+    v.querySelectorAll('tr[data-line]').forEach(tr => tr.addEventListener('dblclick', e => {
+      // Never hijack a double-click inside a field — that's how you select a word.
+      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'OPTION'].includes(e.target.tagName)) return;
+      if (!tr.dataset.pi) return toast('Custom lines can\'t be duplicated');
+      duplicate(tr.dataset.line);
+    }));
+    v.querySelectorAll('[data-loc]').forEach(i => i.addEventListener('change', async () => {
+      await api(`/quotes/${q.id}/items/${i.dataset.loc}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locationNote: i.value }) });
+      toast('Location saved');
+    }));
     v.querySelectorAll('[data-method]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.method}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: s.value || null }) }); reload(); }));
     v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); toast('Wastage updated'); }));
     // Show/hide the fields in place. This used to call reload(), which re-fetched five

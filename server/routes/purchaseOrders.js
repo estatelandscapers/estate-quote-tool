@@ -33,14 +33,22 @@ function createPOFromQuote(quoteId, opts = {}) {
     const t = l.tiers[l.selected];
     // site copy: spec + scope description — no per-deliverable time (crew plans the job as a whole)
     const note = l.method === 'sub' ? ' — subcontractor' : (l.method === 'mixed' ? ' — mixed (crew + subcontractor)' : '');
-    const qi = db.prepare('SELECT desc_override, price_item_id FROM quote_items WHERE id=?').get(l.id);
+    const qi = db.prepare('SELECT desc_override, price_item_id, instance_no, location_note FROM quote_items WHERE id=?').get(l.id);
     const dpi = qi && qi.price_item_id ? db.prepare('SELECT description FROM price_items WHERE id=?').get(qi.price_item_id) : null;
+    // Three retaining walls on one property are three different walls. The crew needs the
+    // instance code and the location on their copy, or they cannot tell which is which.
+    const sibs = qi && qi.price_item_id
+      ? db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?').get(quoteId, qi.price_item_id).n
+      : 1;
+    const multi = sibs > 1 || (qi && qi.instance_no > 1);
+    const poCode = multi ? `${l.code}-${(qi && qi.instance_no) || 1}` : l.code;
+    const poName = multi && qi && qi.location_note ? `${l.name} — ${qi.location_note}` : l.name;
     // One inclusion per line, bulleted — same as the client page and contract, so the crew
     // is reading the identical scope the client accepted.
     const rawDesc = (qi && qi.desc_override) || (dpi && dpi.description) || '';
     const descLines = String(rawDesc).split(/\r?\n/).map(s => s.replace(/^\s*[-–—*•]\s*/, '').trim()).filter(Boolean);
     const desc = descLines.length > 1 ? descLines.map(s => '• ' + s).join('\n') : (descLines[0] || '');
-    ins.run(newId(), poId, l.code, l.name, [(t.spec || '') + note, desc].filter(Boolean).join('\n'), l.qty, l.unit, i, null, 'site', 0);
+    ins.run(newId(), poId, poCode, poName, [(t.spec || '') + note, desc].filter(Boolean).join('\n'), l.qty, l.unit, i, null, 'site', 0);
   });
   // cost lines (vendor take-off, incl wastage) — these become the ACTUALS when edited
   let n = 100;

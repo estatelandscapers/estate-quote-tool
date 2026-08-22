@@ -59,8 +59,18 @@ function clientView(q) {
     const perTier = {};
     TIERS.forEach(t => { const r = resolveItem(it, pi, t); perTier[t] = { spec: r.spec, price: lineTotal(it, r, t), rate: r.rate }; });
     const anyR = resolveItem(it, pi, 'Standard');
+    // Where the same deliverable appears more than once (three retaining walls on one
+    // property), the client needs to tell them apart — otherwise it reads as three identical
+    // charges. Code becomes RW-1/RW-2 and the location is appended to the name.
+    const sibCount = it.price_item_id
+      ? db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?').get(q.id, it.price_item_id).n
+      : 1;
+    const multi = sibCount > 1 || (it.instance_no && it.instance_no > 1);
+    const dispCode = multi ? `${anyR.code}-${it.instance_no || 1}` : anyR.code;
+    const dispName = multi && it.location_note ? `${anyR.name} — ${it.location_note}` : anyR.name;
     const row = {
-      code: anyR.code, name: anyR.name, unit: anyR.unit, behaviour: anyR.behaviour,
+      code: dispCode, name: dispName, unit: anyR.unit, behaviour: anyR.behaviour,
+      locationNote: it.location_note || '',
       description: it.desc_override || (pi ? pi.description : '') || it.custom_desc || '',
       qty: it.qty, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct, perTier, tierOverride: it.tier_override || null,
       changes: (() => { const a = perTier.Basic, b = perTier.Premium; return a.spec !== b.spec || a.price !== b.price; })(),
