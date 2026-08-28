@@ -28,6 +28,7 @@ app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/checklist', require('./routes/checklist'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/public/quote', require('./routes/publicQuote'));
+app.use('/api/public', require('./routes/publicEnquiry')); // website enquiry form
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
 

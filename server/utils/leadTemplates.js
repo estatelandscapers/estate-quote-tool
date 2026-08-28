@@ -273,12 +273,21 @@ function nextDueFrom(stageId, base) {
 // Default stage to land on when a lead is pulled to a step it has no recorded position in.
 const PHASE_DEFAULT = { 1: 'call1', 2: 'qualified', 3: 'docsin', 4: 'quotesent' };
 
+// Keys that live in call_answers but are NOT evidence a discovery call happened.
+// `_prefill` and `scope` are written when a lead is CREATED — by the website form and by
+// the hipages/email ingest — to pre-populate the pre-call checklist. Counting them as call
+// answers pushed brand-new enquiries straight to Step 2 before anyone had phoned.
+const NON_ANSWER_KEYS = ['_prefill', 'scope', 'notes'];
+
 // Where the EVIDENCE says a lead is, ignoring whatever stage was last clicked.
 // Step 4 is deliberately excluded — it is granted only by a live quote, in derivedStage.
 function evidencePhase(lead, docsIn) {
   const cur = normalise(lead.stage || '');
   let answers = 0;
-  try { answers = Object.keys(JSON.parse(lead.call_answers || '{}') || {}).length; } catch (e) {}
+  try {
+    answers = Object.keys(JSON.parse(lead.call_answers || '{}') || {})
+      .filter(k => !NON_ANSWER_KEYS.includes(k)).length;
+  } catch (e) {}
   // Step 3: drawings in, or a site visit already booked or completed.
   if (docsIn || ['docsin', 'visitbooked', 'visitdone'].includes(cur)) return 3;
   // Step 2: the discovery call was actually run — either recorded in the tool, or the
