@@ -104,6 +104,30 @@ app.get('/api/maintenance/compact', runCompact);
 
 // Lightweight check for the backup script: confirms the key works and reports size,
 // so a scheduled task can verify without downloading the whole database.
+// Run a backup right now, and check the OneDrive connection. Both are key-protected the
+// same way as /api/backup so they can be used before any admin login exists on a new deploy.
+app.get('/api/backup/onedrive/test', async (req, res) => {
+  const key = process.env.BACKUP_KEY || 'CHANGE-ME';
+  if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const od = require('./utils/onedrive');
+    const bk = require('./utils/backupOneDrive');
+    const conn = await od.selfTest();
+    const hint = !conn.ok
+      ? (conn.configured === false
+          ? 'OneDrive credentials are not set on this service. Add GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and ONEDRIVE_USER in Railway.'
+          : 'Credentials are set but Graph rejected them — check the client secret has not expired and that Files.ReadWrite.All is granted with admin consent.')
+      : (bk.enabled() ? undefined : 'Connection works. The daily job is still off — set ONEDRIVE_BACKUP=1 in Railway to turn it on.');
+    res.json({ connection: conn, scheduleOn: bk.enabled(), folder: bk.FOLDER, hint });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+app.post('/api/backup/onedrive/run', async (req, res) => {
+  const key = process.env.BACKUP_KEY || 'CHANGE-ME';
+  if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
+  try { res.json(await require('./utils/backupOneDrive').runBackup('manual')); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get('/api/backup/status', (req, res) => {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
   if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
@@ -184,4 +208,6 @@ app.listen(PORT, () => {
   console.log(`Estate Landscapers quote tool running on http://localhost:${PORT}`);
   console.log(`  Admin:  http://localhost:${PORT}/admin`);
   console.log(`  Public quotes: http://localhost:${PORT}/q/<token>`);
+  // Dormant unless ONEDRIVE_BACKUP=1, so deploying this cannot change behaviour by itself.
+  try { require('./utils/backupOneDrive').start(); } catch (e) { console.error('[backup] scheduler failed to start:', e.message); }
 });

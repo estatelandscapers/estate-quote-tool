@@ -108,4 +108,8 @@ async function selfTest() {
     quotaTotalGB: d.quota ? (d.quota.total / 1e9).toFixed(1) : null };
 }
 
-module.exports = { configured, ensureFolder, uploadUrlFor, folderPathFor, selfTest, ROOT };
+// gfetch/drive/encPath are exported (as graphJson/driveRoot/encodePath) so the daily
+// database backup can reuse this same app registration and token cache rather than
+// carrying a second copy of the auth.
+module.exports = { configured, ensureFolder, uploadUrlFor, folderPathFor, selfTest, ROOT,
+  graphJson: gfetch, driveRoot: drive, encodePath: encPath };
