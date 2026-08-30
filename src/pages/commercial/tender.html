@@ -1,0 +1,181 @@
+<!--CONFIG
+{
+ "path": "/commercial/tender/",
+ "nav": "commercial",
+ "footer": "commercial",
+ "title": "Request a Tender — Commercial Landscaping NSW & QLD | Estate Landscapers",
+ "description": "Send your landscape drawings, civil set and program. Priced submission back, with SWMS, ITPs and insurances ready before works commence. Uploads to 100 MB."
+}
+-->
+<section class="band" style="padding-top:clamp(30px,4vw,46px)">
+  <div class="shell formwrap">
+    <p class="eyebrow">Commercial · NSW &amp; QLD</p>
+    <h1 style="font-size:clamp(1.6rem,3.6vw,2.3rem);font-weight:800;letter-spacing:-.02em">Send us the drawings.</h1>
+    <p class="sub">Landscape plans, civil set, bill of quantities, program — whatever you
+      have. We'll come back with a priced submission, and a straight answer if the dates
+      don't work.</p>
+
+
+    <noscript>
+      <div class="panel" style="margin-top:18px">
+        <h3>This form needs JavaScript — but email works just as well.</h3>
+        <p>Send your name, phone, suburb, rough budget and the project and scope (plus any
+           plans or photos) to
+           <a href="mailto:enquiry@estatelandscapers.com.au" style="color:var(--blue);font-weight:700">enquiry@estatelandscapers.com.au</a>
+           and we'll call you the same business day.</p>
+      </div>
+    </noscript>
+
+    <form id="enquiry" data-audience="commercial" novalidate>
+      <div class="steppanel on">
+        <div class="f2">
+          <div class="field">
+            <label for="t-company">Company</label>
+            <input id="t-company" name="company" autocomplete="organization" data-req="Which company is this for?">
+            <p class="err">Which company is this for?</p>
+          </div>
+          <div class="field">
+            <label for="t-name">Contact name</label>
+            <input id="t-name" name="name" autocomplete="name" data-req="Who should we come back to?">
+            <p class="err">Who should we come back to?</p>
+          </div>
+        </div>
+        <div class="f2">
+          <div class="field">
+            <label for="t-email">Email</label>
+            <input id="t-email" name="email" type="email" inputmode="email" autocomplete="email" data-req="The submission goes here.">
+            <p class="err">The submission goes here.</p>
+          </div>
+          <div class="field">
+            <label for="t-phone">Phone <span class="opt">optional</span></label>
+            <input id="t-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel">
+          </div>
+        </div>
+        <fieldset class="field">
+          <legend>Is this a tender, or a live project?</legend>
+          <div class="chips" data-for="projectStatus" role="group" aria-label="Project status">
+            <button type="button" class="chip" aria-pressed="false" data-v="Tender">Tender</button>
+            <button type="button" class="chip" aria-pressed="false" data-v="Live project">Live project — access opening</button>
+          </div>
+          <input type="hidden" id="projectStatus" name="projectStatus" data-req="Tender or live — it changes how fast we move.">
+          <p class="err">Tender or live — it changes how fast we move.</p>
+        </fieldset>
+
+        <div class="f2">
+          <div class="field">
+            <label for="t-pname">Project name <span class="opt">optional</span></label>
+            <input id="t-pname" name="projectName" placeholder="e.g. Stage 3, Riverbank Estate">
+          </div>
+          <div class="field">
+            <label for="t-principal">Principal / builder <span class="opt">optional</span></label>
+            <input id="t-principal" name="principal" autocomplete="organization">
+          </div>
+        </div>
+        <div class="f2">
+          <div class="field">
+            <label for="t-close">Tender close date <span class="opt">optional</span></label>
+            <input id="t-close" name="tenderClose" type="date">
+          </div>
+          <div class="field">
+            <label for="t-comm">Estimated commencement <span class="opt">optional</span></label>
+            <input id="t-comm" name="commencement" placeholder="e.g. Nov 2026">
+          </div>
+        </div>
+
+        <div class="f2">
+          <div class="field">
+            <label for="t-jobtype">Project type</label>
+            <select id="t-jobtype" name="jobType" data-req="Pick the closest fit.">
+              <option value="">Select…</option>
+              <option>Residential development — landscape package</option>
+              <option>Council / government works</option>
+              <option>Strata / body corporate works</option>
+              <option>Commercial property landscape</option>
+              <option>Establishment / maintenance period</option>
+              <option>Other commercial landscape works</option>
+            </select>
+            <p class="err">Pick the closest fit.</p>
+          </div>
+          <div class="field">
+            <label for="t-suburb">Project location</label>
+            <input id="t-suburb" name="suburb" placeholder="Suburb / town and state" data-req="Where is the site?">
+            <p class="err">Where is the site?</p>
+          </div>
+        </div>
+        <div class="field">
+          <label for="t-timeline">Target start / program window <span class="opt">optional</span></label>
+          <input id="t-timeline" name="timeline" placeholder="e.g. Landscaping access opens late October">
+        </div>
+        <div class="field">
+          <label for="t-msg">Scope summary</label>
+          <textarea id="t-msg" name="message" data-req="A few lines on the scope helps us price accurately."
+            placeholder="Lots or areas involved, key elements (retaining, drainage, turf, fencing…), any staging"></textarea>
+          <p class="err">A few lines on the scope helps us price accurately.</p>
+        </div>
+
+        <div class="field">
+          <label>Tender documents <span class="opt">up to 100 MB</span></label>
+          <div class="filebox" id="filebox" role="button" tabindex="0" aria-label="Add tender documents">
+            <b>Tap to add documents, or drag them here</b>
+            <span>Landscape drawings, civil set, BOQ, program, specifications<br>
+            PDF, ZIP, DWG, Word, Excel, images · 50 MB per file</span>
+          </div>
+          <input id="fileinput" type="file" multiple hidden
+                 accept=".pdf,.zip,.dwg,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.heic,.webp,image/*,application/pdf">
+          <ul class="filelist" id="filelist"></ul>
+          <p id="filenote" style="margin-top:8px;font-size:.78rem;color:var(--label)"></p>
+          <p id="filewarn" style="display:none;margin-top:8px;font-size:.8rem;color:#C22"></p>
+          <p style="margin-top:8px;font-size:.78rem;color:var(--label)">Bigger than 100 MB?
+            Send this form without the files and we'll reply with a transfer link.</p>
+        </div>
+
+        <p class="hpot" aria-hidden="true"><label>Leave this field empty<input name="website" tabindex="-1" autocomplete="off"></label></p>
+
+        <div class="upmeter" id="upmeter">
+          <div class="bar"><i></i></div>
+          <span>Uploading documents… <span class="pct">0%</span></span>
+        </div>
+        <p id="sendwarn" style="display:none;margin-top:12px;font-size:.85rem;color:#C22"></p>
+
+        <div class="formnav">
+          <button class="btn" type="submit" data-label="Request tender submission">Request tender submission</button>
+        </div>
+        <p style="margin-top:14px;font-size:.75rem;color:var(--label)">SWMS, ITPs, insurance
+          certificates and licence details are provided before works commence. Details go to
+          our team only — <a href="/privacy/" style="color:var(--blue)">privacy policy</a>.</p>
+      </div>
+    </form>
+
+    <div id="done" class="panel good" style="display:none">
+      <h3>Received — reference <span id="doneref"></span>.</h3>
+      <p><b>What happens next:</b> we review the documents and call to confirm scope and
+         program before pricing. If anything is missing for an accurate submission, we'll
+         ask for it in that call rather than price around it.</p>
+      <p>A confirmation email is on its way — reply to it with any additions and quote
+         your reference.</p>
+    </div>
+  </div>
+</section>
+
+<script src="/assets/enquiry.js" defer></script>
+
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"ContactPage",
+  "name":"Request a commercial landscaping tender",
+  "url":"{{PAGE_URL}}",
+  "about":{"@type":"LandscapeContractor","name":"Estate Landscapers","url":"https://www.estatelandscapers.com.au/"}
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"BreadcrumbList",
+  "itemListElement":[
+    {"@type":"ListItem","position":1,"name":"Home","item":"https://www.estatelandscapers.com.au/"},
+    {"@type":"ListItem","position":2,"name":"Commercial","item":"https://www.estatelandscapers.com.au/commercial/"},
+    {"@type":"ListItem","position":3,"name":"Request a tender","item":"{{PAGE_URL}}"}
+  ]
+}
+</script>

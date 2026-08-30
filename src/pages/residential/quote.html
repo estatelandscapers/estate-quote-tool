@@ -1,0 +1,197 @@
+<!--CONFIG
+{
+ "path": "/residential/quote/",
+ "nav": "residential",
+ "footer": "residential",
+ "title": "Get a Quote — Residential Landscaping Sydney | Estate Landscapers",
+ "description": "Tell us about your project and upload your plans and site photos. We call the same business day, and an itemised quote follows within 48 hours of the site visit."
+}
+-->
+<section class="band" style="padding-top:clamp(30px,4vw,46px)">
+  <div class="shell formwrap">
+    <p class="eyebrow">Residential · Sydney</p>
+    <h1 style="font-size:clamp(1.6rem,3.6vw,2.3rem);font-weight:800;letter-spacing:-.02em">Tell us about your yard.</h1>
+    <p class="sub">Three quick steps. We call the same business day, and your itemised
+      quote arrives within 48 hours of the site visit.</p>
+
+
+    <noscript>
+      <div class="panel" style="margin-top:18px">
+        <h3>This form needs JavaScript — but email works just as well.</h3>
+        <p>Send your name, phone, suburb, rough budget and what you're planning (plus any
+           plans or photos) to
+           <a href="mailto:enquiry@estatelandscapers.com.au" style="color:var(--blue);font-weight:700">enquiry@estatelandscapers.com.au</a>
+           and we'll call you the same business day.</p>
+      </div>
+    </noscript>
+
+    <form id="enquiry" data-audience="residential" novalidate>
+      <p class="stepbar"><span>Step <b id="stepnum">1</b> of 3</span></p>
+
+      <!-- STEP 1 — the project -->
+      <div class="steppanel on">
+        <fieldset class="field">
+          <legend>What kind of project is it?</legend>
+          <div class="chips" data-for="jobType" role="group" aria-label="Project type">
+            <button type="button" class="chip" aria-pressed="false" data-v="New build landscaping package">New build</button>
+            <button type="button" class="chip" aria-pressed="false" data-v="Knockdown-rebuild package">Knockdown-rebuild</button>
+            <button type="button" class="chip" aria-pressed="false" data-v="Duplex / multi-dwelling">Duplex / multi</button>
+            <button type="button" class="chip" aria-pressed="false" data-v="Designer-led (I have a landscape plan)">I have a landscape plan</button>
+            <button type="button" class="chip" aria-pressed="false" data-v="Retaining wall project">Retaining walls</button>
+            <button type="button" class="chip" aria-pressed="false" data-v="Other landscape construction">Other construction</button>
+            <button type="button" class="chip" aria-pressed="false" data-v="Maintenance / repairs">Maintenance / repairs</button>
+          </div>
+          <input type="hidden" id="jobType" name="jobType" data-req="Pick the closest fit.">
+          <p class="err">Pick the closest fit.</p>
+        </fieldset>
+
+        <div class="f2">
+          <div class="field">
+            <label for="budget">Rough budget</label>
+            <select id="budget" name="budget" data-req="A rough range helps us quote honestly.">
+              <option value="">Select…</option>
+              <option>Under $25k</option>
+              <option>$25k – $50k</option>
+              <option>$50k – $100k</option>
+              <option>$100k+</option>
+              <option>Not sure yet</option>
+            </select>
+            <p class="err">A rough range helps us quote honestly.</p>
+          </div>
+          <div class="field">
+            <label for="timeline">When would you like to start? <span class="opt">optional</span></label>
+            <select id="timeline" name="timeline">
+              <option value="">Select…</option>
+              <option>As soon as possible</option>
+              <option>1–3 months</option>
+              <option>3–6 months</option>
+              <option>Just planning ahead</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="declined" class="panel" style="display:none">
+          <h3>That one's for our maintenance partners.</h3>
+          <p>Our crews build landscapes rather than maintain them, so mowing, hedging,
+             repairs and projects below our usual package threshold aren't work we can do justice to. We'd
+             rather say so now than leave you waiting.</p>
+          <p><b>We can still help:</b> email us and we'll introduce you to a vetted
+             maintenance contractor — no cost, no catch.</p>
+          <div class="formnav">
+            <a class="btn" href="mailto:enquiry@estatelandscapers.com.au?subject=Maintenance%20referral%20please">Email for a referral</a>
+            <button class="btn btn-o" id="undecline" type="button">I picked the wrong option</button>
+          </div>
+        </div>
+
+        <div class="formnav">
+          <button class="btn" type="button" data-next>Continue</button>
+        </div>
+      </div>
+
+      <!-- STEP 2 — contact -->
+      <div class="steppanel">
+        <div class="f2">
+          <div class="field">
+            <label for="f-name">Your name</label>
+            <input id="f-name" name="name" autocomplete="name" data-req="We need a name to call you by.">
+            <p class="err">We need a name to call you by.</p>
+          </div>
+          <div class="field">
+            <label for="f-phone">Phone</label>
+            <input id="f-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-req="We call the same business day — a number is the fastest way.">
+            <p class="err">We call the same business day — a number is the fastest way.</p>
+          </div>
+        </div>
+        <div class="field">
+          <label for="f-email">Email</label>
+          <input id="f-email" name="email" type="email" inputmode="email" autocomplete="email" data-req="Your quote and confirmation go here.">
+          <p class="err">Your quote and confirmation go here.</p>
+        </div>
+        <div class="f2">
+          <div class="field">
+            <label for="f-suburb">Suburb</label>
+            <input id="f-suburb" name="suburb" autocomplete="address-level2" data-req="So we know it's in our area.">
+            <p class="err">So we know it's in our area.</p>
+          </div>
+          <div class="field">
+            <label for="f-address">Site address <span class="opt">optional</span></label>
+            <input id="f-address" name="address" autocomplete="street-address">
+          </div>
+        </div>
+        <div class="formnav">
+          <button class="btn btn-o" type="button" data-back>Back</button>
+          <button class="btn" type="button" data-next>Continue</button>
+        </div>
+      </div>
+
+      <!-- STEP 3 — plans, photos, message -->
+      <div class="steppanel">
+        <div class="field">
+          <label>Plans, drawings and site photos <span class="opt">optional, up to 100 MB</span></label>
+          <div class="filebox" id="filebox" role="button" tabindex="0" aria-label="Add files">
+            <b>Tap to add files, or drag them here</b>
+            <span>Landscape plans, hydraulic drawings, DA consent, site photos<br>
+            PDF, images (including iPhone HEIC), ZIP, DWG, Word, Excel · 50 MB per file</span>
+          </div>
+          <input id="fileinput" type="file" multiple hidden
+                 accept=".pdf,.zip,.jpg,.jpeg,.png,.heic,.heif,.webp,.dwg,.doc,.docx,.xls,.xlsx,image/*,application/pdf">
+          <ul class="filelist" id="filelist"></ul>
+          <p id="filenote" style="margin-top:8px;font-size:.78rem;color:var(--label)"></p>
+          <p id="filewarn" style="display:none;margin-top:8px;font-size:.8rem;color:#C22"></p>
+        </div>
+        <div class="field">
+          <label for="f-msg">Anything else worth knowing? <span class="opt">optional</span></label>
+          <textarea id="f-msg" name="message" placeholder="Slope, access, neighbours, what you want to use the space for…"></textarea>
+        </div>
+
+        <p class="hpot" aria-hidden="true"><label>Leave this field empty<input name="website" tabindex="-1" autocomplete="off"></label></p>
+
+        <div class="upmeter" id="upmeter">
+          <div class="bar"><i></i></div>
+          <span>Uploading your files… <span class="pct">0%</span></span>
+        </div>
+        <p id="sendwarn" style="display:none;margin-top:12px;font-size:.85rem;color:#C22"></p>
+
+        <div class="formnav">
+          <button class="btn btn-o" type="button" data-back>Back</button>
+          <button class="btn" type="submit" data-label="Send my enquiry">Send my enquiry</button>
+        </div>
+        <p style="margin-top:14px;font-size:.75rem;color:var(--label)">By sending, you agree
+          to be contacted about your enquiry. Details go to our team only — see the
+          <a href="/privacy/" style="color:var(--blue)">privacy policy</a>.</p>
+      </div>
+    </form>
+
+    <div id="done" class="panel good" style="display:none">
+      <h3>Got it — reference <span id="doneref"></span>.</h3>
+      <p><b>What happens next:</b> we call you the same business day to talk through the
+         project. If it's a fit, we book the site visit, and your itemised quote arrives
+         within 48 hours of it.</p>
+      <p>A confirmation email is on its way. If anything changes, reply to it and quote
+         your reference.</p>
+    </div>
+  </div>
+</section>
+
+<script src="/assets/enquiry.js" defer></script>
+
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"ContactPage",
+  "name":"Get a residential landscaping quote",
+  "url":"{{PAGE_URL}}",
+  "about":{"@type":"LandscapeContractor","name":"Estate Landscapers","url":"https://www.estatelandscapers.com.au/"}
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"BreadcrumbList",
+  "itemListElement":[
+    {"@type":"ListItem","position":1,"name":"Home","item":"https://www.estatelandscapers.com.au/"},
+    {"@type":"ListItem","position":2,"name":"Residential","item":"https://www.estatelandscapers.com.au/residential/"},
+    {"@type":"ListItem","position":3,"name":"Get a quote","item":"{{PAGE_URL}}"}
+  ]
+}
+</script>
