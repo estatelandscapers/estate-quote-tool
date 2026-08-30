@@ -121,12 +121,18 @@ app.get('/api/backup/onedrive/test', async (req, res) => {
     res.json({ connection: conn, scheduleOn: bk.enabled(), folder: bk.FOLDER, hint });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
-app.post('/api/backup/onedrive/run', async (req, res) => {
+// Both GET and POST. POST is the correct verb for something that acts rather than reads,
+// but a browser address bar can only send GET — and a backup you can trigger from a
+// bookmark is a backup that actually gets tested. Key-protected, and it only ever creates
+// a file, so the practical risk of the looser verb is small.
+const runOneDriveBackup = async (req, res) => {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
   if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
-  try { res.json(await require('./utils/backupOneDrive').runBackup('manual')); }
+  try { res.json(await require('./utils/backupOneDrive').runBackup(req.method === 'GET' ? 'manual-browser' : 'manual')); }
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
+};
+app.get('/api/backup/onedrive/run', runOneDriveBackup);
+app.post('/api/backup/onedrive/run', runOneDriveBackup);
 
 app.get('/api/backup/status', (req, res) => {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
