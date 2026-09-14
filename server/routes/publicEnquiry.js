@@ -137,7 +137,10 @@ router.post('/enquiry', async (req, res) => {
     // sequential and therefore guessable; without a secret, anyone could post file names into
     // any lead's notes.
     const completeToken = newToken();
-    db.prepare('UPDATE leads SET enquiry_ref=?, enquiry_token=? WHERE id=?').run(ref, completeToken, id);
+    db.prepare('UPDATE leads SET enquiry_ref=?, enquiry_token=?, enquiry_files=? WHERE id=?')
+      .run(ref, completeToken, JSON.stringify({
+        declared: declared.map(f => f.name), meta, email: email || '', name, audience,
+      }), id);
 
     // Upload URLs — best effort. A OneDrive outage must never cost us the enquiry itself.
     let uploads = [], folderUrl = '', filesOk = true;
@@ -160,7 +163,12 @@ router.post('/enquiry', async (req, res) => {
         .run(noteLines + '\n⚠ OneDrive not configured — files were not received.', id);
     }
 
-    if (email) sendAck({ email, name, ref, audience, fileCount: filesOk ? declared.length : 0 });
+    // The acknowledgement names the files, so it has to wait until we know which ones
+    // actually arrived. With no files there is nothing to wait for. With files, it is sent
+    // by the reconciliation below — plus a fallback if the browser never reports back
+    // (tab closed, connection dropped), so a client is never left without a reply.
+    if (email && !declared.length) sendAck({ email, name, ref, audience, files: [], missing: [] });
+    if (email && declared.length) scheduleFallbackAck(ref);
 
     console.log(`[enquiry] ${ref} lead ${id} (${audience}) files=${declared.length} onedrive=${filesOk}`);
     res.status(201).json({
@@ -203,28 +211,98 @@ router.post('/enquiry/:ref/complete', (req, res) => {
   if (lead.enquiry_completed) return ok();
 
   const names = v => (Array.isArray(v) ? v.slice(0, MAX_FILES) : []).map(n => clean(n, 140)).filter(Boolean);
-  const okNames = names(b.uploaded), badNames = names(b.failed);
-  const extra = [
-    okNames.length ? `Files received: ${okNames.join(', ')}` : null,
-    badNames.length ? `⚠ Files that FAILED to upload: ${badNames.join(', ')} — ask the client to email these.` : null,
-  ].filter(Boolean).join('\n');
-  db.prepare("UPDATE leads SET notes=?, enquiry_completed=1, updated_at=datetime('now') WHERE id=?")
-    .run(extra ? (lead.notes || '') + '\n' + extra : (lead.notes || ''), lead.id);
+  db.prepare("UPDATE leads SET enquiry_completed=1, updated_at=datetime('now') WHERE id=?").run(lead.id);
+  reconcile(ref, names(b.uploaded), names(b.failed)).catch(e =>
+    console.log(`[enquiry] ${ref} reconcile failed: ${e.message}`));
   ok();
 });
 
-function sendAck({ email, name, ref, audience, fileCount }) {
-  const first = String(name).split(' ')[0];
+// Compare what was DECLARED against what OneDrive actually holds, and record the truth.
+//
+// The browser's report is a claim, not evidence: it uploads directly to Microsoft, so a
+// mispaired upload session or a tab closed mid-transfer can report success for a file that
+// is not there. Asking Graph is what turns a silent loss into a visible one.
+async function reconcile(ref, reportedOk = [], reportedBad = []) {
+  const lead = db.prepare('SELECT id, notes, enquiry_files FROM leads WHERE enquiry_ref=?').get(ref);
+  if (!lead || !lead.enquiry_files) return;
+  let info = {};
+  try { info = JSON.parse(lead.enquiry_files) || {}; } catch (e) { return; }
+  const declared = info.declared || [];
+  if (info.acked) return;                        // one acknowledgement only
+
+  let actual = [];
+  let checked = false;
+  if (onedrive.configured() && declared.length) {
+    try { actual = await onedrive.listFolder(info.meta); checked = true; } catch (e) {
+      console.log(`[enquiry] ${ref} could not list OneDrive: ${e.message}`);
+    }
+  }
+  // Match on the SANITISED name, since that is what OneDrive stores. Graph's
+  // conflictBehavior=rename can also append " 1", so compare on the stem.
+  const stem = s => String(s).replace(/[\\/:*?"<>|#%]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const there = new Set(actual.map(a => stem(a.name)));
+  const landed = checked ? declared.filter(d => there.has(stem(d))) : reportedOk;
+  const missing = checked ? declared.filter(d => !there.has(stem(d)))
+                          : declared.filter(d => !reportedOk.includes(d));
+  // A zero-byte file in OneDrive is a failed upload, not a file.
+  const empty = actual.filter(a => !a.size).map(a => a.name);
+
+  const lines = [
+    landed.length ? `Files received (${landed.length}): ${landed.join(', ')}` : null,
+    missing.length ? `⚠ MISSING (${missing.length}): ${missing.join(', ')} — not in OneDrive. Ask the client to email these, quoting ${ref}.` : null,
+    empty.length ? `⚠ Empty (0 bytes): ${empty.join(', ')} — upload did not complete.` : null,
+    checked ? null : 'Note: OneDrive could not be checked; the list above is what the browser reported.',
+  ].filter(Boolean).join('\n');
+  if (lines) db.prepare("UPDATE leads SET notes=?, updated_at=datetime('now') WHERE id=?")
+    .run((lead.notes || '') + '\n' + lines, lead.id);
+
+  if (missing.length || empty.length) {
+    const to = process.env.ENQUIRY_ALERT_TO || process.env.BACKUP_ALERT_TO;
+    if (to) sendMail({ to, subject: `Enquiry ${ref} — ${missing.length + empty.length} file(s) did not arrive`,
+      html: `<p>Enquiry <b>${ref}</b> declared ${declared.length} file(s); ${landed.length} are in OneDrive.</p>
+             <p><b>Missing:</b> ${[...missing, ...empty].join(', ') || 'none'}</p>
+             <p>The lead notes carry the same detail. The client has been asked to email these through.</p>`,
+    }).catch(() => {});
+  }
+
+  info.acked = true; info.landed = landed; info.missing = missing;
+  db.prepare('UPDATE leads SET enquiry_files=? WHERE id=?').run(JSON.stringify(info), lead.id);
+  if (info.email) sendAck({ email: info.email, name: info.name, ref, audience: info.audience,
+    files: landed, missing: [...missing, ...empty] });
+}
+
+// If the browser never calls back, reconcile anyway. Otherwise a client whose tab closed
+// mid-upload gets no acknowledgement at all.
+function scheduleFallbackAck(ref) {
+  setTimeout(() => { reconcile(ref).catch(() => {}); }, 10 * 60 * 1000).unref();
+}
+
+// Sent once, after we know what actually reached OneDrive — never before. The old version
+// went out at submission time saying files "have been received safely", which was a claim
+// the server had no way to stand behind: the browser had not finished uploading yet.
+function sendAck({ email, name, ref, audience, files = [], missing = [] }) {
+  const first = String(name || '').split(' ')[0] || 'there';
+  const esc = s => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const list = files.length
+    ? `<p><b>Files received:</b></p><ul style="margin:6px 0 10px;padding-left:20px">${
+        files.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+       <p>We're assessing ${files.length > 1 ? 'these' : 'this'} now and will get back to you shortly.</p>`
+    : '';
+  const chase = missing.length
+    ? `<p style="background:#FFF4E5;padding:10px;border-left:3px solid #E08600">
+         <b>${missing.length === 1 ? 'One file didn\'t come through:' : 'Some files didn\'t come through:'}</b>
+         ${esc(missing.join(', '))}.<br>Could you reply to this email with ${missing.length === 1 ? 'it' : 'them'} attached, quoting ${ref}?</p>`
+    : '';
   sendMail({
     to: email,
     subject: `We've received your enquiry — ${ref}`,
     html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#000">
-<p>Hi ${first},</p>
+<p>Hi ${esc(first)},</p>
 <p>Thanks for your enquiry — it's in front of our team now, reference <b>${ref}</b>.</p>
+${list}${chase}
 <p><b>What happens next:</b> we'll call you ${audience === 'commercial'
   ? 'to talk through the project and what documents we need for a priced submission'
-  : 'the same business day to talk through your project'}.
-${fileCount ? `Your ${fileCount} file${fileCount > 1 ? 's have' : ' has'} been received safely.` : ''}</p>
+  : 'the same business day to talk through your project'}.</p>
 <p>If anything changes in the meantime, just reply to this email and quote ${ref}.</p>
 <p>Estate Landscapers<br>
 <span style="color:#666">Licensed Landscapers · LIC 487076C · enquiry@estatelandscapers.com.au</span></p>

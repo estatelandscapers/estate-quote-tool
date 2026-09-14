@@ -111,5 +111,20 @@ async function selfTest() {
 // gfetch/drive/encPath are exported (as graphJson/driveRoot/encodePath) so the daily
 // database backup can reuse this same app registration and token cache rather than
 // carrying a second copy of the auth.
-module.exports = { configured, ensureFolder, uploadUrlFor, folderPathFor, selfTest, ROOT,
+// What is ACTUALLY in the enquiry folder. The browser uploads straight to Microsoft, so
+// its report is the only thing the server would otherwise have — and a browser that closed
+// mid-upload, or mispaired a file with someone else's upload session, reports success it
+// cannot vouch for. This asks Graph directly and is the difference between "the client says
+// it worked" and "the file is there".
+async function listFolder(meta) {
+  try {
+    const r = await gfetch(`${drive()}/root:/${encPath(folderPathFor(meta))}:/children?$top=200&$select=name,size`);
+    return (r.value || []).map(x => ({ name: x.name, size: x.size || 0 }));
+  } catch (e) {
+    if (/ 404/.test(e.message)) return [];      // folder never created — nothing landed
+    throw e;
+  }
+}
+
+module.exports = { configured, ensureFolder, uploadUrlFor, folderPathFor, listFolder, selfTest, ROOT,
   graphJson: gfetch, driveRoot: drive, encodePath: encPath };

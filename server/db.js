@@ -366,6 +366,10 @@ addColumn('leads','docs_channel','TEXT');
 addColumn('leads','enquiry_ref','TEXT');
 addColumn('leads','enquiry_token','TEXT');
 addColumn('leads','enquiry_completed','INTEGER DEFAULT 0');
+// What the browser SAID it was going to upload, as JSON. Kept so the server can later ask
+// OneDrive what actually landed and compare. Without this there is nothing to reconcile
+// against — the server would only ever know what the browser chose to report.
+addColumn('leads','enquiry_files','TEXT');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');
