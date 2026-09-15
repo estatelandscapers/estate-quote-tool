@@ -425,17 +425,31 @@ router.post('/:id/revision', (req, res) => {
   sibs.forEach(s => { const m = String(s.quote_number).match(/\.(\d+)$/); if (m) maxSuffix = Math.max(maxSuffix, Number(m[1])); });
   const newNumber = `${src.parent_number}.${maxSuffix + 1}`;
   const id = newId();
-  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,validity_days,default_package,payment_schedule,site_notes,special_clauses,siteplan_data,siteplan_mime,applied_surcharges)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+  // Fields that belong to the JOB carry forward; fields that belong to the SENDING of a
+  // particular revision (status, signature, sent_*, accepted_*, lost_*) deliberately reset.
+  // customer_tier and crew_size both feed pricing, so losing them silently repriced the
+  // revision. lead_id keeps the new revision attached to its enquiry. siteplan_na and
+  // surcharges_na are decisions the estimator already made about this job.
+  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,validity_days,default_package,payment_schedule,site_notes,special_clauses,siteplan_data,siteplan_mime,applied_surcharges,customer_tier,crew_size,lead_id,siteplan_na,surcharges_na)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, newToken(), src.parent_number, newNumber, src.project_title, src.client_name, src.client_email, src.address,
     new Date().toISOString().slice(0, 10), src.validity_days, src.default_package, src.payment_schedule,
-    src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime, src.applied_surcharges);
-  db.prepare('SELECT * FROM quote_items WHERE quote_id=?').all(src.id).forEach(it => {
-    db.prepare(`INSERT INTO quote_items (id,quote_id,scope,price_item_id,custom_code,custom_name,custom_unit,custom_rate,qty,tier_override,behaviour_override,shared_enabled,shared_pct,sort_order,
-      locked_basic_spec,locked_basic_sell,locked_standard_spec,locked_standard_sell,locked_premium_spec,locked_premium_sell,locked_behaviour)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(newId(), id, it.scope, it.price_item_id, it.custom_code, it.custom_name, it.custom_unit, it.custom_rate, it.qty, it.tier_override, it.behaviour_override, it.shared_enabled, it.shared_pct, it.sort_order,
-      it.locked_basic_spec, it.locked_basic_sell, it.locked_standard_spec, it.locked_standard_sell, it.locked_premium_spec, it.locked_premium_sell, it.locked_behaviour);
-  });
+    src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime, src.applied_surcharges,
+    src.customer_tier, src.crew_size, src.lead_id, src.siteplan_na, src.surcharges_na);
+  // Copy EVERY column except the row's own identity. The previous version listed 21 columns
+  // by hand and silently dropped 28 others — including custom_desc, custom_tiered, the three
+  // custom_spec_* fields and all three val_* prices. That is why a revision showed custom
+  // items with their names intact but $0 and an empty scope box: the name was copied, the
+  // price and description were not.
+  //
+  // Enumerating the columns from the table keeps this correct when columns are added later.
+  // A hand-written list is a bug waiting for the next migration.
+  const cols = db.prepare('PRAGMA table_info(quote_items)').all()
+    .map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
+  const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')})
+    VALUES (?,?,${cols.map(() => '?').join(',')})`);
+  db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order, rowid').all(src.id)
+    .forEach(it => ins.run(newId(), id, ...cols.map(c => it[c])));
   res.status(201).json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(id)));
 });
 
