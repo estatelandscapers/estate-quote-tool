@@ -356,10 +356,18 @@ router.get('/ingest/status', (req, res) => {
       subject: r.subject, needsReview: !!r.needs_review, reviewed: !!r.reviewed, at: r.created_at })) });
 });
 
-// Read the mailbox now, rather than waiting for the timer.
+// Live connection test — logs in to Gmail and counts matching mail. Slow (seconds), so
+// it runs on a button, not on tab load.
+router.get('/ingest/test', async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  res.json(await MAIL.testConnection());
+});
+
+// Read the mailbox now, rather than waiting for the timer. limit 100 so a two-week
+// backfill on first run isn't cut short.
 router.post('/ingest/run', async (req, res) => {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
-  const r = await MAIL.pollOnce({ limit: 50 });
+  const r = await MAIL.pollOnce({ limit: 100 });
   res.json(r);
 });
 

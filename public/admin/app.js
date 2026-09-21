@@ -2755,6 +2755,15 @@ async function settingsTab(v) {
       <span id="testResult" style="font-size:11.5px;"></span>
     </div>
     <button class="btn btn-blue" id="saveCompany">Save company</button></div>
+  <div class="card"><h2>Lead inbox (Gmail)</h2>
+    <div class="sub">Watches the mailbox for hipages Job Details emails and turns each accepted lead into an enquiry automatically. Configured with IMAP_HOST / IMAP_USER / IMAP_PASS / IMAP_FROM in Railway.</div>
+    <div class="rule"></div>
+    <div id="ingestStatus" style="font-size:12px;margin-bottom:10px;"><span class="muted">Loading…</span></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button class="btn btn-ghost btn-sm" id="ingestTest">Test Gmail connection</button>
+      <button class="btn btn-blue btn-sm" id="ingestRun">Pull last 2 weeks of jobs now</button>
+      <span id="ingestResult" style="font-size:11.5px;"></span>
+    </div></div>
   <div class="card"><h2>Package descriptions</h2><div class="rule"></div>${TIERS.map(t => `<div class="field"><label>${t}</label><textarea id="set_pkg_desc_${t.toLowerCase()}" rows="2">${esc(s['pkg_desc_' + t.toLowerCase()])}</textarea></div>`).join('')}<button class="btn btn-blue" id="savePkg">Save descriptions</button></div>
   <div class="card"><h2>Contract text</h2><div class="sub">Protections: one per line as "Title|Detail".</div><div class="rule"></div>
     <div class="field"><label>Default special clauses</label><textarea id="set_default_special_clauses" rows="3">${esc(s.default_special_clauses)}</textarea></div>
@@ -2785,6 +2794,34 @@ async function settingsTab(v) {
       : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.error || 'failed')}</span><br><span class="muted">${esc(r.hint || '')}</span>`;
   });
   $('#saveCompany').addEventListener('click', save(['company_name', 'company_abn', 'company_lic', 'company_phone', 'company_email', 'association_line', 'company_address', 'tagline'], 'Company saved'));
+  // Lead inbox: quick status (no IMAP login) on tab open; the live login runs on the button
+  // because it takes seconds against Gmail.
+  (async () => {
+    const el = $('#ingestStatus'); if (!el) return;
+    try {
+      const st = await api('/leads/ingest/status');
+      const byP = (st.byPlatform || []).map(x => `${esc(x.platform || 'other')}: ${x.n}`).join(' · ');
+      el.innerHTML = st.configured
+        ? `<span class="tag tag-accepted">CONFIGURED</span> watching <b>${esc(st.user)}</b>, every ${st.pollMinutes} min` +
+          (byP ? `<br><span class="muted">Leads created so far — ${byP}</span>` : '') +
+          (st.needsReview ? `<br><span style="color:var(--red);font-weight:700;">${st.needsReview} lead(s) flagged for review</span>` : '')
+        : `<span class="tag tag-superseded">NOT CONFIGURED</span> <span class="muted">set the four IMAP variables in Railway, then redeploy</span>`;
+    } catch (e) { el.innerHTML = '<span class="muted">Status unavailable</span>'; }
+  })();
+  $('#ingestTest').addEventListener('click', async () => {
+    const el = $('#ingestResult'); el.innerHTML = '<span class="muted">Connecting to Gmail…</span>';
+    const r = await api('/leads/ingest/test');
+    el.innerHTML = r.ok
+      ? `<span style="color:var(--green);font-weight:700;">✓ Connected as ${esc(r.user)}</span> — ${r.matching} hipages email(s) in the last ${r.windowDays || 14} days`
+      : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.error || 'failed')}</span>${r.hint ? `<br><span class="muted">${esc(r.hint)}</span>` : ''}`;
+  });
+  $('#ingestRun').addEventListener('click', async () => {
+    const el = $('#ingestResult'); el.innerHTML = '<span class="muted">Reading mailbox…</span>';
+    const r = await api('/leads/ingest/run', { method: 'POST' });
+    el.innerHTML = r.ok
+      ? `<span style="color:var(--green);font-weight:700;">✓ ${r.created} new lead(s) created</span>, ${r.skipped} already in — see the Leads tab`
+      : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.reason || 'failed')}</span>`;
+  });
   $('#savePkg').addEventListener('click', save(['pkg_desc_basic', 'pkg_desc_standard', 'pkg_desc_premium'], 'Descriptions saved'));
   $('#saveContract').addEventListener('click', save(['default_special_clauses', 'warranty_text', 'protections_text', 'standard_conditions'], 'Contract text saved'));
   $('#addUser').addEventListener('click', async () => {
