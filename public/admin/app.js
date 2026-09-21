@@ -240,8 +240,12 @@ async function leadsEnquiries(v) {
     const closed = rows.filter(r => ['Won', 'Lost'].includes(r.status));
     const shown = hide ? rows.filter(r => !['Won', 'Lost'].includes(r.status)) : rows;
     $('#hiddenCount').textContent = hide && closed.length ? `(${closed.length} hidden)` : '';
-    $('#allTable').innerHTML = shown.length ? `<table class="resp"><thead><tr><th>Name</th><th>Contact</th><th>Site</th><th>Step</th><th>Next</th><th>Quote</th><th></th></tr></thead><tbody>
+    $('#allTable').innerHTML = shown.length ? `<div id="bulkBar" style="display:none;margin-bottom:8px;">
+        <button class="btn btn-danger btn-sm" id="bulkDel">Delete selected (<span id="bulkN">0</span>)</button>
+        <span class="muted" style="font-size:11px;margin-left:8px;">Enquiries with a quote attached are protected and will be skipped.</span>
+      </div><table class="resp"><thead><tr><th style="width:26px;"><input type="checkbox" id="selAll" style="width:auto;" title="Select all shown"></th><th>Name</th><th>Contact</th><th>Site</th><th>Step</th><th>Next</th><th>Quote</th><th></th></tr></thead><tbody>
       ${shown.map(l => { const ph = STAGE_PHASE[l.stage] || 1; return `<tr${['Won', 'Lost'].includes(l.status) ? ' style="opacity:.55;"' : ''}>
+        <td><input type="checkbox" class="selLead" data-sel="${l.id}" style="width:auto;"></td>
         <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
         <td data-l="Contact">${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
         <td data-l="Site">${esc(l.suburb || l.address || '')}</td>
@@ -250,6 +254,28 @@ async function leadsEnquiries(v) {
         <td data-l="Quote">${l.quoteNumber ? esc(l.quoteNumber) : (l.quoteMissing ? '<span class="tag age-flag" title="The quote linked to this enquiry no longer exists">quote missing</span>' : '<span class="muted">—</span>')}</td>
         <td class="right"><button class="btn btn-ghost btn-sm" data-lopen2="${l.id}">Open</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`; }).join('')}
       </tbody></table>` : '<p class="muted">No open enquiries.</p>';
+    // Multi-select. The bar only appears once something is ticked, so the table stays
+    // clean for everyday use.
+    const syncBulk = () => {
+      const picked = v.querySelectorAll('.selLead:checked').length;
+      const bar = $('#bulkBar'); if (!bar) return;
+      bar.style.display = picked ? 'block' : 'none';
+      const n = $('#bulkN'); if (n) n.textContent = picked;
+    };
+    v.querySelectorAll('.selLead').forEach(c => c.addEventListener('change', syncBulk));
+    const selAll = $('#selAll');
+    if (selAll) selAll.addEventListener('change', () => {
+      v.querySelectorAll('.selLead').forEach(c => { c.checked = selAll.checked; }); syncBulk();
+    });
+    const bulkBtn = $('#bulkDel');
+    if (bulkBtn) bulkBtn.addEventListener('click', async () => {
+      const ids = [...v.querySelectorAll('.selLead:checked')].map(c => c.dataset.sel);
+      if (!ids.length) return;
+      if (!confirm(`Delete ${ids.length} enquir${ids.length === 1 ? 'y' : 'ies'}? Enquiries with a quote are skipped automatically. This cannot be undone.`)) return;
+      const r = await api('/leads/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      toast(`Deleted ${r.deleted}` + (r.skipped && r.skipped.length ? ` — kept ${r.skipped.length} with quotes` : ''));
+      leadsEnquiries(v);
+    });
     v.querySelectorAll('[data-lopen2]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen2; leadConsole(v); }));
     v.querySelectorAll('[data-ld]').forEach(b => b.addEventListener('click', async () => {
       if (confirm('Delete this enquiry?')) { await api('/leads/' + b.dataset.ld, { method: 'DELETE' }); leadsEnquiries(v); } }));

@@ -14,7 +14,10 @@ const { newId } = require('./ids');
 // ---- platform recognition ----------------------------------------------------
 // Matched on the sender first (reliable), then the subject (fallback).
 const PLATFORMS = [
-  { name: 'hipages',        from: /hipages|hipages\.com\.au/i,        subject: /hipages/i },
+  // `accept`: within a platform, only subjects matching this are enquiries. Hipages sends
+  // invitations and marketing from the same address; only "Job Details" (sent after a
+  // lead is ACCEPTED) carries the customer's contact details and belongs in the tool.
+  { name: 'hipages',        from: /hipages|hipages\.com\.au/i,        subject: /hipages/i, accept: /job details/i },
   { name: 'ServiceSeeking', from: /serviceseeking/i,                  subject: /service ?seeking/i },
   { name: 'Airtasker',      from: /airtasker/i,                       subject: /airtasker/i },
   { name: 'Bark',           from: /bark\.com|barkteam/i,              subject: /\bbark\b/i },
@@ -261,33 +264,42 @@ async function pollOnce({ limit = 25 } = {}) {
     await client.connect();
     const lock = await client.getMailboxLock(c.folder);
     try {
-      // Filtered (shared inbox) mode searches by SENDER + DATE, deliberately ignoring the
-      // read flag. Anything else with this mailbox open — the hipages bot, Gmail on a
-      // phone — marks mail read the moment it's looked at, and an unseen-only search would
-      // then silently skip that lead forever. Message-ID dedupe makes re-reads harmless.
+      // Both modes search by DATE, not read-status, and flags are never written — the
+      // mailbox is left exactly as found. Dedupe comes from mail_ingest message-ids.
       const query = c.fromFilter
         ? { from: c.fromFilter, since: new Date(Date.now() - BACKFILL_DAYS * 864e5) }
-        : { seen: false };
+        : { since: new Date(Date.now() - BACKFILL_DAYS * 864e5) };
       const uids = await client.search(query, { uid: true });
       const take = (uids || []).slice(-limit);
-      // In filtered (main inbox) mode, never touch flags — the owner's unread markers are
-      // theirs. Dedupe by Message-ID makes re-reading the same mail harmless.
-      const mark = async uid => { if (!c.fromFilter) await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }); };
+      // Record a decision about a message so it is never re-examined — including the
+      // decision to IGNORE it. Without this, ignored mail would be re-read every poll.
+      const recordIgnored = (mid, from, subject, why) => db.prepare(
+        `INSERT OR IGNORE INTO mail_ingest (id,message_id,lead_id,platform,subject,sender,raw,parsed,needs_review,created_at)
+         VALUES (?,?,NULL,'ignored',?,?,?,'{}',0,datetime('now'))`)
+        .run(newId(), mid || ('no-id-' + newId()), subject || '', from || '', why);
+      const ingestAll = process.env.IMAP_INGEST_ALL === '1';
       for (const uid of take) {
         const msg = await client.fetchOne(String(uid), { source: true, envelope: true }, { uid: true });
         if (!msg) continue;
         const parsed = await simpleParser(msg.source);
         const messageId = parsed.messageId || (msg.envelope && msg.envelope.messageId) || null;
-        if (alreadySeen(messageId)) { skipped.push('duplicate'); await mark(uid); continue; }
+        if (alreadySeen(messageId)) { skipped.push('duplicate'); continue; }
         const from = (parsed.from && parsed.from.text) || '';
         const subject = parsed.subject || '';
         const text = parsed.text || String(parsed.html || '').replace(/<[^>]+>/g, '\n');
-        // Ignore anything that clearly isn't an enquiry.
-        if (/^(re:|fwd:)/i.test(subject) && !detectPlatform(from, subject)) {
-          skipped.push('reply'); await mark(uid); continue;
+        // Only a recognised platform's enquiry email becomes a lead. An ordinary email —
+        // an invoice, a client reply, a newsletter — is not an enquiry, and turning a
+        // whole inbox into leads is far worse than asking someone to forward one that was
+        // missed. IMAP_INGEST_ALL=1 restores everything-is-an-enquiry for a true
+        // dedicated leads mailbox.
+        const platform = detectPlatform(from, subject);
+        const plat = PLATFORMS.find(p => p.name === platform);
+        const isEnquiry = !!platform && (!plat || !plat.accept || plat.accept.test(subject));
+        if (!isEnquiry && !ingestAll) {
+          recordIgnored(messageId, from, subject, platform ? 'platform, not an enquiry email' : 'not a lead platform');
+          skipped.push('ignored'); continue;
         }
         created.push(createFromEmail({ messageId, from, subject, text, html: parsed.html || '', receivedAt: parsed.date }));
-        await mark(uid);
       }
     } finally { lock.release(); }
     await client.logout();

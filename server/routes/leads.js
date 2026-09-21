@@ -75,6 +75,29 @@ router.put('/:id', (req, res) => {
 });
 router.delete('/:id', (req, res) => { db.prepare('DELETE FROM leads WHERE id=?').run(req.params.id); res.status(204).end(); });
 
+// Delete many leads at once — for cleaning up a bad import without 110 clicks.
+// Two protections: a lead with a quote attached is skipped, never deleted (losing a real
+// client to a cleanup sweep is unrecoverable); and the mail_ingest records are KEPT with
+// their lead link cleared, because they are the dedupe memory — delete them and the next
+// mailbox poll would recreate the very junk that was just removed.
+router.post('/bulk-delete', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.slice(0, 500) : [];
+  if (!ids.length) return res.status(400).json({ error: 'No leads selected' });
+  let deleted = 0; const skipped = [];
+  const hasQuote = db.prepare('SELECT id FROM quotes WHERE lead_id=? LIMIT 1');
+  for (const id of ids) {
+    const lead = db.prepare('SELECT id, name FROM leads WHERE id=?').get(id);
+    if (!lead) continue;
+    if (hasQuote.get(id)) { skipped.push(lead.name || id); continue; }
+    db.prepare('UPDATE mail_ingest SET lead_id=NULL WHERE lead_id=?').run(id);
+    db.prepare('DELETE FROM lead_messages WHERE lead_id=?').run(id);
+    db.prepare('DELETE FROM leads WHERE id=?').run(id);
+    deleted++;
+  }
+  res.json({ ok: true, deleted, skipped });
+});
+
 // Convert a lead into a quote — carries the details across, links both ways.
 router.post('/:id/convert', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
