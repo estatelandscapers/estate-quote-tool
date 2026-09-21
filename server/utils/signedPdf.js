@@ -39,8 +39,12 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     doc.fontSize(8.5).fillColor('#555').text(`${settings.company_abn || ''}  ·  ${settings.company_lic || ''}  ·  ${settings.company_address || ''}`);
     doc.moveTo(50, doc.y + 4).lineTo(doc.page.width - 50, doc.y + 4).lineWidth(2).strokeColor('#1E5BFF').stroke();
     doc.moveDown(0.9);
-    if (preview) doc.fontSize(9).fillColor('#B08D3E').text('PREVIEW — not a signed document', { align: 'right' }).fillColor('#000');
-    doc.fontSize(14).fillColor('#000').text('SIGNED CONTRACT & ACCEPTANCE RECORD');
+    if (preview) {
+      doc.fontSize(9).fillColor('#B08D3E').text('PREVIEW — AWAITING CLIENT SIGN-OFF', { align: 'right' }).fillColor('#000');
+      doc.fontSize(14).fillColor('#000').text('CONTRACT PREVIEW — AWAITING CLIENT SIGN-OFF');
+    } else {
+      doc.fontSize(14).fillColor('#000').text('SIGNED CONTRACT & ACCEPTANCE RECORD');
+    }
     doc.moveDown(0.4).fontSize(9.5);
     doc.text(`Quote: ${quote.quote_number}          Date: ${quote.quote_date || ''}`);
     doc.text(`Client: ${quote.client_name || ''}`);
@@ -131,6 +135,19 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
 
     // ---- signature ----
     if (doc.y > doc.page.height - 200) doc.addPage();
+    if (preview) {
+      // No fabricated names, times or signatures. This section becomes the signature
+      // record only after the client actually signs on their quote link.
+      H('Signature record');
+      doc.fontSize(11).fillColor('#B08D3E').text('Awaiting client sign-off').fillColor('#000');
+      doc.moveDown(0.3).fontSize(9)
+        .text('This is a preview. The signature record — name, date, time and signature — is added automatically when the client accepts and signs on their quote link.');
+      doc.moveDown(1.6);
+      const boxY = doc.y;
+      doc.moveTo(52, boxY + 40).lineTo(280, boxY + 40).lineWidth(0.8).strokeColor('#666').stroke();
+      doc.y = boxY + 44;
+      doc.fontSize(8).fillColor('#666').text('Client signature — not yet signed', 52).fillColor('#000');
+    } else {
     H('Signature record');
     doc.fontSize(9.5);
     doc.text(`Signed by: ${quote.signed_name || ''}`);
@@ -157,10 +174,11 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     }
     doc.moveTo(52, doc.y).lineTo(280, doc.y).lineWidth(0.8).strokeColor('#666').stroke();
     doc.moveDown(0.3).fontSize(8).fillColor('#666').text(`${quote.signed_name || ''} — Client`, 52).fillColor('#000');
+    }
 
     // ---- terms (flow on — only page-break when genuinely near the bottom) ----
     if (doc.y > doc.page.height - 160) doc.addPage();
-    H('Special clauses (as signed)');
+    H(preview ? 'Special clauses' : 'Special clauses (as signed)');
     doc.fontSize(9).text(quote.special_clauses || settings.default_special_clauses || 'None for this quote.');
     H('Warranty');
     doc.fontSize(9).text(settings.warranty_text || '');
@@ -184,6 +202,12 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
       doc.fontSize(7).fillColor('#999')
         .text(`${settings.tagline || 'Integrity. Precision. Value.'}   ·   Quote ${quote.quote_number}   ·   Page ${i - range.start + 1} of ${range.count}`,
           50, fy + 10, { width: 260, lineBreak: false });
+      if (preview) {
+        // Amber PREVIEW stamp where the signature would sit — on every page, so no single
+        // page can be photocopied or screenshotted into looking like a signed one.
+        doc.fontSize(8).fillColor('#B08D3E')
+          .text('PREVIEW — awaiting client sign-off', doc.page.width - 232, fy - 2, { width: 185, lineBreak: false });
+      } else {
       doc.fontSize(6.5).fillColor('#AAA').text('SIGNED', doc.page.width - 232, fy - 2, { width: 40, lineBreak: false });
       if (sigRaw.startsWith('data:image')) {
         try { doc.image(Buffer.from(sigRaw.split(',')[1], 'base64'), doc.page.width - 190, fy - 8, { fit: [86, 24] }); } catch (e) {}
@@ -193,6 +217,7 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
       }
       doc.fontSize(6.5).fillColor('#AAA')
         .text(stampName, doc.page.width - 190, fy + 12, { width: 145, lineBreak: false });
+      }
       doc.page.margins.bottom = savedBottom;  // restore
     }
     doc.end();

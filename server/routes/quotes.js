@@ -723,11 +723,12 @@ router.get('/:id/signed-preview', async (req, res) => {
   const settings = {};
   ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
   const signed = !!q.signed_name;
-  const preview = { ...q,
-    accepted_package: q.accepted_package || q.default_package,
-    signed_name: q.signed_name || q.client_name || '(not yet signed)',
-    signed_sig: q.signed_sig || q.client_name || '',
-    accepted_at: q.accepted_at || new Date().toISOString().slice(0, 19).replace('T', ' ') };
+  // An unsigned quote goes to the PDF exactly as it is. The old version filled
+  // signed_name, signed_sig and accepted_at with the client's name and the current time —
+  // fabricating a signature record on a document nobody had signed. One amber "preview"
+  // line does not undo five pages of "SIGNED <name>" stamps; a preview must be unmistakably
+  // unsigned everywhere a signature would appear.
+  const preview = { ...q, accepted_package: q.accepted_package || q.default_package };
   try {
     const payload = pdfPayload(preview, preview.accepted_package);
     const pdf = await buildSignedPdf({ quote: preview, totals, settings, ...payload, preview: !signed });
