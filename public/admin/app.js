@@ -20,6 +20,14 @@ const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', 
 let USER = null;
 let state = { tab: 'leads', leadsSub: 'summary', precallDone: false, hideClosed: true, calMonth: null, leadId: null, leadStage: null, leadPhase: null, callStep: 0, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
+// Date as YYYY-MM-DD in the BROWSER'S timezone. Never toISOString().slice() for this:
+// toISOString converts to UTC first, and Sydney is UTC+10, so "1 October, midnight" becomes
+// "30 September, 2pm" and the date string comes out a day early. That one conversion made
+// the calendar's next-month button compute the same month forever, skipped August going
+// backwards, and cut month-end Fridays out of the visits query. It also made "today" turn
+// over at 10am instead of midnight.
+const localYmd = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 // Downscale a picked image in the browser before it goes near the network.
 // This was CALLED but never defined — every site-plan upload threw silently and
@@ -193,7 +201,7 @@ async function leadsSummary(v) {
       ${inPhase.length ? `<table><tbody>${inPhase.map(l => `<tr>
         <td><b>${esc(l.name || '—')}</b>${l.suburb ? ' — ' + esc(l.suburb) : ''}</td>
         <td class="muted">${esc(l.nextAction || '')}</td>
-        <td class="${l.due && l.due < new Date().toISOString().slice(0, 10) ? '' : 'muted'}" style="${l.due && l.due < new Date().toISOString().slice(0, 10) ? 'color:var(--red);' : ''}">${esc(l.due || 'no date')}</td>
+        <td class="${l.due && l.due < localYmd() ? '' : 'muted'}" style="${l.due && l.due < localYmd() ? 'color:var(--red);' : ''}">${esc(l.due || 'no date')}</td>
         <td class="right"><button class="btn btn-ghost btn-sm" data-po="${l.id}">Open</button></td></tr>`).join('')}</tbody></table>`
         : '<p class="muted">Nothing at this step.</p>'}</div>`;
     $('#hidePhase').addEventListener('click', () => { state.leadPhase = null; leadsSummary(v); });
@@ -206,7 +214,7 @@ async function leadsEnquiries(v) {
   const [board, data, stageData] = await Promise.all([api('/leads/board'), api('/leads'), api('/leads/stages')]);
   if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
   const rows = data.leads || [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localYmd();
   const line = (l, cls) => `<div class="today ${cls} ${l.phase === 4 ? 'q' : ''}">
       <div><b>${esc(l.name || '—')}</b>${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
         <br><span class="muted" style="font-size:11px;">Step ${l.phase} · ${esc(l.stageLabel)} · <b>${esc(l.nextAction)}</b>${l.due ? ' · due ' + esc(l.due) : ''}${l.quoteNumber ? ' · quote ' + esc(l.quoteNumber) : ''}</span></div>
@@ -293,14 +301,14 @@ async function leadsEnquiries(v) {
 async function leadsCalendar(v) {
   const base = state.calMonth ? new Date(state.calMonth + '-01T00:00:00') : new Date();
   const y = base.getFullYear(), m = base.getMonth();
-  const from = new Date(y, m, 1).toISOString().slice(0, 10);
-  const to = new Date(y, m + 1, 1).toISOString().slice(0, 10);
+  const from = localYmd(new Date(y, m, 1));
+  const to = localYmd(new Date(y, m + 1, 1));
   const [cal, bookable] = await Promise.all([api(`/leads/calendar?from=${from}&to=${to}`), api('/leads/calendar/bookable')]);
   const byDay = {}; (cal.visits || []).forEach(x => { (byDay[x.date] = byDay[x.date] || []).push(x); });
   const monthName = new Date(y, m, 1).toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
   const firstDow = (new Date(y, m, 1).getDay() + 6) % 7;          // Monday first
   const daysIn = new Date(y, m + 1, 0).getDate();
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = localYmd();
 
   let cells = '';
   for (let i = 0; i < firstDow; i++) cells += '<div class="calday out"></div>';
@@ -331,7 +339,7 @@ async function leadsCalendar(v) {
       ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<div class="caldow">${x}</div>`).join('')}
       ${cells}</div></div></div>`;
 
-  const shift = n => { const d = new Date(y, m + n, 1); state.calMonth = d.toISOString().slice(0, 7); leadsCalendar(v); };
+  const shift = n => { const d = new Date(y, m + n, 1); state.calMonth = localYmd(d).slice(0, 7); leadsCalendar(v); };
   $('#calPrev').addEventListener('click', () => shift(-1));
   $('#calNext').addEventListener('click', () => shift(1));
   $('#calToday').addEventListener('click', () => { state.calMonth = null; leadsCalendar(v); });
@@ -2043,7 +2051,7 @@ async function vendorsTab(v) {
   ${list.map(x => `<tr><td><b>${esc(x.name)}</b></td>
     <td>${x.isSupplier ? '<span class="tag t-sup">Supplier</span>' : ''} ${x.isSubcontractor ? '<span class="tag t-subv">Subcontractor</span>' : ''}</td>
     <td>${esc(x.area || '')}</td><td>${esc(x.contact || '')} ${esc(x.phone || '')}</td><td>${esc(x.terms || '')}</td>
-    <td>${x.isSubcontractor ? (x.insuranceExpiry && x.insuranceExpiry < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">Insurance expired</span>' : '<span class="tag tag-accepted">OK</span>') : '—'}</td>
+    <td>${x.isSubcontractor ? (x.insuranceExpiry && x.insuranceExpiry < localYmd() ? '<span class="tag tag-superseded">Insurance expired</span>' : '<span class="tag tag-accepted">OK</span>') : '—'}</td>
     <td>${(x.supplies || []).length}</td>
     <td class="right"><button class="btn btn-ghost btn-sm" data-ev="${x.id}">Open</button> <button class="btn btn-danger btn-sm" data-dv="${x.id}">✕</button></td></tr>`).join('')}
   </tbody></table></div><div id="vDetail"></div>`;
@@ -2077,7 +2085,7 @@ async function vendorsTab(v) {
       ${(x.supplies || []).length ? `<table><thead><tr><th>Code</th><th>Item</th><th>Unit</th><th class="right">Cost</th><th>Delivery rule</th><th>Review by</th><th>Default</th></tr></thead><tbody>
         ${x.supplies.map(s => `<tr><td><b>${esc(s.code)}</b></td><td>${esc(s.name)}</td><td>${esc(s.unit || '')}</td>
           <td class="right">${s.cost != null ? money2(s.cost) : '—'}</td><td>${esc(s.deliveryRule || '—')}</td>
-          <td>${esc(s.reviewBy || '—')}${s.reviewBy && s.reviewBy < new Date().toISOString().slice(0, 10) ? ' <span class="tag tag-superseded">stale</span>' : ''}</td>
+          <td>${esc(s.reviewBy || '—')}${s.reviewBy && s.reviewBy < localYmd() ? ' <span class="tag tag-superseded">stale</span>' : ''}</td>
           <td>${s.isDefault ? '<span class="tag tag-accepted">Default</span>' : ''}</td></tr>`).join('')}
         </tbody></table>` : '<p class="muted">Nothing linked yet.</p>'}
       ${(x.usedInRecipes || []).length ? `<div class="legend">Used in recipes: ${x.usedInRecipes.map(esc).join(', ')}</div>` : ''}
