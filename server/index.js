@@ -2,6 +2,22 @@ const express = require('express');
 const path = require('node:path');
 
 const app = express();
+
+// Railway terminates HTTPS at its edge and forwards the request to this app as plain
+// HTTP, adding X-Forwarded-Proto: https. Without trusting that header, req.protocol is
+// 'http' — so every quote link the tool emailed to clients was http://, and clients opened
+// their quote and signed their contract on a page Chrome marks "Not secure".
+app.set('trust proxy', 1);
+
+// Anyone arriving over plain HTTP — including every http:// link already sitting in
+// clients' inboxes — is sent to the HTTPS address. Only fires when the proxy explicitly
+// says the visit was http, so local development and Railway health checks are unaffected.
+app.use((req, res, next) => {
+  if (req.get('x-forwarded-proto') === 'http') {
+    return res.redirect(301, 'https://' + req.get('host') + req.originalUrl);
+  }
+  next();
+});
 app.use(express.json({ limit: '15mb' })); // large limit so base64 site-plan drawings upload cleanly
 
 // simple request logger (helps a developer see traffic in dev; swap for pino/morgan later)
@@ -34,6 +50,15 @@ app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
 
 app.use('/assets', express.static(path.join(__dirname, '..', 'public', 'assets')));
 app.use('/admin', express.static(path.join(__dirname, '..', 'public', 'admin')));
+// The service worker is served from the site root so its scope covers the whole tool
+// (a worker's scope cannot exceed the path it is served from). Cache-Control: no-cache
+// matters: browsers re-check this file on every load, and a cached worker would pin
+// the app to an old version — the opposite of what the worker is for.
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(__dirname, '..', 'public', 'admin', 'sw.js'));
+});
 
 app.use('/q/static', express.static(path.join(__dirname, '..', 'public', 'quote')));
 app.get('/q/:token', (req, res) => {

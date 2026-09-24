@@ -1,4 +1,12 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1E5BFF">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Estate">
+<link rel="manifest" href="/admin/manifest.json">
+<link rel="apple-touch-icon" href="/admin/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/admin/icons/icon-192.png">
 <title>Estate Landscapers — Sign in</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -20,7 +28,7 @@ button{width:100%;background:#1E5BFF;color:#fff;border:none;border-radius:8px;pa
   <form id="f">
     <label>Username</label><input id="u" autocomplete="username" autofocus>
     <label>Password</label><input id="p" type="password" autocomplete="current-password">
-    <div class="rem"><input type="checkbox" id="r"> <span>Remember this device for 30 days</span></div>
+    <div class="rem"><input type="checkbox" id="r" checked> <span>Remember this device for 30 days</span></div>
     <button type="submit">Sign in</button>
     <div class="err" id="e"></div>
   </form>
@@ -38,4 +46,9 @@ document.getElementById('f').addEventListener('submit', async function(ev){
     else{e.textContent=j.error||'Sign-in failed';e.style.display='block';}
   }catch(err){e.textContent='Network error';e.style.display='block';}
 });
-</script></body></html>
+</script><script>
+// Registers the service worker that makes the tool installable and keeps a copy of the
+// app shell for use with no signal. Network-first, so every deploy shows up immediately.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+</script>
+</body></html>
