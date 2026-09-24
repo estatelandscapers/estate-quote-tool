@@ -28,6 +28,22 @@ let state = { tab: 'leads', leadsSub: 'summary', precallDone: false, hideClosed:
 // over at 10am instead of midnight.
 const localYmd = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+// Text boxes grow to fit their content. A two-row textarea holding an eight-line scope
+// description hid six of them behind a scrollbar too small to notice on a phone. Runs on
+// every textarea the app renders and again on each keystroke; capped so a pasted essay
+// can't take over the page.
+const autosize = ta => {
+  if (!ta || ta.tagName !== 'TEXTAREA') return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight + 2, 420) + 'px';
+};
+document.addEventListener('input', e => autosize(e.target));
+let _asRaf = 0;
+new MutationObserver(() => {
+  if (_asRaf) return;
+  _asRaf = requestAnimationFrame(() => { _asRaf = 0; document.querySelectorAll('textarea').forEach(autosize); });
+}).observe(document.getElementById('app'), { childList: true, subtree: true });
+
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 // Downscale a picked image in the browser before it goes near the network.
 // This was CALLED but never defined — every site-plan upload threw silently and
@@ -1758,7 +1774,7 @@ async function quoteEditor(v) {
         ${tierCells}
         <td class="right">${it.priceItemId ? `<button class="btn btn-ghost btn-sm" data-dup="${it.id}" title="Add another one of these — e.g. a second retaining wall elsewhere on the property">+</button> ` : ''}${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
     };
-    const head = `<table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
+    const head = `<table class="qb"><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
     $('#scope1').innerHTML = q.items.scope1.length ? head + q.items.scope1.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 1 items yet.</p>';
     $('#scope2').innerHTML = q.items.scope2.length ? head + q.items.scope2.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 2 items yet.</p>';
     if (c.mixed) {

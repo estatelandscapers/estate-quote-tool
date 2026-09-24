@@ -273,3 +273,64 @@ input[type=range]::-moz-range-thumb{width:30px;height:30px;border-radius:50%;bac
 .slot{font-size:9.5px;color:#c5c5c5;margin-top:4px;cursor:pointer;font-weight:700;}
 .calday.fri:hover .slot,.slot:hover{color:var(--blue);}
 @media(max-width:760px){.calday{min-height:64px;padding:3px;}.ev{font-size:9px;}.caldow{font-size:8px;}}
+
+/* ===== Mobile pass (installed app + phone browsers) ============================
+   Ordered after everything else on purpose: these must win over the earlier
+   mobile rules and over the inline styles the builder writes.                 */
+@media (max-width: 760px){
+  /* Header: brand + user on one line, tabs on the next. Was ~40% of the screen. */
+  .top{padding:8px 10px;gap:6px 8px;}
+  .brand img{height:24px !important;}
+  .brand b{font-size:11px;letter-spacing:.8px;}
+  .brand span{display:none;}
+  .top .spacer{display:none;}
+  .top > .tag{margin-left:auto;font-size:8.5px;padding:3px 7px;}
+  .top #signout{padding:6px 9px;font-size:9.5px;}
+  .top .nav{order:10;flex:1 1 100%;margin:2px 0 0;}
+
+  /* Stacked cards: label ABOVE the value, full width. The earlier flex layout put
+     label and value side by side, and a <br> means nothing inside flex — so a
+     "phone <br> email" cell was squeezed into a column and the email spilled out. */
+  table.resp tr{position:relative;padding:10px 12px 8px;}
+  table.resp td{display:block;padding:4px 0;overflow-wrap:anywhere;}
+  table.resp td:before{display:block;flex:none;margin-bottom:1px;}
+  table.resp td[data-l="Contact"]{white-space:nowrap;}              /* phone on one line */
+  table.resp td[data-l="Contact"] span{display:block;white-space:normal;}   /* email wraps */
+  table.resp td:first-child:not([data-l]){position:absolute;top:10px;right:12px;padding:0;} /* select box */
+  table.resp td:first-child:not([data-l]) input{width:20px;height:20px;}
+  table.resp td.right{display:flex;justify-content:flex-end;gap:8px;padding-top:8px;}
+
+  /* Quote builder: each line becomes a block instead of a 7-column table that
+     scrolls sideways. Code + qty on the first line, name and scope full width,
+     the three packages side by side, actions last. */
+  .card table.qb{display:block !important;white-space:normal !important;overflow:visible !important;}
+  table.qb thead{display:none;}
+  table.qb tbody{display:block;}
+  table.qb tr{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px;background:#fff;}
+  table.qb td{display:block;border:none;padding:0;}
+  table.qb td:nth-child(1){flex:0 0 auto;order:1;font-size:13px;}
+  table.qb td:nth-child(3){flex:0 0 auto;order:2;margin-left:auto;}
+  table.qb td:nth-child(3) input{width:74px !important;}
+  table.qb td:nth-child(2){flex:1 1 100%;order:3;font-size:13px;}
+  table.qb td:nth-child(2) input,table.qb td:nth-child(2) select{max-width:100% !important;}
+  table.qb td.center{flex:1 1 30%;order:4;text-align:center;}
+  table.qb td.center .tcell{min-height:56px;padding:6px 4px;}
+  table.qb td.right{flex:1 1 100%;order:5;display:flex;justify-content:flex-end;gap:6px;}
+
+  /* Type: 16px in every field, including the ones the builder styles inline —
+     anything smaller makes iOS zoom the whole page when a field is tapped. */
+  input,select,textarea{font-size:16px !important;min-height:40px;}
+  input[type=checkbox],input[type=radio]{min-height:0;}
+  textarea{min-height:64px;line-height:1.35;}
+  .btn{min-height:40px;}
+  .btn-sm{min-height:34px;padding:7px 11px;}
+
+  /* Sticky bars clear the home indicator; content clears the bottom bar. */
+  .builderbar,.savebar{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));}
+  .wrap{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px));}
+  .builderbar{flex-wrap:wrap;}
+  .builderbar .muted{flex:1 1 100%;margin:0 0 4px;font-size:10.5px;}
+  .builderbar .btn{flex:1 1 auto;}
+}
+/* Text boxes grow with what's in them on every screen size (see app.js autosize). */
+textarea{resize:vertical;overflow:hidden;}

@@ -7,7 +7,7 @@
 //
 // /api/ is never cached at all. A cached quote total or lead list is worse than an error.
 
-const VERSION = 'estate-v1';
+const VERSION = 'estate-v2';
 const SHELL = ['/admin/', '/admin/index.html', '/admin/app.js', '/admin/styles.css',
   '/admin/login.html', '/admin/manifest.json', '/admin/icons/icon-192.png'];
 
