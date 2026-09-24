@@ -147,7 +147,13 @@ textarea{resize:vertical;line-height:1.5;}
   table.resp td:before{content:attr(data-l);font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--grey);font-weight:700;flex:0 0 40%;}
   table.resp td:empty{display:none;}
   /* any table that isn't card-ified scrolls inside its own box, never the page */
-  .card table:not(.resp){display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;}
+  /* Wide tables scroll inside their own box rather than the page, but cells are
+     allowed to WRAP. Forcing nowrap here pushed any long answer clean out of its
+     card ("Turf, Garden beds & mulch, …") and made the page wider than the phone. */
+  .card table:not(.resp):not(.kv){display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  /* A grid cell is "at least as wide as its content" by default, so one overflowing
+     table inside .grid2 stretched the whole card past the screen edge. */
+  .grid2>*,.grid3>*,.grid4>*{min-width:0;}
   .linkbar{flex-direction:column;align-items:stretch;gap:6px;}
   .linkbar input{width:100%;}
   input,select,textarea{font-size:16px;} /* stops iOS zooming on focus */
@@ -334,3 +340,10 @@ input[type=range]::-moz-range-thumb{width:30px;height:30px;border-radius:50%;bac
 }
 /* Text boxes grow with what's in them on every screen size (see app.js autosize). */
 textarea{resize:vertical;overflow:hidden;}
+
+/* Key/value answer tables (call answers, quote-vs-call check): wrap, stay inside the
+   card, and sit at the same size as the text around them. */
+table.kv{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px;}
+table.kv td{vertical-align:top;padding:6px 6px 6px 0;overflow-wrap:anywhere;white-space:normal;line-height:1.4;border-bottom:1px solid var(--line);}
+table.kv tr:last-child td{border-bottom:none;}
+@media (max-width: 760px){ table.kv{font-size:12.5px;} table.kv td:first-child{width:40% !important;} }

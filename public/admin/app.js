@@ -1183,10 +1183,10 @@ async function leadConsole(v) {
         ${cmp ? `<a class="btn btn-ghost btn-sm" href="/admin#quote-${cmp.quoteId}" target="_blank" id="openQuoteTab">Open the quote in a new tab ↗</a>` : ''}
       </div><div class="rule"></div>
       <div class="grid2">
-        <div><table>${A.rows.map(r => `<tr><td class="muted" style="width:42%;">${esc(r.k)}</td><td>${esc(r.v)}</td></tr>`).join('')}</table></div>
+        <div><table class="kv">${A.rows.map(r => `<tr><td class="muted" style="width:42%;">${esc(r.k)}</td><td>${esc(r.v)}</td></tr>`).join('')}</table></div>
         <div>${cmp ? `
           <div class="alab">Quote ${esc(cmp.quoteNumber)} — ${money(cmp.totalIncGst)} inc GST</div>
-          <table>${cmp.onQuote.map(x => `<tr><td style="width:30%;"><b>${esc(x.code)}</b></td>
+          <table class="kv">${cmp.onQuote.map(x => `<tr><td style="width:30%;"><b>${esc(x.code)}</b></td>
             <td>${esc(x.name)}<br><span style="font-size:10.5px;color:${x.status === 'ok' ? 'var(--green)' : 'var(--amber)'};">
             ${x.status === 'ok' ? '✓ matches the call' : x.status === 'differs' ? '⚠ ' + esc(x.qtyNote) : '⚠ not discussed on the call'}</span></td></tr>`).join('')}
             ${cmp.missing.map(c => `<tr><td><b>${esc(c)}</b></td><td><span style="font-size:10.5px;color:var(--red);">⚠ discussed on the call but missing from the quote</span></td></tr>`).join('')}
