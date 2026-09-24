@@ -1087,18 +1087,38 @@ async function leadConsole(v) {
         </div>
         <div class="legend" style="margin-bottom:12px;">WhatsApp and SMS open on your phone with the message ready — press send there. The tool records it either way. Email is sent from here with your signature.</div>
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">History</div>
-        <div class="timeline">
-          ${history.length ? history.map(m => `<div class="tl" style="--c:${(CHAN[m.channel] || CHAN.note)[1]};">
+        <div class="timeline" id="leadTimeline">
+          ${history.length ? history.map(m => {
+            // Short entries render as before. Long ones get "Read more", expanding to the
+            // FULL text with line breaks kept — the whole email, not the first 90 chars.
+            const clip = txt => {
+              const t = String(txt || ''); if (!t) return '';
+              if (t.length <= 90) return `<div class="muted" style="font-size:10.5px;margin-top:2px;white-space:pre-wrap;">${esc(t)}</div>`;
+              return `<div class="muted tlBody" style="font-size:10.5px;margin-top:2px;">
+                <span class="tlShort">${esc(t.slice(0, 90))}… <a href="#" class="tlMore" style="color:var(--blue);font-weight:700;">Read more</a></span>
+                <span class="tlFull" style="display:none;white-space:pre-wrap;">${esc(t)}
+                <br><a href="#" class="tlLess" style="color:var(--blue);font-weight:700;">Show less</a></span></div>`;
+            };
+            return `<div class="tl" style="--c:${(CHAN[m.channel] || CHAN.note)[1]};">
             <b>${esc(String(m.at || '').slice(0, 16))}</b> — ${esc((CHAN[m.channel] || CHAN.note)[0])}${m.outcome === 'sent' ? ' sent' : ''}
             ${m.sentBy ? `<span class="muted"> · ${esc(m.sentBy)}</span>` : ''}
-            ${m.body ? `<div class="muted" style="font-size:10.5px;margin-top:2px;">${esc(m.body.slice(0, 90))}${m.body.length > 90 ? '…' : ''}</div>` : ''}
-            ${m.note ? `<div class="muted" style="font-size:10.5px;margin-top:2px;">${esc(m.note)}</div>` : ''}</div>`).join('')
+            ${m.subject ? `<div class="muted" style="font-size:10.5px;margin-top:2px;"><b>${esc(m.subject)}</b></div>` : ''}
+            ${clip(m.body)}${clip(m.note)}</div>`; }).join('')
             : '<div class="muted" style="font-size:11.5px;">Nothing sent yet.</div>'}
         </div>
       </div>
     </div></div>`;
 
   $('#backLeads').addEventListener('click', () => { state.leadId = null; state.leadStage = null; leadsTab(v); });
+  const tlEl = $('#leadTimeline');
+  if (tlEl) tlEl.addEventListener('click', e => {
+    const more = e.target.closest('.tlMore'), less = e.target.closest('.tlLess');
+    if (!more && !less) return;
+    e.preventDefault();
+    const body = e.target.closest('.tlBody');
+    body.querySelector('.tlShort').style.display = more ? 'none' : '';
+    body.querySelector('.tlFull').style.display = more ? '' : 'none';
+  });
   const gq = $('#goQuote'); if (gq) gq.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = l.quoteId; state.leadId = null; shell(); });
   const tq = $('#toQuote'); if (tq) tq.addEventListener('click', async () => {
     const r = await api('/leads/' + l.id + '/convert', { method: 'POST' });
