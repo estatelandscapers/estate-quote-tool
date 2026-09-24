@@ -16,13 +16,18 @@ const T = () => ({
 // code: price item · unit label · slider max/step · plain-English hints
 const SIZES = [
   { id: 'turf',    code: 'GT', label: 'Turf',                unit: 'm²', max: 400, step: 10, ask: 'How much lawn?' },
+  { id: 'aturf',   code: 'GA', label: 'Artificial turf',     unit: 'm²', max: 300, step: 5,  ask: 'How much artificial turf?' },
   { id: 'beds',    code: 'GM', label: 'Garden beds & mulch', unit: 'm²', max: 200, step: 5,  ask: 'How much garden bed?' },
   { id: 'wall',    code: 'RW', label: 'Retaining wall',      unit: 'm',  max: 50,  step: 1,  ask: 'How many metres of wall?' },
   { id: 'drive',   code: 'CP', label: 'Concrete / driveway', unit: 'm²', max: 200, step: 5,  ask: 'How big is the driveway?' },
-  { id: 'rock',    code: 'PW', label: 'Decorative rock',     unit: 'm²', max: 150, step: 5,  ask: 'How much rock?' },
+  { id: 'rock',    code: 'PW', label: 'Pebbles & decorative rock', unit: 'm²', max: 150, step: 5, ask: 'How much pebble area?' },
   { id: 'fence',   code: 'FC', label: 'Fencing',             unit: 'm',  max: 100, step: 1,  ask: 'How many metres of fence?' },
   { id: 'gates',   code: 'FG', label: 'Gates',               unit: '',   max: 6,   step: 1,  ask: 'How many gates?' },
   { id: 'steppers',code: 'PC', label: 'Stepping stones',     unit: '',   max: 40,  step: 1,  ask: 'How many stepping stones?' },
+  // Sized in the units the CREW prices, said in words the client understands: a "load" is
+  // a 10-tonne truck, a "shift" is the excavator and operator for the session.
+  { id: 'removal', code: 'RM', label: 'Removal of soil / concrete', unit: 'load', max: 10, step: 1, ask: 'Roughly how many 10-tonne truck loads to cart away?' },
+  { id: 'excav',   code: 'EW', label: 'Excavation & earthworks',    unit: 'shift', max: 8, step: 1, ask: 'How many excavator shifts, roughly?' },
 ];
 
 // ---- the questions -----------------------------------------------------------
@@ -79,10 +84,12 @@ const STEPS = [
   { id: 'scope', section: 'Scope', title: 'What they want done',
     say: "So what are you looking to have done? Just talk me through it.",
     type: 'multi', key: 'scope',
-    options: [{ v: 'turf', label: 'Turf' }, { v: 'beds', label: 'Garden beds & mulch' },
+    options: [{ v: 'turf', label: 'Turf' }, { v: 'aturf', label: 'Artificial turf' },
+              { v: 'beds', label: 'Garden beds & mulch' },
               { v: 'wall', label: 'Retaining wall' }, { v: 'drive', label: 'Concrete / driveway' },
-              { v: 'rock', label: 'Decorative rock' }, { v: 'fence', label: 'Fencing' },
+              { v: 'rock', label: 'Pebbles & decorative rock' }, { v: 'fence', label: 'Fencing' },
               { v: 'gates', label: 'Gates' }, { v: 'steppers', label: 'Stepping stones' },
+              { v: 'removal', label: 'Removal of soil / concrete' }, { v: 'excav', label: 'Excavation & earthworks' },
               { v: 'planting', label: 'Planting' }, { v: 'drainage', label: 'Drainage' },
               { v: 'unsure', label: 'Not sure — wants advice' }] },
 

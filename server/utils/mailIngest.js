@@ -52,13 +52,17 @@ const FIELD_PATTERNS = {
 
 // Words in the description that map onto price-list deliverables.
 const SCOPE_WORDS = [
+  // artificial checked before turf so "artificial turf/grass/lawn" doesn't count as natural
+  ['aturf', /artificial (turf|grass|lawn)|synthetic (turf|grass|lawn)|fake (grass|lawn)/i],
   ['turf', /\bturf|lawn|grass\b/i], ['beds', /garden bed|mulch|garden ?mix/i],
   ['wall', /retain/i], ['drive', /concrete|driveway|slab/i],
-  ['rock', /decorative rock|pebble|gravel/i],
+  ['rock', /decorative rock|pebble|gravel|marblestone/i],
   // "along the back fence" is a location, not a job. Only count fencing when it reads
   // like work — new fence, replace the fence, X metres of fencing.
   ['fence', /fenc\w*/i],  // see fenceIsWork() — "back fence" as a location is filtered out
   ['gates', /\bgate\b/i], ['steppers', /stepping stone/i],
+  ['removal', /remov(e|al)|cart away|take away|dispose|demoli/i],
+  ['excav', /excavat|earthworks|dig out|level the|cut and fill/i],
   ['planting', /plant(ing|s)?|shrub|tree/i], ['drainage', /drain|ag ?line|sump/i],
 ];
 
@@ -89,6 +93,12 @@ function parseEnquiry(text, subject) {
     if (id === 'fence') return fenceIsWork(hay);
     return true;
   }).map(([id]) => id);
+  // "artificial turf" contains the word "turf", so both would tick. Only keep natural
+  // turf if some turf/lawn/grass mention survives with the artificial phrases removed.
+  if (out.scope.includes('aturf')) {
+    const stripped = hay.replace(/(artificial|synthetic|fake)\s+(turf|grass|lawn)/gi, '');
+    if (!/\bturf|lawn|grass\b/i.test(stripped)) out.scope = out.scope.filter(s => s !== 'turf');
+  }
   if (out.scope.length) out.confidence++;
   // A name in the subject line — "New lead: Michael Birch" — when the body has none.
   if (!out.name && subject) {
