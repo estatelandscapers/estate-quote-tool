@@ -111,7 +111,7 @@
     badges.push(`<span class="badge amber">Valid ${D.validityDays} days &mdash; until ${esc(D.validUntil)}</span>`);
     const heading = `${esc(D.projectTitle || 'Landscape Works')} Fee Proposal</div><div class="eyebrow">Quote ${esc(D.quoteNumber)}`;
 
-    const sampleBanner = d.isSample ? `<div style="background:#FFF4E5;border-bottom:2px solid #E08600;color:#5a3a00;padding:12px 16px;font-size:14px;line-height:1.45;">
+    const sampleBanner = D.isSample ? `<div style="background:#FFF4E5;border-bottom:2px solid #E08600;color:#5a3a00;padding:12px 16px;font-size:14px;line-height:1.45;">
         <b>Sample quote — for illustration.</b> This is an example job, not your quote. Prices are indicative only. Try the Basic, Standard and Premium packages to see how the scope and price change — your own quote will arrive the same way.</div>` : '';
     root.innerHTML = `
     <div class="frame" oncontextmenu="return false">
@@ -146,7 +146,7 @@
       ${trustBarHtml(D)}
       <div class="total-card" id="totalCard"></div>
       <div class="pay"><b>Payment schedule</b><br>${esc(D.paymentScheduleText || '')}</div>
-      ${accepted ? '' : d.isSample ? `<div class="cta-wrap"><div class="cta-sub" style="font-size:14px;"><b>This sample can't be accepted.</b> When your own quote arrives, this is where you'll choose a package and sign.</div></div>`
+      ${accepted ? '' : D.isSample ? `<div class="cta-wrap"><div class="cta-sub" style="font-size:14px;"><b>This sample can't be accepted.</b> When your own quote arrives, this is where you'll choose a package and sign.</div></div>`
         : `<div class="cta-wrap"><button class="btn btn-blue" id="acceptBtn">Accept <span id="acceptTier">${tier}</span> package &amp; review contract &rarr;</button>
         <div class="cta-sub">You'll review the full contract, warranty and your protections before signing.</div></div>`}
       <footer>${esc(c.tagline || 'Integrity. Precision. Value.')}</footer>
