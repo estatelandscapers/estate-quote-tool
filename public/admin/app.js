@@ -232,7 +232,7 @@ async function leadsEnquiries(v) {
   const rows = data.leads || [];
   const today = localYmd();
   const line = (l, cls) => `<div class="today ${cls} ${l.phase === 4 ? 'q' : ''}">
-      <div><b>${esc(l.name || '—')}</b>${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
+      <div><b>${esc(l.name || '—')}</b>${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
         <br><span class="muted" style="font-size:11px;">Step ${l.phase} · ${esc(l.stageLabel)} · <b>${esc(l.nextAction)}</b>${l.due ? ' · due ' + esc(l.due) : ''}${l.quoteNumber ? ' · quote ' + esc(l.quoteNumber) : ''}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" data-snooze="${l.id}">😴 Snooze 3 days</button>
@@ -257,12 +257,19 @@ async function leadsEnquiries(v) {
       <label style="font-size:11.5px;display:flex;align-items:center;gap:7px;margin-bottom:9px;">
         <input type="checkbox" id="hideClosed" ${state.hideClosed !== false ? 'checked' : ''} style="width:auto;">
         Hide closed and lost enquiries <span class="muted" id="hiddenCount"></span></label>
+      <label style="font-size:11.5px;display:flex;align-items:center;gap:7px;margin-bottom:9px;">Small projects
+        <select id="smallFilter" style="width:auto;min-height:0;padding:4px 8px;font-size:11.5px;">
+          <option value="all" ${(state.smallFilter || 'all') === 'all' ? 'selected' : ''}>Show all</option>
+          <option value="only" ${state.smallFilter === 'only' ? 'selected' : ''}>Small projects only</option>
+          <option value="hide" ${state.smallFilter === 'hide' ? 'selected' : ''}>Hide small projects</option></select></label>
       <div id="allTable"></div></div>`;
 
   const paint = () => {
     const hide = state.hideClosed !== false;
     const closed = rows.filter(r => ['Won', 'Lost'].includes(r.status));
-    const shown = hide ? rows.filter(r => !['Won', 'Lost'].includes(r.status)) : rows;
+    const sf = state.smallFilter || 'all';
+    const shown = (hide ? rows.filter(r => !['Won', 'Lost'].includes(r.status)) : rows)
+      .filter(r => sf === 'all' || (sf === 'only' ? r.smallProject : !r.smallProject));
     $('#hiddenCount').textContent = hide && closed.length ? `(${closed.length} hidden)` : '';
     $('#allTable').innerHTML = shown.length ? `<div id="bulkBar" style="display:none;margin-bottom:8px;">
         <button class="btn btn-danger btn-sm" id="bulkDel">Delete selected (<span id="bulkN">0</span>)</button>
@@ -270,7 +277,7 @@ async function leadsEnquiries(v) {
       </div><table class="resp"><thead><tr><th style="width:26px;"><input type="checkbox" id="selAll" style="width:auto;" title="Select all shown"></th><th>Name</th><th>Contact</th><th>Site</th><th>Step</th><th>Next</th><th>Quote</th><th></th></tr></thead><tbody>
       ${shown.map(l => { const ph = STAGE_PHASE[l.stage] || 1; return `<tr${['Won', 'Lost'].includes(l.status) ? ' style="opacity:.55;"' : ''}>
         <td><input type="checkbox" class="selLead" data-sel="${l.id}" style="width:auto;"></td>
-        <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
+        <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.smallProject ? ` <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>` : ''}${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
         <td data-l="Contact">${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
         <td data-l="Site">${esc(l.suburb || l.address || '')}</td>
         <td data-l="Step"><span class="tag stepTag s${ph}">STEP ${ph}</span>${['Won', 'Lost'].includes(l.status) ? `<br><span class="muted" style="font-size:10px;">${esc(l.status)}</span>` : ''}</td>
@@ -305,6 +312,7 @@ async function leadsEnquiries(v) {
       if (confirm('Delete this enquiry?')) { await api('/leads/' + b.dataset.ld, { method: 'DELETE' }); leadsEnquiries(v); } }));
   };
   $('#hideClosed').addEventListener('change', e => { state.hideClosed = e.target.checked; paint(); });
+  $('#smallFilter').addEventListener('change', e => { state.smallFilter = e.target.value; paint(); });
   paint();
   v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen; leadConsole(v); }));
   v.querySelectorAll('[data-snooze]').forEach(b => b.addEventListener('click', async () => {
@@ -1050,7 +1058,7 @@ async function leadConsole(v) {
   const groups = [...new Set(stages.map(s => s.group))];
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>${esc(l.name || 'Lead')}</h2><div class="sub">${esc(l.suburb || l.address || '')}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
+      <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.suburb || l.address || '')}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
         ${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" id="goQuote">Quote ${esc(l.quoteNumber)}</button>`
@@ -1122,6 +1130,7 @@ async function leadConsole(v) {
           <button class="btn btn-ghost" id="ms_sms">SMS</button>
           <button class="btn btn-ghost" id="ms_call">📞 Log a call</button>
           <button class="btn btn-ghost" id="ms_sample" title="Loads the sample-quote message above — then send it with WhatsApp, Email or SMS">📱 Sample quote</button>
+          <button class="btn btn-ghost" id="ms_notfit" title="Loads a polite decline. Sending it closes the enquiry as Not a fit">Not a fit</button>
         </div>
         <div class="legend" style="margin-bottom:12px;">WhatsApp and SMS open on your phone with the message ready — press send there. The tool records it either way. Email is sent from here with your signature.</div>
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">History</div>
@@ -1259,11 +1268,16 @@ async function leadConsole(v) {
     });
   }
 
+  // Set by "Not a fit": the NEXT send closes the lead. Cleared whenever another message is
+  // loaded, so an unrelated follow-up can never close an enquiry by accident. Declared
+  // before loadMsg, which clears it and runs immediately below.
+  let closeAs = null;
   let msg = {};
   async function loadMsg() {
     const qs = new URLSearchParams({ stage: state.leadStage || stage });
     if ($('#ms_date').value) qs.set('date', $('#ms_date').value);
     if ($('#ms_time').value) qs.set('time', $('#ms_time').value);
+    closeAs = null;
     msg = await api(`/leads/${l.id}/message?` + qs.toString());
     $('#ms_subject').value = msg.subject || '';
     $('#ms_body').value = msg.body || '';
@@ -1280,7 +1294,7 @@ async function leadConsole(v) {
   const record = async (channel, extra) => {
     await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channel, stage: state.leadStage || stage, subject: $('#ms_subject').value,
-        body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...extra }) });
+        body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...extra, ...(closeAs || {}) }) });
   };
   $('#ms_wa').addEventListener('click', async () => {
     if (!msg.phoneOk) return toast('Add a mobile number first');
@@ -1298,12 +1312,21 @@ async function leadConsole(v) {
     const btn = $('#ms_email'); btn.disabled = true; btn.textContent = 'Sending…';
     const r = await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channel: 'email', stage: state.leadStage || stage, to: $('#ld_email').value,
-        subject: $('#ms_subject').value, body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null }) });
+        subject: $('#ms_subject').value, body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...(closeAs || {}) }) });
     btn.disabled = false; btn.textContent = 'Email';
     if (r.error) return toast(r.error);
     toast('Email sent'); leadConsole(v);
   });
+  $('#ms_notfit').addEventListener('click', async () => {
+    const r = await api(`/leads/${l.id}/not-a-fit-message`);
+    if (r.error) return toast(r.error);
+    $('#ms_subject').value = r.subject; $('#ms_body').value = r.message; autosize($('#ms_body'));
+    closeAs = { stage: 'closeout', status: 'Lost', reason: 'Not a fit', nextFollowup: null };
+    $('#ms_warn').innerHTML = '<span style="color:#8a5a00;font-weight:700;">Sending this closes the enquiry as Not a fit.</span>';
+    toast('Not-a-fit reply loaded — send with Email, WhatsApp or SMS');
+  });
   $('#ms_sample').addEventListener('click', async () => {
+    closeAs = null;
     const r = await api(`/leads/${l.id}/sample-message`);
     if (r.error) return toast(r.error);
     $('#ms_subject').value = r.subject; $('#ms_body').value = r.message; autosize($('#ms_body'));

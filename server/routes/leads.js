@@ -39,6 +39,7 @@ function view(l) {
     followupOverdue: !!(l.next_followup && l.next_followup < today && !['Won', 'Lost'].includes(l.status)),
     jobType: l.job_type || '', suburb: l.suburb || '',
     msgCount: db.prepare('SELECT COUNT(*) c FROM lead_messages WHERE lead_id=?').get(l.id).c,
+    smallProject: !!l.small_project, enquiryRef: l.enquiry_ref || null, declinedReason: l.declined_reason || null,
     quoteId: l.quote_id, quoteNumber: q ? q.quote_number : null, quoteStatus: q ? q.status : null,
     quoteMissing: !!(l.quote_id && !q),
     createdAt: l.created_at };
@@ -691,6 +692,7 @@ router.post('/:id/message', async (req, res) => {
   const auto = nextDueFrom(doneStage);
   sets.push('next_followup=?'); vals.push(explicit !== undefined ? (explicit || null) : auto);
   if (b.status) { sets.push('status=?'); vals.push(b.status); }
+  if (b.reason) { sets.push('declined_reason=?'); vals.push(String(b.reason).slice(0, 120)); }
   vals.push(l.id);
   db.prepare(`UPDATE leads SET ${sets.join(',')}, updated_at=datetime('now') WHERE id=?`).run(...vals);
   console.log(`[lead] ${channel} on ${l.name} by ${who} (${outcome})`);
@@ -711,6 +713,25 @@ router.get('/:id/sample-message', (req, res) => {
   res.json({ ok: true, link, quoteNumber: s.quote_number,
     subject: 'How our quotes work — a sample from Estate Landscapers',
     message: `Hi ${first},\n\nGood to meet you today. Here's a sample of how our quotes work — it's an example job in Cronulla, not yours, so the numbers won't match your project:\n\n${link}\n\nHave a play with the Basic, Standard and Premium packages to see how the scope and price change. Your own quote will arrive the same way within 48 hours of the site visit.\n\n${me}\n${phone}` });
+});
+
+// "Not a fit" reply — for small jobs, or any job we choose not to quote. Loaded into the
+// lead's send box; the lead closes (reason "Not a fit") only when it is actually sent.
+router.get('/:id/not-a-fit-message', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const first = String(l.name || 'there').trim().split(/\s+/)[0];
+  const suburb = String(l.suburb || '').split(',')[0].trim();
+  const ref = l.enquiry_ref || '';
+  const phone = settingGet('company_phone') || '0414 147 008';
+  const contact = settingGet('company_email') || 'enquiry@estatelandscapers.com.au';
+  res.json({ ok: true,
+    subject: `Your landscaping enquiry${ref ? ' ' + ref : ''}`,
+    message: `Hi ${first},\n\n`
+      + `Thank you for getting in touch with Estate Landscapers about your project${suburb ? ' in ' + suburb : ''}, and for taking the time to send the details.\n\n`
+      + `Having looked at what's involved, we're not the right fit for this one. We build complete landscape packages, and our crews and machinery are scheduled around that scale of work, which means we couldn't give a job of this size the value it deserves.\n\n`
+      + `We'd rather tell you that now than keep you waiting. If your plans grow into a larger package, or you're planning a new build or a full yard, we'd be glad to hear from you again: just reply to this email${ref ? ' with your reference, ' + ref : ''}.\n\n`
+      + `All the best with the project,\n\nEstate Landscapers\n${contact} · ${phone}` });
 });
 
 router.get('/:id/history', (req, res) => {

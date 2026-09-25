@@ -373,6 +373,8 @@ addColumn('leads','enquiry_files','TEXT');
 // A sample quote: a real quote the client can play with on their phone during the site
 // visit, flagged so it never expires, cannot be accepted, and is kept out of every total.
 addColumn('quotes','is_sample','INTEGER DEFAULT 0');
+// Website enquiries with a budget under $25k. Still accepted, flagged for triage.
+addColumn('leads','small_project','INTEGER DEFAULT 0');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

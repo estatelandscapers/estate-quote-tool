@@ -58,13 +58,21 @@ setInterval(() => {
   for (const [k, v] of HITS) { const a = v.filter(t => now - t < 3600000); a.length ? HITS.set(k, a) : HITS.delete(k); }
 }, 10 * 60 * 1000).unref();
 
-// ---- reference numbers: ENQ-YYYY-NNNN ---------------------------------------
+// ---- reference numbers: ENQ-YYYY-MMNN (NN resets monthly, grows past 99) ----
+// Sydney time, not server time: Railway runs UTC, so without this the month would roll
+// over at 10 or 11 am on the 1st and the first morning's enquiries would be numbered into
+// the previous month. The old yearly counter (enquiry_seq_2026) is simply no longer read.
+function sydneyParts(d = new Date()) {
+  const p = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(d).reduce((a, x) => (a[x.type] = x.value, a), {});
+  return { year: p.year, month: p.month, day: p.day, ymd: `${p.year}-${p.month}-${p.day}` };
+}
 function nextRef() {
-  const year = new Date().getFullYear();
-  const key = 'enquiry_seq_' + year;
+  const { year, month } = sydneyParts();
+  const key = `enquiry_seq_${year}${month}`;
   const n = (parseInt(settingGet(key) || '0', 10) || 0) + 1;
   settingSet(key, String(n));
-  return `ENQ-${year}-${String(n).padStart(4, '0')}`;
+  return `ENQ-${year}-${month}${String(n).padStart(2, '0')}`;
 }
 
 const clean = (s, max = 300) => String(s || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
@@ -103,9 +111,15 @@ router.post('/enquiry', async (req, res) => {
     const utmLine = ['source', 'medium', 'campaign', 'term', 'content']
       .map(k => utm['utm_' + k] ? `${k}=${clean(utm['utm_' + k], 60)}` : null).filter(Boolean).join(' ');
 
+    // The website marks under-$25k budgets two ways: a structured field, and a first line
+    // in the message. Either is enough, so nothing is missed if one side ships first.
+    const smallProject = b.smallProject === true || b.smallProject === 'true' || /^\s*SMALL PROJECT/i.test(message);
+
     const ref = nextRef();
     const id = newId();
-    const year = new Date().getFullYear();
+    // Folder year comes from the ref itself, so ref and OneDrive folder can never disagree
+    // (the server clock is UTC and would file New Year's Day morning under the old year).
+    const year = ref.slice(4, 8);
     const meta = { ref, name, suburb, year, leadId: id };
 
     const noteLines = [
@@ -131,7 +145,8 @@ router.post('/enquiry', async (req, res) => {
     db.prepare(`INSERT INTO leads (id,name,phone,email,address,source,notes,status,stage,next_followup,job_type,suburb,call_answers,docs_channel)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, name, phone, email, address, 'Our website', noteLines, 'New', 'call1',
-        new Date().toISOString().slice(0, 10), jobType, suburb, JSON.stringify(prefill), 'website');
+        sydneyParts().ymd, jobType, suburb, JSON.stringify(prefill), 'website');   // call them today, Sydney date
+    if (smallProject) db.prepare('UPDATE leads SET small_project=1 WHERE id=?').run(id);
 
     // The completion callback is authenticated by this token, not by the reference. Refs are
     // sequential and therefore guessable; without a secret, anyone could post file names into
@@ -186,7 +201,7 @@ router.post('/enquiry', async (req, res) => {
 // exists, so a client who closes the tab mid-upload still reaches us.
 //
 // This writes into lead notes from an UNAUTHENTICATED caller, so it is locked down hard:
-//   · ref must match ENQ-YYYY-NNNN exactly — a bare '%' previously slipped into a
+//   · ref must match ENQ-YYYY-MMNN (4 to 6 digits) — a bare '%' previously slipped into a
 //     `notes LIKE ref||'%'` lookup and matched the newest lead, letting a stranger append
 //     arbitrary lines to a real customer's notes
 //   · lookup is an exact column match, not LIKE, so wildcards mean nothing
@@ -199,7 +214,9 @@ router.post('/enquiry', async (req, res) => {
 router.post('/enquiry/:ref/complete', (req, res) => {
   const ok = () => res.json({ ok: true });
   const ref = clean(req.params.ref, 20);
-  if (!/^ENQ-\d{4}-\d{4}$/.test(ref)) return ok();
+  // MMNN (4 digits), or MMNNN+ (5 or 6) once a month passes 99. Old ENQ-YYYY-NNNN refs
+  // still match, so enquiries mid-upload across the deploy are not dropped.
+  if (!/^ENQ-\d{4}-\d{4,6}$/.test(ref)) return ok();
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
   if (limited(ip)) return ok();
 
