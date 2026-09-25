@@ -370,6 +370,9 @@ addColumn('leads','enquiry_completed','INTEGER DEFAULT 0');
 // OneDrive what actually landed and compare. Without this there is nothing to reconcile
 // against — the server would only ever know what the browser chose to report.
 addColumn('leads','enquiry_files','TEXT');
+// A sample quote: a real quote the client can play with on their phone during the site
+// visit, flagged so it never expires, cannot be accepted, and is kept out of every total.
+addColumn('quotes','is_sample','INTEGER DEFAULT 0');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

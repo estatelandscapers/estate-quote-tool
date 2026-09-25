@@ -47,7 +47,7 @@ const getQ = t => db.prepare('SELECT * FROM quotes WHERE token=?').get(t);
 function clientView(q) {
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
   const validUntil = new Date(new Date(q.quote_date).getTime() + q.validity_days * 86400000);
-  const expired = Date.now() > validUntil.getTime() && q.status !== 'accepted';
+  const expired = !q.is_sample && Date.now() > validUntil.getTime() && q.status !== 'accepted';
 
   const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order').all(q.id);
   const applied = JSON.parse(q.applied_surcharges || '[]');
@@ -91,7 +91,7 @@ function clientView(q) {
   return {
     quoteNumber: q.quote_number, projectTitle: q.project_title, client: q.client_name, address: q.address,
     date: q.quote_date, validUntil: validUntil.toISOString().slice(0, 10), validityDays: q.validity_days,
-    expired, superseded: laterRev > 0,
+    expired, superseded: laterRev > 0, isSample: !!q.is_sample,
     defaultPackage: q.default_package, status: q.status, acceptedPackage: q.accepted_package, clientEmail: q.client_email || '',
     mixed: (() => { try { const c = costQuote(q); return c.mixed ? { base: c.base, changes: c.changes.map(x => ({ code: x.code, name: x.name, to: x.to, delta: Math.round(x.delta), up: x.up })), sellExGst: Math.round(c.selected.sell) } : null; } catch { return null; } })(),
     paymentScheduleText: settingGet(q.payment_schedule === 'small' ? 'pay_sched_small' : 'pay_sched_standard'),
@@ -201,6 +201,7 @@ function pdfPayload(q, tier) {
 
 // Accept + built-in sign. Generates the signed PDF and emails both parties via Zoho.
 router.post('/:token/sign', async (req, res) => {
+  { const sq = getQ(req.params.token); if (sq && sq.is_sample) return res.status(403).json({ error: 'This is a sample quote and cannot be accepted. Your own quote will arrive separately.' }); }
   const q = getQ(req.params.token);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const { tier, name, signature, email } = req.body || {};

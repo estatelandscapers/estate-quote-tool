@@ -1121,6 +1121,7 @@ async function leadConsole(v) {
           <button class="btn btn-blue" id="ms_email">Email</button>
           <button class="btn btn-ghost" id="ms_sms">SMS</button>
           <button class="btn btn-ghost" id="ms_call">📞 Log a call</button>
+          <button class="btn btn-ghost" id="ms_sample" title="Loads the sample-quote message above — then send it with WhatsApp, Email or SMS">📱 Sample quote</button>
         </div>
         <div class="legend" style="margin-bottom:12px;">WhatsApp and SMS open on your phone with the message ready — press send there. The tool records it either way. Email is sent from here with your signature.</div>
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">History</div>
@@ -1302,6 +1303,12 @@ async function leadConsole(v) {
     if (r.error) return toast(r.error);
     toast('Email sent'); leadConsole(v);
   });
+  $('#ms_sample').addEventListener('click', async () => {
+    const r = await api(`/leads/${l.id}/sample-message`);
+    if (r.error) return toast(r.error);
+    $('#ms_subject').value = r.subject; $('#ms_body').value = r.message; autosize($('#ms_body'));
+    toast('Sample quote message loaded — now send it with WhatsApp, Email or SMS');
+  });
   $('#ms_call').addEventListener('click', async () => {
     const note = prompt('What happened on the call?');
     if (note === null) return;
@@ -1336,7 +1343,7 @@ async function quotesList(v) {
       <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>
         ${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
       <td>${q.status === 'accepted' || isLost ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td>${q.views}</td>
-      <td class="right"><button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
+      <td class="right">${q.isSample ? `<span class="tag" style="background:#FFF4E5;color:#8a5a00;margin-right:6px;">SAMPLE</span>` : ``}<button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
         ${isLost ? `<button class="btn btn-ghost btn-sm" data-reopen="${q.id}">Reopen</button>`
           : (q.status === 'accepted' || isSup ? '' : `<button class="btn btn-ghost btn-sm" data-lost="${q.id}">Lost</button>`)}
         <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button></td></tr>`; }).join('')}
@@ -1427,7 +1434,7 @@ async function quoteEditor(v) {
         ${String(q.quoteNumber).includes('.') ? `<span class="muted" style="font-size:12px;font-weight:500;">rev ${esc(String(q.quoteNumber).split('.')[1])}</span>` : ''}
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
       ${isAdmin() ? `<button class="btn btn-ghost" id="linkTog">${q.linkOff ? '🔒 Link is OFF — turn on' : 'Turn link off'}</button>` : ''}
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
@@ -1625,6 +1632,12 @@ async function quoteEditor(v) {
   const sq = $('#sendQuote'); if (sq) sq.addEventListener('click', () => openSendDialog(q));
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
+  const mk = $('#mkSample'); if (mk) mk.addEventListener('click', async () => {
+    if (!confirm('Create a sample quote from this one? It gets a generic client and a Cronulla address, never expires, cannot be accepted, and is left out of every total.')) return;
+    const r = await api('/quotes/' + q.id + '/make-sample', { method: 'POST' });
+    if (r.error) return toast(r.error);
+    state.quoteId = r.id; state.scrollY = 0; toast('Sample ' + r.quoteNumber + ' created'); route();
+  });
   $('#newRev').addEventListener('click', async () => { const r = await api('/quotes/' + q.id + '/revision', { method: 'POST' }); state.quoteId = r.id; state.scrollY = 0; toast('Revision ' + r.quoteNumber + ' created — old link superseded'); route(); });
   $('#saveDraft').addEventListener('click', async () => {
     const ok = await uploadPlan(true);          // flush a picked-but-not-uploaded drawing

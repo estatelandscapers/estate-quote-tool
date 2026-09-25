@@ -54,7 +54,7 @@ function overheadDailyRate() {
   return pool / wd;
 }
 router.get('/', (req, res) => {
-  const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' ORDER BY accepted_at DESC").all();
+  const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0 ORDER BY accepted_at DESC").all();
   const ohDaily = overheadDailyRate();
   const jobs = rows.map(q => {
     const fy = fyOf(q.accepted_at);
@@ -98,7 +98,7 @@ router.get('/', (req, res) => {
 // Year-end: totals for an FY + overheads -> NET margin. Gross margin figures throughout are pre-overheads.
 router.get('/yearend/:fy', (req, res) => {
   const fy = req.params.fy;
-  const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted'").all().filter(q => fyOf(q.accepted_at) === fy);
+  const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0").all().filter(q => fyOf(q.accepted_at) === fy);
   let revenue = 0, quotedCost = 0, actualCost = 0, withActuals = 0;
   rows.forEach(q => {
     revenue += q.quoted_sell || 0; quotedCost += q.quoted_cost || 0;

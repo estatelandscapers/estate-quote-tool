@@ -697,6 +697,22 @@ router.post('/:id/message', async (req, res) => {
   res.status(201).json({ ok: true, outcome });
 });
 
+// The sample-quote message for this lead: link to the current sample plus wording the rep
+// can send from the enquiry with WhatsApp, Email or SMS exactly like any other message.
+router.get('/:id/sample-message', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const s = db.prepare("SELECT * FROM quotes WHERE COALESCE(is_sample,0)=1 AND COALESCE(link_off,0)=0 ORDER BY created_at DESC LIMIT 1").get();
+  if (!s) return res.status(404).json({ error: 'No sample quote yet. Open a quote and use "Make sample copy" first.' });
+  const first = String(l.name || 'there').trim().split(/\s+/)[0];
+  const me = settingGet('company_contact_name') || (req.user && (req.user.name || req.user.username)) || 'Smit';
+  const phone = settingGet('company_phone') || '';
+  const link = `${req.protocol}://${req.get('host')}/q/${s.token}`;
+  res.json({ ok: true, link, quoteNumber: s.quote_number,
+    subject: 'How our quotes work — a sample from Estate Landscapers',
+    message: `Hi ${first},\n\nGood to meet you today. Here's a sample of how our quotes work — it's an example job in Cronulla, not yours, so the numbers won't match your project:\n\n${link}\n\nHave a play with the Basic, Standard and Premium packages to see how the scope and price change. Your own quote will arrive the same way within 48 hours of the site visit.\n\n${me}\n${phone}` });
+});
+
 router.get('/:id/history', (req, res) => {
   const rows = db.prepare('SELECT * FROM lead_messages WHERE lead_id=? ORDER BY created_at DESC').all(req.params.id);
   res.json(rows.map(r => ({ id: r.id, channel: r.channel, stage: r.stage, subject: r.subject,

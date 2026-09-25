@@ -118,7 +118,7 @@ function fullQuote(q) {
   const c = computeQuote(q);
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
   return {
-    id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number,
+    id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number, isSample: !!q.is_sample,
     projectTitle: q.project_title, client: q.client_name, clientEmail: q.client_email, address: q.address,
     date: q.quote_date, validityDays: q.validity_days, defaultPackage: q.default_package,
     paymentSchedule: q.payment_schedule, siteNotes: q.site_notes, specialClauses: q.special_clauses,
@@ -179,8 +179,8 @@ router.get('/', (req, res) => {
       client: q.client_name, projectTitle: q.project_title,
       status, acceptedPackage: q.accepted_package,
       lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
-      value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand, customerTier: q.customer_tier || 'Silver',
-      views, updatedAt: q.updated_at };
+      value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand: q.is_sample ? 'fresh' : ageBand, customerTier: q.customer_tier || 'Silver',
+      views, updatedAt: q.updated_at, isSample: !!q.is_sample };
   });
   // Superseded and lost quotes are kept forever but hidden from the working list,
   // so what you see is the work that's actually live.
@@ -417,6 +417,30 @@ router.put('/:id/number', (req, res) => {
 
 
 // New revision: copies everything, next suffix, older ones become superseded automatically
+// Make a SAMPLE from an existing quote: same items, prices and site plan, but a generic
+// client and a Cronulla address, no lead, no expiry, and flagged so it is excluded from
+// every dashboard figure and can never be accepted. Used on site visits so the client
+// can see how a quote works before their own arrives.
+router.post('/:id/make-sample', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!src) return res.status(404).json({ error: 'not found' });
+  const n = db.prepare('SELECT COUNT(*) c FROM quotes WHERE COALESCE(is_sample,0)=1').get().c + 1;
+  const num = 'SAMPLE' + (n > 1 ? '-' + n : '');
+  const id = newId();
+  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,validity_days,default_package,payment_schedule,site_notes,special_clauses,siteplan_data,siteplan_mime,applied_surcharges,customer_tier,crew_size,siteplan_na,surcharges_na,status,sent_at,is_sample)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),1)`).run(
+    id, newToken(), num, num, 'Sample — how our quotes work', 'Andrew Mitchell', '',
+    '12 Ewos Parade, Cronulla NSW 2230', new Date().toISOString().slice(0, 10), 3650,
+    src.default_package, src.payment_schedule, src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime,
+    src.applied_surcharges, src.customer_tier, src.crew_size, src.siteplan_na, src.surcharges_na, 'sent');
+  const cols = db.prepare('PRAGMA table_info(quote_items)').all().map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
+  const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')}) VALUES (?,?,${cols.map(() => '?').join(',')})`);
+  db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order, rowid').all(src.id)
+    .forEach(it => ins.run(newId(), id, ...cols.map(c => it[c])));
+  res.json({ ok: true, id, quoteNumber: num });
+});
+
 router.post('/:id/revision', (req, res) => {
   const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!src) return res.status(404).json({ error: 'Not found' });
