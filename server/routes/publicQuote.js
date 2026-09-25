@@ -204,14 +204,29 @@ router.post('/:token/sign', async (req, res) => {
   { const sq = getQ(req.params.token); if (sq && sq.is_sample) return res.status(403).json({ error: 'This is a sample quote and cannot be accepted. Your own quote will arrive separately.' }); }
   const q = getQ(req.params.token);
   if (!q) return res.status(404).json({ error: 'Not found' });
-  const { tier, name, signature, email } = req.body || {};
+  const { tier, name, signature, email, consent } = req.body || {};
   if (!['Basic', 'Standard', 'Premium'].includes(tier)) return res.status(400).json({ error: 'Bad tier' });
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
+  // Both statements must have been ticked. The wording is stored verbatim so the record
+  // shows exactly what the signer agreed to, not what the page says today.
+  const consentText = Array.isArray(consent) ? consent.map(s => String(s).trim()).filter(Boolean) : [];
+  if (consentText.length < 2) return res.status(400).json({ error: 'Please tick both confirmation boxes before signing.' });
+  if (q.status === 'accepted' && q.signed_name) return res.status(409).json({ error: 'This quote has already been signed.' });
 
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  // req.ip honours X-Forwarded-For under trust proxy (set in index.js); the raw header can
+  // be a comma list, so this is the cleaner record.
+  const ip = req.ip || req.socket.remoteAddress || '';
+  const method = String(signature || '').startsWith('data:image') ? 'drawn' : 'typed';
+  // Snapshot of the terms as they stood at signing. The PDF is the primary record; this is
+  // the machine-readable copy of the same thing.
+  const termsSnap = JSON.stringify({
+    standard_conditions: settingGet('standard_conditions') || '', warranty_text: settingGet('warranty_text') || '',
+    special_clauses: q.special_clauses || '', payment_schedule: q.payment_schedule || '', tier, signedAt: new Date().toISOString() });
   db.prepare(`UPDATE quotes SET status='accepted', accepted_package=?, accepted_at=datetime('now'),
-    signed_name=?, signed_sig=?, signed_ip=?, client_email=COALESCE(NULLIF(?, ''), client_email), updated_at=datetime('now') WHERE id=?`)
-    .run(tier, name, signature || name, String(ip).slice(0, 60), email || '', q.id);
+    signed_name=?, signed_sig=?, signed_ip=?, signed_method=?, signed_email=?, signed_ua=?, signed_consent=?, signed_terms=?,
+    client_email=COALESCE(NULLIF(?, ''), client_email), updated_at=datetime('now') WHERE id=?`)
+    .run(tier, name, signature || name, String(ip).slice(0, 60), method, String(email || '').slice(0, 160),
+      String(req.get('user-agent') || '').slice(0, 300), consentText.join('\n'), termsSnap, email || '', q.id);
   db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload) VALUES (?,?,?,?)')
     .run(newId(), q.id, 'package_select', JSON.stringify({ tier, accepted: true }));
 
@@ -244,12 +259,20 @@ router.post('/:token/sign', async (req, res) => {
       let pdf = null;
       const payload = pdfPayload(fresh, tier);
       try { pdf = await buildSignedPdf({ quote: fresh, totals, settings, ...payload }); } catch (e) { console.error('pdf failed', e); }
+      let sha = '';
+      if (pdf) {
+        // The stored bytes ARE the signed contract. Everything after this serves them
+        // back rather than regenerating, so later edits cannot alter the record.
+        sha = require('crypto').createHash('sha256').update(pdf).digest('hex');
+        db.prepare('UPDATE quotes SET signed_pdf=?, signed_pdf_sha256=? WHERE id=?').run(pdf, sha, fresh.id);
+      }
       const attachments = pdf ? [{ filename: `Estate-Landscapers-Signed-Contract-${fresh.quote_number}.pdf`, content: pdf }] : [];
       const html = `<p>Contract signed and accepted.</p>
         <p><b>Quote:</b> ${fresh.quote_number} — ${fresh.project_title}<br>
         <b>Client:</b> ${fresh.client_name} · ${fresh.address}<br>
         <b>Package:</b> ${tier} · <b>Total:</b> $${totals.grandIncGst.toLocaleString()} inc. GST<br>
         <b>Signed by:</b> ${name} at ${fresh.accepted_at} (UTC)</p>
+        ${sha ? `<p style="font-size:12px;color:#666">Document fingerprint (SHA-256): <code>${sha}</code><br>Keep this with your copy. The attached PDF is the signed record; its fingerprint matches ours.</p>` : ''}
         <p style="color:#888">Integrity. Precision. Value. — Estate Landscapers</p>`;
       const clientEmail = email || fresh.client_email;
       const outcome = [];

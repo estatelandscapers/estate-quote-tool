@@ -255,6 +255,8 @@
           <div class="field"><label>Full name</label><input id="fname" value="${esc(D.client || '')}" placeholder="Your full name"></div>
           <div class="field"><label>Email (for your signed copy)</label><input id="femail" type="email" value="${esc(D.clientEmail || '')}" placeholder="you@example.com"></div>
           <div class="field"><label>Signature</label><div class="sig-tabs"><div class="sig-tab on" data-m="type">Type</div><div class="sig-tab" data-m="draw">Draw</div></div><div id="sigArea"></div></div>
+          <label class="gate"><input type="checkbox" id="c1"> <span id="c1t">I agree to sign this contract electronically, and I understand that applying my signature creates a legally binding contract with Estate Landscapers for the ${esc(tier)} package.</span></label>
+          <label class="gate"><input type="checkbox" id="c2"> <span id="c2t">I confirm that I am ${esc(D.client || 'the client named on this quote')} (or am authorised to sign on their behalf), and that a copy of the signed contract may be sent to the email address above.</span></label>
           <div class="err" id="err" style="display:none;"></div>
           <div style="display:flex;gap:8px;justify-content:space-between;"><button class="btn btn-ghost" id="back2">Back</button><button class="btn btn-blue" id="signBtn">Apply signature &amp; accept</button></div>`;
         const sigArea = overlay.querySelector('#sigArea');
@@ -287,9 +289,12 @@
           let signature = name;
           if (sigMode === 'type') signature = overlay.querySelector('#sigType').textContent.trim() || name;
           else { if (!sigDrawn) { errEl.textContent = 'Please draw your signature, or switch to Type.'; errEl.style.display = 'block'; return; } signature = overlay.querySelector('#sigCanvas').toDataURL('image/png'); }
+          if (!overlay.querySelector('#c1').checked || !overlay.querySelector('#c2').checked) { errEl.textContent = 'Please tick both boxes to confirm you agree to sign electronically.'; errEl.style.display = 'block'; return; }
+          // The exact sentences ticked go with the signature and onto the signed record.
+          const consent = [overlay.querySelector('#c1t').textContent.trim(), overlay.querySelector('#c2t').textContent.trim()];
           errEl.style.display = 'none';
           const btn = overlay.querySelector('#signBtn'); btn.disabled = true; btn.textContent = 'Submitting...';
-          api('/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tier, name, signature, email }) })
+          api('/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tier, name, signature, email, consent }) })
             .then(r => { if (r.ok) { step = 3; draw(r); } else { errEl.textContent = r.error || 'Something went wrong.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Apply signature & accept'; } })
             .catch(() => { errEl.textContent = 'Network error - please try again.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Apply signature & accept'; });
         });

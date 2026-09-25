@@ -375,6 +375,16 @@ addColumn('leads','enquiry_files','TEXT');
 addColumn('quotes','is_sample','INTEGER DEFAULT 0');
 // Website enquiries with a budget under $25k. Still accepted, flagged for triage.
 addColumn('leads','small_project','INTEGER DEFAULT 0');
+// Signature evidence. The signed PDF is STORED at signing, with its SHA-256, so the record
+// of what was agreed can never drift when the terms in Settings or the quote are edited
+// later. The consent wording, signing method, email, IP and browser go with it.
+addColumn('quotes','signed_pdf','BLOB');
+addColumn('quotes','signed_pdf_sha256','TEXT');
+addColumn('quotes','signed_method','TEXT');
+addColumn('quotes','signed_email','TEXT');
+addColumn('quotes','signed_ua','TEXT');
+addColumn('quotes','signed_consent','TEXT');
+addColumn('quotes','signed_terms','TEXT');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

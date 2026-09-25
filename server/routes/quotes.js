@@ -740,6 +740,16 @@ router.get('/:id/costing', (req, res) => {
 router.get('/:id/signed-preview', async (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
+  // A signed contract is served from the bytes stored at signing — never regenerated.
+  // Regenerating would silently rebuild it from today's prices and today's T&Cs under the
+  // client's original signature, which is not the document they signed.
+  if (q.signed_pdf && q.signed_name) {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Estate-Landscapers-Signed-Contract-${q.quote_number}.pdf"`);
+    res.setHeader('X-Signed-Original', 'true');
+    if (q.signed_pdf_sha256) res.setHeader('X-Document-SHA256', q.signed_pdf_sha256);
+    return res.end(Buffer.from(q.signed_pdf));
+  }
   const { buildSignedPdf } = require('../utils/signedPdf');
   const { pdfPayload } = require('./publicQuote');
   const fq = fullQuote(q);

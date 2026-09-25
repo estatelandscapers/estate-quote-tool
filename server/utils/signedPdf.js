@@ -153,9 +153,15 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     doc.text(`Signed by: ${quote.signed_name || ''}`);
     doc.text(`Signed at: ${sydneyTime(quote.accepted_at)} (Sydney time)`);
     doc.fontSize(7.5).fillColor('#999').text(`Server record (UTC): ${quote.accepted_at || ''}`).fontSize(9.5).fillColor('#000');
-    if (quote.client_email) doc.text(`Client email: ${quote.client_email}`);
+    if (quote.signed_email || quote.client_email) doc.text(`Client email: ${quote.signed_email || quote.client_email}`);
     if (quote.address) doc.text(`Site address: ${quote.address}`);
-    doc.text(`IP address: ${quote.signed_ip || 'n/a'}`);
+    doc.text(`IP address: ${quote.signed_ip || 'n/a'}${quote.signed_method ? ` · Signature: ${quote.signed_method}` : ''}`);
+    if (quote.signed_ua) doc.fontSize(7.5).fillColor('#999').text(`Device: ${String(quote.signed_ua).slice(0, 140)}`).fontSize(9.5).fillColor('#000');
+    if (quote.signed_consent) {
+      doc.moveDown(0.3).fontSize(8).fillColor('#555').text('Confirmed by the client before signing:');
+      String(quote.signed_consent).split('\n').forEach(line => doc.text(`\u2713 ${line}`, { indent: 10 }));
+      doc.fontSize(9.5).fillColor('#000');
+    }
     doc.moveDown(0.4);
     const sig = quote.signed_sig || '';
     doc.fontSize(8).fillColor('#777').text('Signature:').fillColor('#000');
