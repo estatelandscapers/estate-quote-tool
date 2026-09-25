@@ -302,6 +302,12 @@ router.get('/:id/answers', (req, res) => {
 // Standalone — no Google or Outlook connection. Fridays are the default visit day but
 // any date can be booked.
 const SLOTS = ['7:30am', '9:00am', '10:30am', '12:00pm', '1:30pm', '3:00pm'];
+function timeKey(t) {
+  const m = String(t || '').trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!m) return -1;
+  let h = parseInt(m[1], 10) % 12; if ((m[3] || '').toLowerCase() === 'pm') h += 12;
+  return h * 60 + parseInt(m[2] || '0', 10);
+}
 
 router.get('/calendar', (req, res) => {
   const from = req.query.from || new Date().toISOString().slice(0, 8) + '01';
@@ -309,7 +315,10 @@ router.get('/calendar', (req, res) => {
   const rows = db.prepare(`SELECT v.*, l.name, l.suburb, l.address, l.phone, q.quote_number
     FROM site_visits v LEFT JOIN leads l ON l.id=v.lead_id LEFT JOIN quotes q ON q.id=v.quote_id
     WHERE v.visit_date >= ? AND v.visit_date < ? AND v.status <> 'cancelled'
-    ORDER BY v.visit_date, v.visit_time`).all(from, to);
+    ORDER BY v.visit_date`).all(from, to);
+  // Times are stored as text ("7:30am", "11:30am"), and text sorts "11:30am" before
+  // "7:30am" because "1" comes before "7". Sort by the clock instead. Untimed first.
+  rows.sort((a, b) => a.visit_date.localeCompare(b.visit_date) || timeKey(a.visit_time) - timeKey(b.visit_time));
   res.json({ from, to, slots: SLOTS,
     visits: rows.map(v => ({ id: v.id, leadId: v.lead_id, date: v.visit_date, time: v.visit_time,
       status: v.status, name: v.name, suburb: v.suburb || v.address || '', phone: v.phone,
@@ -506,7 +515,7 @@ router.get('/sources', (req, res) => {
   res.json({ groups: groups(), referral: REFERRAL });
 });
 router.get('/call/script', (req, res) => {
-  res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2) });
+  res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2), slots: SLOTS });
 });
 
 // Everything the rep has tapped so far, plus the live ballpark.
@@ -556,7 +565,22 @@ router.post('/:id/call/finish', (req, res) => {
     subject = 'Your landscaping enquiry — Estate Landscapers';
   } else if (b.visitOutcome === 'booked' && b.visitDate) {
     stage = 'confirm'; status = 'Contacted'; next = b.visitDate;
-    const d = new Date(b.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
+    const vt = String(b.visitTime || '').trim();
+    // Same calendar row the Book button writes, so a visit booked on the call shows up
+    // on the calendar. Previously the script set the lead's date and wrote the email but
+    // never touched site_visits — the visit existed in the message and nowhere else.
+    if (vt) {
+      const clash = db.prepare("SELECT lead_id FROM site_visits WHERE visit_date=? AND visit_time=? AND status='booked'").get(b.visitDate, vt);
+      if (clash && clash.lead_id !== l.id) return res.status(409).json({ error: `${vt} on ${b.visitDate} is already booked. Pick another time.` });
+    }
+    const existing = db.prepare("SELECT id FROM site_visits WHERE lead_id=? AND status='booked'").get(l.id);
+    if (existing) db.prepare("UPDATE site_visits SET visit_date=?, visit_time=?, updated_at=datetime('now') WHERE id=?").run(b.visitDate, vt, existing.id);
+    else db.prepare(`INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,note,booked_by) VALUES (?,?,?,?,?,?,?)`)
+      .run(newId(), l.id, l.quote_id || null, b.visitDate, vt, 'Booked on the discovery call', req.user ? (req.user.name || req.user.username) : '');
+    db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(newId(), l.id, 'note', 'visitbooked', null, null, req.user ? (req.user.name || req.user.username) : '', 'logged',
+        `Site visit booked ${b.visitDate}${vt ? ' ' + vt : ''} (on the call)`);
+    const d = new Date(b.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }) + (vt ? ` at ${vt}` : '');
     const plansWanted = (a.plans || []).filter(p => ['architectural', 'hydraulic', 'da', 'landscape'].includes(p));
     const pn = { architectural: 'architectural drawings', hydraulic: 'hydraulic drawings', da: 'DA consent', landscape: 'landscape plan' };
     const plansLine = plansWanted.length

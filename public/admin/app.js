@@ -717,7 +717,7 @@ async function callScreen(v) {
   // Step 0 — what we already know. Confirmed here, not asked again on the call.
   if (state.callStep === 0 && !state.precallDone) return precallScreen(v, sc, saved, leadsData);
   const lead = (leadsData.leads || []).find(x => x.id === state.leadId) || {};
-  CALL = { sc, a: saved.answers || {}, lead, i: state.callStep || 0, outcome: null, fridays: sc.fridays };
+  CALL = { sc, a: saved.answers || {}, lead, i: state.callStep || 0, outcome: null, fridays: sc.fridays, slots: sc.slots || [] };
   paintCall(v);
 }
 
@@ -914,12 +914,17 @@ function renderAnswer(v, s) {
     box.innerHTML = `<div class="chips">${s.options.map(o => chip(o.v, o.label, CALL.visitOutcome === o.v)).join('')}</div>
       <div id="friBox" style="margin-top:10px;${CALL.visitOutcome === 'booked' ? '' : 'display:none;'}">
         <div class="chips">${CALL.fridays.map(f => `<button class="cchip ${CALL.visitDate === f.iso ? 'on' : ''}" data-fri="${f.iso}">${esc(f.label)}</button>`).join('')}
-          <input type="date" id="friOther" value="${esc(CALL.visitDate || '')}" style="max-width:190px;"></div></div>`;
+          <input type="date" id="friOther" value="${esc(CALL.visitDate || '')}" style="max-width:190px;"></div>
+        <div class="muted" style="font-size:10.5px;margin:10px 0 4px;">What time? — this is what goes on the calendar</div>
+        <div class="chips">${(CALL.slots || []).map(sl => `<button class="cchip ${CALL.visitTime === sl ? 'on' : ''}" data-slot="${esc(sl)}">${esc(sl)}</button>`).join('')}</div></div>`;
     box.querySelectorAll('[data-opt]').forEach(b => b.addEventListener('click', () => {
       CALL.visitOutcome = b.dataset.opt; renderAnswer(v, s);
     }));
     box.querySelectorAll('[data-fri]').forEach(b => b.addEventListener('click', () => {
       CALL.visitDate = b.dataset.fri; renderAnswer(v, s);
+    }));
+    box.querySelectorAll('[data-slot]').forEach(b => b.addEventListener('click', () => {
+      CALL.visitTime = b.dataset.slot; renderAnswer(v, s);
     }));
     const fo = $('#friOther'); if (fo) fo.addEventListener('change', () => { CALL.visitDate = fo.value; });
     return;
@@ -985,7 +990,7 @@ function refreshBp(v) {
 async function finishCall(v) {
   const r = await api(`/leads/${CALL.lead.id}/call/finish`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers: CALL.a, outcome: CALL.outcome, callbackWhen: CALL.callbackWhen,
-      visitOutcome: CALL.visitOutcome, visitDate: CALL.visitDate, referredBy: CALL.referredBy }) });
+      visitOutcome: CALL.visitOutcome, visitDate: CALL.visitDate, visitTime: CALL.visitTime, referredBy: CALL.referredBy }) });
   if (r.error) return toast(r.error);
   state.callStep = 0;
   v.innerHTML = `<div class="card">
