@@ -43,6 +43,16 @@ const STEPS = [
       { v: 'wrong',   label: 'Wrong number',     ends: true, stage: 'closeout', noMessage: true },
     ] },
 
+  // Leads from hipages arrive with a suburb and postcode only. A site visit needs a door
+  // number, so this is asked once, first, and written back to the record. When the address
+  // is already complete (a manual enquiry, the website form) the rep confirms rather than
+  // asks — the wording switches on whether there is a street number on file.
+  { id: 'address', section: 'Property', title: 'Site address',
+    say: "And just so I've got it right — what's the full address of the property?",
+    sayConfirm: "I've got the address as {address} — is that right?",
+    type: 'text', key: 'siteAddress', placeholder: 'e.g. 23 Frederick Street, Miranda NSW 2228',
+    hint: 'This becomes the site address on the enquiry, the calendar and the quote.' },
+
   { id: 'property', section: 'Property', title: 'New build or existing',
     say: "Before we get into what you want done — is this a new build, or an existing property?",
     type: 'single', key: 'propertyType',

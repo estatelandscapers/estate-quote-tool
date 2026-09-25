@@ -748,7 +748,11 @@ function paintCall(v) {
   const confirmLine = knownBits.length
     ? `\n\nI've got most of it here already — ${knownBits.join(', ')}. Is that still right?`
     : '';
-  const say = String(s.say || '')
+  // A full address (one with a street number) is confirmed, not re-asked.
+  const onFile = String(CALL.a.siteAddress || CALL.lead.address || '').trim();
+  const hasFull = /\d/.test(onFile);
+  const sayRaw = (s.sayConfirm && hasFull) ? s.sayConfirm.replace('{address}', onFile) : (s.say || '');
+  const say = String(sayRaw)
     .replace(/\{\{confirm\}\}/g, confirmLine)
     .replace(/\{\{first\}\}/g, first)
     .replace(/\{\{me\}\}/g, (state.user && state.user.name) || 'Smit')
@@ -792,6 +796,18 @@ function paintCall(v) {
 function renderAnswer(v, s) {
   const box = $('#ans'); const a = CALL.a;
   const chip = (val, label, on) => `<button class="cchip ${on ? 'on' : ''}" data-opt="${esc(val)}">${esc(label || val)}</button>`;
+
+  if (s.type === 'text') {
+    // Pre-filled from the record so a complete address only needs a nod.
+    const cur = a[s.key] != null ? a[s.key] : (s.key === 'siteAddress' ? (CALL.lead.address || CALL.lead.suburb || '') : '');
+    box.innerHTML = `<input id="txtAns" value="${esc(cur)}" placeholder="${esc(s.placeholder || '')}" style="width:100%;max-width:520px;">
+      ${s.hint ? `<div class="muted" style="font-size:10.5px;margin-top:5px;">${esc(s.hint)}</div>` : ''}`;
+    const inp = $('#txtAns');
+    inp.addEventListener('input', () => { a[s.key] = inp.value; });
+    inp.addEventListener('change', () => { a[s.key] = inp.value.trim(); saveCall(); });
+    if (a[s.key] == null && cur) a[s.key] = cur;
+    return;
+  }
 
   if (s.type === 'outcome') {
     box.innerHTML = `<div class="chips">${s.options.map(o => chip(o.v, o.label, CALL.outcome === o.v)).join('')}</div>

@@ -241,6 +241,7 @@ router.get('/:id/answers', (req, res) => {
 
   const rows = [];
   const push = (k, v) => { if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length)) rows.push({ k, v: label(v) }); };
+  push('Site address', a.siteAddress);
   push('Property', [a.propertyType, a.builder, a.handover && 'handover ' + a.handover].filter(Boolean).join(' · '));
   push('Drawings', a.plans);
   push('To remove', a.toRemove);
@@ -321,7 +322,10 @@ router.get('/calendar', (req, res) => {
   rows.sort((a, b) => a.visit_date.localeCompare(b.visit_date) || timeKey(a.visit_time) - timeKey(b.visit_time));
   res.json({ from, to, slots: SLOTS,
     visits: rows.map(v => ({ id: v.id, leadId: v.lead_id, date: v.visit_date, time: v.visit_time,
-      status: v.status, name: v.name, suburb: v.suburb || v.address || '', phone: v.phone,
+      // A street address (one with a number) beats the suburb on the calendar — it is what
+      // the crew navigates to. Suburb-only leads still show the suburb.
+      status: v.status, name: v.name, suburb: (v.address && /\d/.test(v.address)) ? v.address : (v.suburb || v.address || ''),
+      address: v.address || '', phone: v.phone,
       quoteNumber: v.quote_number, note: v.note, bookedBy: v.booked_by })) });
 });
 
@@ -596,6 +600,19 @@ router.post('/:id/call/finish', (req, res) => {
     subject = 'Following up — Estate Landscapers';
   }
 
+  // Address captured on the call goes onto the record — the calendar, the site PO and
+  // the quote all read it from here. Suburb is filled in only if the record had none, so
+  // a hipages "Burraneer, 2230" isn't overwritten by a guess.
+  const addr = String(a.siteAddress || '').trim();
+  if (addr && addr !== (l.address || '')) {
+    let suburb = l.suburb || '';
+    if (!suburb) {
+      const m = addr.match(/,\s*([A-Za-z][A-Za-z' -]+?)(?:\s+(?:NSW|QLD|VIC|ACT|SA|WA|TAS|NT))?\s*(\d{4})?\s*$/i);
+      if (m) suburb = m[1].trim() + (m[2] ? ', ' + m[2] : '');
+    }
+    db.prepare("UPDATE leads SET address=?, suburb=?, updated_at=datetime('now') WHERE id=?").run(addr, suburb, l.id);
+    l.address = addr; l.suburb = suburb;
+  }
   const sets = ['stage=?', 'status=?', 'next_followup=?', 'call_answers=?'];
   const vals = [stage, status, next, JSON.stringify(a)];
   if (a.source) { sets.push('source=?'); vals.push(a.source); }
