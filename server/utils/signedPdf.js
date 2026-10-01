@@ -123,6 +123,15 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
       doc.fontSize(9.5).text(payment);
     }
 
+    // ---- site-specific notes (exclusions, assumptions, anything the team flagged) ----
+    // Same text the client sees on the quote page under "Site-specific notes from our team".
+    // Exclusions in particular belong on the signed record, not only on the web page.
+    if (quote.site_notes && String(quote.site_notes).trim()) {
+      if (doc.y > doc.page.height - 140) doc.addPage();
+      H('Site-specific notes from our team');
+      doc.fontSize(9.5).text(String(quote.site_notes).trim());
+    }
+
     // ---- site plan ----
     if (sitePlan && sitePlan.data) {
       if (doc.y > doc.page.height - 260) doc.addPage();
