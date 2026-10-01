@@ -238,4 +238,4 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     doc.end();
   });
 }
-module.exports = { buildSignedPdf };
+module.exports = { buildSignedPdf, sydneyTime };

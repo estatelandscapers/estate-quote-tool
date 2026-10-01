@@ -37,7 +37,7 @@ const ESTATE_STANDARD = [
     commit: 'Proud of the project years later, not just on handover day.' },
 ];
 const { sendMail } = require('../utils/email');
-const { buildSignedPdf } = require('../utils/signedPdf');
+const { buildSignedPdf, sydneyTime } = require('../utils/signedPdf');
 const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
@@ -286,7 +286,7 @@ router.post('/:token/sign', async (req, res) => {
         <p><b>Quote:</b> ${fresh.quote_number} — ${fresh.project_title}<br>
         <b>Client:</b> ${fresh.client_name} · ${fresh.address}<br>
         <b>Package:</b> ${tier} · <b>Total:</b> $${totals.grandIncGst.toLocaleString()} inc. GST<br>
-        <b>Signed by:</b> ${name} at ${fresh.accepted_at} (UTC)</p>
+        <b>Signed by:</b> ${name} at ${sydneyTime(fresh.accepted_at)} (Sydney time)</p>
         ${sha ? `<p style="font-size:12px;color:#666">Document fingerprint (SHA-256): <code>${sha}</code><br>Keep this with your copy. The attached PDF is the signed record; its fingerprint matches ours.</p>` : ''}
         <p style="color:#888">Integrity. Precision. Value. — Estate Landscapers</p>`;
       const clientEmail = email || fresh.client_email;

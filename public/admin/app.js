@@ -26,6 +26,18 @@ let state = { tab: 'leads', leadsSub: 'summary', precallDone: false, hideClosed:
 // the calendar's next-month button compute the same month forever, skipped August going
 // backwards, and cut month-end Fridays out of the visits query. It also made "today" turn
 // over at 10am instead of midnight.
+// Stored timestamps are UTC ("2026-09-29 08:41:12", from SQLite's datetime('now') on the
+// Railway server). Show them in Sydney time. Daylight saving is handled by the browser's
+// timezone data, so 4 October rolls from +10 to +11 on its own.
+const sydTime = v => {
+  if (!v) return '';
+  const s = String(v).trim();
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s.replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return s.slice(0, 16);
+  const p = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+    .formatToParts(d).reduce((a, x) => (a[x.type] = x.value, a), {});
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+};
 const localYmd = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 // Text boxes grow to fit their content. A two-row textarea holding an eight-line scope
@@ -593,7 +605,7 @@ async function openSendDialog(q) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal" style="max-width:640px;">
     <h2 style="margin:0 0 3px;">${pv.alreadySent ? 'Resend' : 'Send'} quote ${esc(q.quoteNumber)}</h2>
-    <div class="sub">${pv.alreadySent ? `Last sent ${esc(String(pv.sentAt || '').slice(0, 16))} to ${esc(pv.to)} · ${pv.sendCount}×. Resending does not reset the view count.` : 'The link and your signature are added automatically — you don\'t need to paste them in.'}</div>
+    <div class="sub">${pv.alreadySent ? `Last sent ${esc(sydTime(pv.sentAt))} to ${esc(pv.to)} · ${pv.sendCount}×. Resending does not reset the view count.` : 'The link and your signature are added automatically — you don\'t need to paste them in.'}</div>
     <div class="rule"></div>
     <div class="grid2">
       <div class="field"><label>To</label><input id="sd_to" value="${esc(pv.to)}" placeholder="client@example.com"></div>
@@ -1147,7 +1159,7 @@ async function leadConsole(v) {
                 <br><a href="#" class="tlLess" style="color:var(--blue);font-weight:700;">Show less</a></span></div>`;
             };
             return `<div class="tl" style="--c:${(CHAN[m.channel] || CHAN.note)[1]};">
-            <b>${esc(String(m.at || '').slice(0, 16))}</b> — ${esc((CHAN[m.channel] || CHAN.note)[0])}${m.outcome === 'sent' ? ' sent' : ''}
+            <b>${esc(sydTime(m.at))}</b> — ${esc((CHAN[m.channel] || CHAN.note)[0])}${m.outcome === 'sent' ? ' sent' : ''}
             ${m.sentBy ? `<span class="muted"> · ${esc(m.sentBy)}</span>` : ''}
             ${m.subject ? `<div class="muted" style="font-size:10.5px;margin-top:2px;"><b>${esc(m.subject)}</b></div>` : ''}
             ${clip(m.body)}${clip(m.note)}</div>`; }).join('')
@@ -1474,10 +1486,10 @@ async function quoteEditor(v) {
     ${q.emailStatus ? `<div class="emailbar ${q.emailStatus}"><b>Signed-contract email: ${q.emailStatus.toUpperCase()}</b><br><span style="font-size:11px;">${esc(q.emailDetail || '')}</span></div>` : ''}
     <div class="viewbar">
       <span><b>${q.clientViews || 0}</b> client view${q.clientViews === 1 ? '' : 's'}${q.clientVisitors > 1 ? ` from ${q.clientVisitors} visitors` : ''}</span>
-      ${q.firstViewedAt ? `<span class="muted">first opened ${esc(String(q.firstViewedAt).slice(0, 16))}</span>` : '<span class="muted">not opened yet</span>'}
+      ${q.firstViewedAt ? `<span class="muted">first opened ${esc(sydTime(q.firstViewedAt))}</span>` : '<span class="muted">not opened yet</span>'}
       ${q.internalViews ? `<span class="muted" title="Your own views and previews — never counted as client views">${q.internalViews} internal (not counted)</span>` : ''}
       ${q.legacyViews ? `<span class="muted" title="Recorded before views were attributed">${q.legacyViews} older views (unattributed)</span>` : ''}
-      ${q.sentAt ? `<span class="muted">sent ${esc(String(q.sentAt).slice(0, 16))} to ${esc(q.sentTo || '')}${q.sentBy ? ' by ' + esc(q.sentBy) : ''}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
+      ${q.sentAt ? `<span class="muted">sent ${esc(sydTime(q.sentAt))} to ${esc(q.sentTo || '')}${q.sentBy ? ' by ' + esc(q.sentBy) : ''}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
     </div>
     <div class="linkbar"><span>🔗 Live link:</span><input id="linkInput" readonly value="${esc(link)}"><button class="btn btn-blue btn-sm" id="copyLink">Copy</button><a class="btn btn-ghost btn-sm" href="${esc(link)}" target="_blank">Preview</a></div>
   </div>
@@ -2000,7 +2012,7 @@ async function jobsTab(v) {
         ${['office', 'insurance', 'vehicles', 'other'].map(k => `<div class="field"><label>Overheads — ${k}</label><input data-oh="${k}" type="number" value="${oh[k] || ''}" ${y.closed ? 'disabled' : ''}></div>`).join('')}
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        ${y.closed ? `<span class="tag tag-closed">Year closed ${y.closedAt ? new Date(y.closedAt + 'Z').toLocaleDateString('en-AU') : ''}</span><button class="btn btn-ghost btn-sm" id="reopenFy">Reopen</button>`
+        ${y.closed ? `<span class="tag tag-closed">Year closed ${y.closedAt ? sydTime(y.closedAt).slice(0, 10) : ''}</span><button class="btn btn-ghost btn-sm" id="reopenFy">Reopen</button>`
         : `<button class="btn btn-ghost" id="saveOh">Save overheads</button><button class="btn btn-blue" id="closeFy">Close ${fy}</button>`}
         <span class="muted" style="font-size:11px;">Overheads total: <b>${money(y.overheadsTotal)}</b> · ${y.jobs} job(s), ${y.jobsWithActuals} with PO actuals</span>
       </div>`;
@@ -2065,7 +2077,7 @@ async function poEditor(v) {
         ${po.hasSiteplan ? `<img src="/api/purchase-orders/${po.id}/siteplan" style="width:100%;border:1px solid var(--line);border-radius:9px;">` : '<p class="muted">No drawing.</p>'}
       </div>
     </div>
-    <div class="legend"><b>Print log:</b> ${po.prints.length ? po.prints.slice(0, 6).map(p => `${new Date(p.at + 'Z').toLocaleString('en-AU')} — ${esc(p.by || '')}`).join(' · ') : 'Not printed yet.'}</div>
+    <div class="legend"><b>Print log:</b> ${po.prints.length ? po.prints.slice(0, 6).map(p => `${sydTime(p.at)} — ${esc(p.by || '')}`).join(' · ') : 'Not printed yet.'}</div>
   </div>
 
   ${admin ? `<div class="card">
