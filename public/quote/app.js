@@ -4,6 +4,18 @@
   const api = (p, opts) => fetch(`/api/public/quote/${token}${p}`, opts).then(r => r.json());
   const money = n => '$' + Math.round(n).toLocaleString('en-AU');
   const esc = s => (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // Scope descriptions are written one inclusion per line. HTML collapses newlines, so the
+  // whole scope arrived as one unreadable paragraph however carefully it was laid out.
+  // Each line becomes a bullet. Any leading "-" or "*" the owner typed is stripped so it
+  // doesn't sit next to the bullet we add.
+  const scopeHtml = txt => {
+    const lines = String(txt || '').split(/\r?\n/)
+      .map(s => s.replace(/^\s*[-–—*•]\s*/, '').trim())
+      .filter(Boolean);
+    if (!lines.length) return '';
+    if (lines.length === 1) return `<div class="desc-line">${esc(lines[0])}</div>`;
+    return `<ul class="desc-list">${lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+  };
   const TIERS = ['Basic', 'Standard', 'Premium'];
   let D = null, tier = 'Standard';
 
@@ -22,9 +34,7 @@
 
   function smsg(h, p, warn) { return `<div class="state-msg ${warn ? 'warn' : ''}"><h2>${esc(h)}</h2><p class="muted">${esc(p)}</p></div>`; }
 
-  // "+$X over Basic" on the package cards — same authoritative totals as the price block.
   function eoFor(t) {
-    if (D.totalsPerTier) return D.totalsPerTier[t].grandExGst - D.totalsPerTier.Basic.grandExGst;
     const base = D.tierTotals.Basic + (D.surchargePerTier ? D.surchargePerTier.Basic : 0);
     const val = D.tierTotals[t] + (D.surchargePerTier ? D.surchargePerTier[t] : 0);
     return val - base;
@@ -101,8 +111,11 @@
     badges.push(`<span class="badge amber">Valid ${D.validityDays} days &mdash; until ${esc(D.validUntil)}</span>`);
     const heading = `${esc(D.projectTitle || 'Landscape Works')} Fee Proposal</div><div class="eyebrow">Quote ${esc(D.quoteNumber)}`;
 
+    const sampleBanner = D.isSample ? `<div style="background:#FFF4E5;border-bottom:2px solid #E08600;color:#5a3a00;padding:12px 16px;font-size:14px;line-height:1.45;">
+        <b>Sample quote — for illustration.</b> This is an example job, not your quote. Prices are indicative only. Try the Basic, Standard and Premium packages to see how the scope and price change — your own quote will arrive the same way.</div>` : '';
     root.innerHTML = `
     <div class="frame" oncontextmenu="return false">
+      ${sampleBanner}
       <div class="hero">
         <img class="logo-full" src="/assets/logo-full.png" alt="Estate Landscapers">
         <div class="eyebrow">${heading}</div>
@@ -133,7 +146,8 @@
       ${trustBarHtml(D)}
       <div class="total-card" id="totalCard"></div>
       <div class="pay"><b>Payment schedule</b><br>${esc(D.paymentScheduleText || '')}</div>
-      ${accepted ? '' : `<div class="cta-wrap"><button class="btn btn-blue" id="acceptBtn">Accept <span id="acceptTier">${tier}</span> package &amp; review contract &rarr;</button>
+      ${accepted ? '' : D.isSample ? `<div class="cta-wrap"><div class="cta-sub" style="font-size:14px;"><b>This sample can't be accepted.</b> When your own quote arrives, this is where you'll choose a package and sign.</div></div>`
+        : `<div class="cta-wrap"><button class="btn btn-blue" id="acceptBtn">Accept <span id="acceptTier">${tier}</span> package &amp; review contract &rarr;</button>
         <div class="cta-sub">You'll review the full contract, warranty and your protections before signing.</div></div>`}
       <footer>${esc(c.tagline || 'Integrity. Precision. Value.')}</footer>
     </div>`;
@@ -182,24 +196,22 @@
         <div class="t"><span class="code">${esc(d.code)}</span>${esc(d.name)}${d.changes ? '<span class="chg-badge">changes with package</span>' : ''}</div>
         <div class="spec-line"><div class="n">${esc(pt.spec || d.name)}</div><div class="p">${money(pt.price)}</div></div>
         ${alts ? `<div class="alt-line">Other packages &mdash; ${esc(alts)}</div>` : ''}
-        ${d.description ? `<div class="desc-line">${esc(d.description)}</div>` : ''}
+        ${scopeHtml(d.description)}
         ${isRem ? `<div class="rem-line">&#9878; ${esc(String(d.qty))} ${esc(d.unit)} @ ${money(pt.rate)}/${esc(d.unit)} &mdash; remeasurable: final quantity measured on site${shared}</div>` : ''}
         ${eo > 0 ? `<div class="eo-line">+${money(eo)} over the Basic spec for this item</div>` : ''}</div>`;
     }).join('');
     // Total = (Scope 1 + Scope 2) x (1 + % surcharges) + fixed surcharges, then GST
-    // The server is the only thing that adds a quote up (utils/totals.js). Display its figures.
-    const T = (D.totalsPerTier && D.totalsPerTier[tier]) || null;
-    const sub = T ? T.scope1 : (D.mixed ? D.mixed.sellExGst : D.tierTotals[tier]);
-    const s2 = T ? T.scope2 : (D.scope2Total || 0);
-    const sur = T ? T.surcharges : (D.surchargePerTier ? D.surchargePerTier[tier] : 0);
-    const exGst = T ? T.grandExGst : (sub + s2 + sur);
-    const incGst = T ? T.grandIncGst : exGst * 1.1;
+    const sub = D.mixed ? D.mixed.sellExGst : D.tierTotals[tier];
+    const s2 = D.scope2Total || 0;
+    const works = sub + s2;
+    const sur = D.surchargePerTier ? D.surchargePerTier[tier] : 0;
+    const exGst = works + sur;
     let rows = `<div class="r"><span>Scope 1 subtotal &mdash; ${D.mixed ? D.mixed.base + ' + changes' : tier}</span><span>${money(sub)}</span></div>`;
     if (s2 > 0) rows += `<div class="r"><span>Scope 2 disposal (est. &mdash; remeasurable)</span><span>${money(s2)}</span></div>`;
     if (sur > 0 && D.surcharges && D.surcharges.length)
       rows += `<div class="r"><span>Site-specific surcharges &mdash; ${D.surcharges.map(s => esc(s.code) + ' ' + esc(s.name) + (s.kind === 'percent' ? ` (+${s.rate}%)` : '')).join(', ')}</span><span>${money(sur)}</span></div>`;
-    rows += `<div class="r"><span>GST (10%)</span><span>${money(incGst - exGst)}</span></div>`;
-    rows += `<div class="r g"><span>Total inc. GST</span><span>${money(incGst)}</span></div>`;
+    rows += `<div class="r"><span>GST (10%)</span><span>${money(exGst * 0.1)}</span></div>`;
+    rows += `<div class="r g"><span>Total inc. GST</span><span>${money(exGst * 1.1)}</span></div>`;
     document.getElementById('totalCard').innerHTML = rows;
   }
 
@@ -243,6 +255,8 @@
           <div class="field"><label>Full name</label><input id="fname" value="${esc(D.client || '')}" placeholder="Your full name"></div>
           <div class="field"><label>Email (for your signed copy)</label><input id="femail" type="email" value="${esc(D.clientEmail || '')}" placeholder="you@example.com"></div>
           <div class="field"><label>Signature</label><div class="sig-tabs"><div class="sig-tab on" data-m="type">Type</div><div class="sig-tab" data-m="draw">Draw</div></div><div id="sigArea"></div></div>
+          <label class="gate"><input type="checkbox" id="c1"> <span id="c1t">I agree to sign this contract electronically, and I understand that applying my signature creates a legally binding contract with Estate Landscapers for the ${esc(tier)} package.</span></label>
+          <label class="gate"><input type="checkbox" id="c2"> <span id="c2t">I confirm that I am ${esc(D.client || 'the client named on this quote')} (or am authorised to sign on their behalf), and that a copy of the signed contract may be sent to the email address above.</span></label>
           <div class="err" id="err" style="display:none;"></div>
           <div style="display:flex;gap:8px;justify-content:space-between;"><button class="btn btn-ghost" id="back2">Back</button><button class="btn btn-blue" id="signBtn">Apply signature &amp; accept</button></div>`;
         const sigArea = overlay.querySelector('#sigArea');
@@ -275,9 +289,12 @@
           let signature = name;
           if (sigMode === 'type') signature = overlay.querySelector('#sigType').textContent.trim() || name;
           else { if (!sigDrawn) { errEl.textContent = 'Please draw your signature, or switch to Type.'; errEl.style.display = 'block'; return; } signature = overlay.querySelector('#sigCanvas').toDataURL('image/png'); }
+          if (!overlay.querySelector('#c1').checked || !overlay.querySelector('#c2').checked) { errEl.textContent = 'Please tick both boxes to confirm you agree to sign electronically.'; errEl.style.display = 'block'; return; }
+          // The exact sentences ticked go with the signature and onto the signed record.
+          const consent = [overlay.querySelector('#c1t').textContent.trim(), overlay.querySelector('#c2t').textContent.trim()];
           errEl.style.display = 'none';
           const btn = overlay.querySelector('#signBtn'); btn.disabled = true; btn.textContent = 'Submitting...';
-          api('/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tier, name, signature, email }) })
+          api('/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tier, name, signature, email, consent }) })
             .then(r => { if (r.ok) { step = 3; draw(r); } else { errEl.textContent = r.error || 'Something went wrong.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Apply signature & accept'; } })
             .catch(() => { errEl.textContent = 'Network error - please try again.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Apply signature & accept'; });
         });

@@ -2,6 +2,22 @@ const express = require('express');
 const path = require('node:path');
 
 const app = express();
+
+// Railway terminates HTTPS at its edge and forwards the request to this app as plain
+// HTTP, adding X-Forwarded-Proto: https. Without trusting that header, req.protocol is
+// 'http' — so every quote link the tool emailed to clients was http://, and clients opened
+// their quote and signed their contract on a page Chrome marks "Not secure".
+app.set('trust proxy', 1);
+
+// Anyone arriving over plain HTTP — including every http:// link already sitting in
+// clients' inboxes — is sent to the HTTPS address. Only fires when the proxy explicitly
+// says the visit was http, so local development and Railway health checks are unaffected.
+app.use((req, res, next) => {
+  if (req.get('x-forwarded-proto') === 'http') {
+    return res.redirect(301, 'https://' + req.get('host') + req.originalUrl);
+  }
+  next();
+});
 app.use(express.json({ limit: '15mb' })); // large limit so base64 site-plan drawings upload cleanly
 
 // simple request logger (helps a developer see traffic in dev; swap for pino/morgan later)
@@ -10,19 +26,6 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     console.log(`${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - start}ms)`);
   });
-  next();
-});
-
-// The public enquiry form may be served from the marketing site on a different host.
-// CORS is opened for that ONE endpoint and nothing else.
-app.use('/api/leads/public/enquiry', (req, res, next) => {
-  const allowed = (process.env.SITE_ORIGIN || 'https://estatelandscapers.com.au,https://www.estatelandscapers.com.au').split(',');
-  const origin = req.headers.origin;
-  if (origin && allowed.includes(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  if (req.method === 'OPTIONS') return res.status(204).end();
   next();
 });
 
@@ -41,11 +44,21 @@ app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/checklist', require('./routes/checklist'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/public/quote', require('./routes/publicQuote'));
+app.use('/api/public', require('./routes/publicEnquiry')); // website enquiry form
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
 
 app.use('/assets', express.static(path.join(__dirname, '..', 'public', 'assets')));
 app.use('/admin', express.static(path.join(__dirname, '..', 'public', 'admin')));
+// The service worker is served from the site root so its scope covers the whole tool
+// (a worker's scope cannot exceed the path it is served from). Cache-Control: no-cache
+// matters: browsers re-check this file on every load, and a cached worker would pin
+// the app to an old version — the opposite of what the worker is for.
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(__dirname, '..', 'public', 'admin', 'sw.js'));
+});
 
 app.use('/q/static', express.static(path.join(__dirname, '..', 'public', 'quote')));
 app.get('/q/:token', (req, res) => {
@@ -116,6 +129,36 @@ app.get('/api/maintenance/compact', runCompact);
 
 // Lightweight check for the backup script: confirms the key works and reports size,
 // so a scheduled task can verify without downloading the whole database.
+// Run a backup right now, and check the OneDrive connection. Both are key-protected the
+// same way as /api/backup so they can be used before any admin login exists on a new deploy.
+app.get('/api/backup/onedrive/test', async (req, res) => {
+  const key = process.env.BACKUP_KEY || 'CHANGE-ME';
+  if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const od = require('./utils/onedrive');
+    const bk = require('./utils/backupOneDrive');
+    const conn = await od.selfTest();
+    const hint = !conn.ok
+      ? (conn.configured === false
+          ? 'OneDrive credentials are not set on this service. Add GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and ONEDRIVE_USER in Railway.'
+          : 'Credentials are set but Graph rejected them — check the client secret has not expired and that Files.ReadWrite.All is granted with admin consent.')
+      : (bk.enabled() ? undefined : 'Connection works. The daily job is still off — set ONEDRIVE_BACKUP=1 in Railway to turn it on.');
+    res.json({ connection: conn, scheduleOn: bk.enabled(), folder: bk.FOLDER, hint });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+// Both GET and POST. POST is the correct verb for something that acts rather than reads,
+// but a browser address bar can only send GET — and a backup you can trigger from a
+// bookmark is a backup that actually gets tested. Key-protected, and it only ever creates
+// a file, so the practical risk of the looser verb is small.
+const runOneDriveBackup = async (req, res) => {
+  const key = process.env.BACKUP_KEY || 'CHANGE-ME';
+  if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
+  try { res.json(await require('./utils/backupOneDrive').runBackup(req.method === 'GET' ? 'manual-browser' : 'manual')); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+};
+app.get('/api/backup/onedrive/run', runOneDriveBackup);
+app.post('/api/backup/onedrive/run', runOneDriveBackup);
+
 app.get('/api/backup/status', (req, res) => {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
   if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });
@@ -196,4 +239,6 @@ app.listen(PORT, () => {
   console.log(`Estate Landscapers quote tool running on http://localhost:${PORT}`);
   console.log(`  Admin:  http://localhost:${PORT}/admin`);
   console.log(`  Public quotes: http://localhost:${PORT}/q/<token>`);
+  // Dormant unless ONEDRIVE_BACKUP=1, so deploying this cannot change behaviour by itself.
+  try { require('./utils/backupOneDrive').start(); } catch (e) { console.error('[backup] scheduler failed to start:', e.message); }
 });

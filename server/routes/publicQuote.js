@@ -44,10 +44,27 @@ const router = express.Router();
 const getPI = id => id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(id) : null;
 const getQ = t => db.prepare('SELECT * FROM quotes WHERE token=?').get(t);
 
+// Totals for the configuration the client ACTUALLY accepted — the package plus any per-line
+// changes they made ("Standard with 3 changes"). The contract price was previously taken
+// from the plain package total, so a client who upgraded three items signed a PDF whose
+// line items added to more than its own Contract Price. Surcharges are recomputed on the
+// selected lines too, since a percentage of a different base is a different number.
+function acceptedTotals(q) {
+  const cq = costQuote(q);
+  const scope1 = cq.selected.sell;
+  const lineBases = {};
+  (cq.perLine || []).forEach(l => { const tt = l.tiers[l.selected] || {}; lineBases[l.id] = { full: tt.sell || 0, labour: tt.labourValue || 0 }; });
+  const scope2 = clientView(q).scope2Total;   // same figure the client page shows
+  const applied = JSON.parse(q.applied_surcharges || '[]');
+  const sur = surchargeAmount(applied, scope1 + scope2, lineBases);
+  const grandExGst = scope1 + sur + scope2;
+  return { scope1, sur, scope2, grandExGst, grandIncGst: grandExGst * 1.1, mixed: cq.mixed, changes: cq.changes || [] };
+}
+
 function clientView(q) {
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
   const validUntil = new Date(new Date(q.quote_date).getTime() + q.validity_days * 86400000);
-  const expired = Date.now() > validUntil.getTime() && q.status !== 'accepted';
+  const expired = !q.is_sample && Date.now() > validUntil.getTime() && q.status !== 'accepted';
 
   const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order').all(q.id);
   const applied = JSON.parse(q.applied_surcharges || '[]');
@@ -59,8 +76,18 @@ function clientView(q) {
     const perTier = {};
     TIERS.forEach(t => { const r = resolveItem(it, pi, t); perTier[t] = { spec: r.spec, price: lineTotal(it, r, t), rate: r.rate }; });
     const anyR = resolveItem(it, pi, 'Standard');
+    // Where the same deliverable appears more than once (three retaining walls on one
+    // property), the client needs to tell them apart — otherwise it reads as three identical
+    // charges. Code becomes RW-1/RW-2 and the location is appended to the name.
+    const sibCount = it.price_item_id
+      ? db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?').get(q.id, it.price_item_id).n
+      : 1;
+    const multi = sibCount > 1 || (it.instance_no && it.instance_no > 1);
+    const dispCode = multi ? `${anyR.code}-${it.instance_no || 1}` : anyR.code;
+    const dispName = multi && it.location_note ? `${anyR.name} — ${it.location_note}` : anyR.name;
     const row = {
-      code: anyR.code, name: anyR.name, unit: anyR.unit, behaviour: anyR.behaviour,
+      code: dispCode, name: dispName, unit: anyR.unit, behaviour: anyR.behaviour,
+      locationNote: it.location_note || '',
       description: it.desc_override || (pi ? pi.description : '') || it.custom_desc || '',
       qty: it.qty, sharedEnabled: !!it.shared_enabled, sharedPct: it.shared_pct, perTier, tierOverride: it.tier_override || null,
       changes: (() => { const a = perTier.Basic, b = perTier.Premium; return a.spec !== b.spec || a.price !== b.price; })(),
@@ -81,7 +108,7 @@ function clientView(q) {
   return {
     quoteNumber: q.quote_number, projectTitle: q.project_title, client: q.client_name, address: q.address,
     date: q.quote_date, validUntil: validUntil.toISOString().slice(0, 10), validityDays: q.validity_days,
-    expired, superseded: laterRev > 0,
+    expired, superseded: laterRev > 0, isSample: !!q.is_sample,
     defaultPackage: q.default_package, status: q.status, acceptedPackage: q.accepted_package, clientEmail: q.client_email || '',
     mixed: (() => { try { const c = costQuote(q); return c.mixed ? { base: c.base, changes: c.changes.map(x => ({ code: x.code, name: x.name, to: x.to, delta: Math.round(x.delta), up: x.up })), sellExGst: Math.round(c.selected.sell) } : null; } catch { return null; } })(),
     paymentScheduleText: settingGet(q.payment_schedule === 'small' ? 'pay_sched_small' : 'pay_sched_standard'),
@@ -89,11 +116,6 @@ function clientView(q) {
     surcharges: surchargeList(applied).map(s => ({ code: s.code, name: s.name, kind: s.kind, rate: s.rate })),
     credentials: credentials(), estateStandard: ESTATE_STANDARD,
     surchargePerTier: surPerTier,
-    // Authoritative totals per package, from utils/totals.js — the client page displays
-    // these rather than adding lines up itself.
-    totalsPerTier: (() => { const { totalsPerTier } = require('../utils/totals'); const t = totalsPerTier(q);
-      const o = {}; TIERS.forEach(k => o[k] = { scope1: Math.round(t[k].scope1), scope2: Math.round(t[k].scope2),
-        surcharges: Math.round(t[k].surcharges), grandExGst: t[k].rounded.grandExGst, gst: t[k].rounded.gst, grandIncGst: t[k].rounded.grandIncGst }); return o; })(),
     scope1, scope2, tierTotals, scope2Total: s2,
     company: {
       name: settingGet('company_name'), abn: settingGet('company_abn'), lic: settingGet('company_lic'),
@@ -188,40 +210,40 @@ function pdfPayload(q, tier) {
       description: d.description, qty: d.qty, unit: d.unit, price: pt.price, showQty: true });
   });
   // Site-specific surcharges: their own coded section (SS1, SS2...), separate from Scope 2
-  // Each surcharge carries its dollar amount so the client can add the page up themselves.
-  const { quoteTotals } = require('../utils/totals');
-  const tq = quoteTotals(q, acc);
-  const appliedList = JSON.parse(q.applied_surcharges || '[]');
-  const { surchargeBase } = require('../utils/pricing');
-  const surcharges = (cv.surcharges || []).map((s, i) => {
-    const a = appliedList[i] || {};
-    let amount = 0;
-    if (s.kind === 'percent') {
-      // recompute this one surcharge on the same effective bases quoteTotals used
-      const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? AND scope=1').all(q.id);
-      const bases = {}; items.forEach(it => { const pi = getPI(it.price_item_id); const t = it.tier_override || acc;
-        const r = resolveItem(it, pi, t); bases[it.id] = { full: lineTotal(it, r, t), labour: lineTotal(it, r, t) }; });
-      amount = surchargeBase(a, tq.scope1 + tq.scope2, bases) * (s.rate / 100);
-    } else amount = Number(s.rate) || 0;
-    return { code: s.code, name: s.name, amount: Math.round(amount),
-      detail: s.kind === 'percent' ? `+${s.rate}% of works subtotal` : `fixed` };
-  });
+  const surcharges = (cv.surcharges || []).map(s => ({ code: s.code, name: s.name,
+    detail: s.kind === 'percent' ? `+${s.rate}% of works subtotal` : `+$${Number(s.rate).toLocaleString()} fixed` }));
   return { deliverables, surcharges, payment: cv.paymentScheduleText || '',
     sitePlan: q.siteplan_data ? { data: q.siteplan_data } : null };
 }
 
 // Accept + built-in sign. Generates the signed PDF and emails both parties via Zoho.
 router.post('/:token/sign', async (req, res) => {
+  { const sq = getQ(req.params.token); if (sq && sq.is_sample) return res.status(403).json({ error: 'This is a sample quote and cannot be accepted. Your own quote will arrive separately.' }); }
   const q = getQ(req.params.token);
   if (!q) return res.status(404).json({ error: 'Not found' });
-  const { tier, name, signature, email } = req.body || {};
+  const { tier, name, signature, email, consent } = req.body || {};
   if (!['Basic', 'Standard', 'Premium'].includes(tier)) return res.status(400).json({ error: 'Bad tier' });
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
+  // Both statements must have been ticked. The wording is stored verbatim so the record
+  // shows exactly what the signer agreed to, not what the page says today.
+  const consentText = Array.isArray(consent) ? consent.map(s => String(s).trim()).filter(Boolean) : [];
+  if (consentText.length < 2) return res.status(400).json({ error: 'Please tick both confirmation boxes before signing.' });
+  if (q.status === 'accepted' && q.signed_name) return res.status(409).json({ error: 'This quote has already been signed.' });
 
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  // req.ip honours X-Forwarded-For under trust proxy (set in index.js); the raw header can
+  // be a comma list, so this is the cleaner record.
+  const ip = req.ip || req.socket.remoteAddress || '';
+  const method = String(signature || '').startsWith('data:image') ? 'drawn' : 'typed';
+  // Snapshot of the terms as they stood at signing. The PDF is the primary record; this is
+  // the machine-readable copy of the same thing.
+  const termsSnap = JSON.stringify({
+    standard_conditions: settingGet('standard_conditions') || '', warranty_text: settingGet('warranty_text') || '',
+    special_clauses: q.special_clauses || '', payment_schedule: q.payment_schedule || '', tier, signedAt: new Date().toISOString() });
   db.prepare(`UPDATE quotes SET status='accepted', accepted_package=?, accepted_at=datetime('now'),
-    signed_name=?, signed_sig=?, signed_ip=?, client_email=COALESCE(NULLIF(?, ''), client_email), updated_at=datetime('now') WHERE id=?`)
-    .run(tier, name, signature || name, String(ip).slice(0, 60), email || '', q.id);
+    signed_name=?, signed_sig=?, signed_ip=?, signed_method=?, signed_email=?, signed_ua=?, signed_consent=?, signed_terms=?,
+    client_email=COALESCE(NULLIF(?, ''), client_email), updated_at=datetime('now') WHERE id=?`)
+    .run(tier, name, signature || name, String(ip).slice(0, 60), method, String(email || '').slice(0, 160),
+      String(req.get('user-agent') || '').slice(0, 300), consentText.join('\n'), termsSnap, email || '', q.id);
   db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload) VALUES (?,?,?,?)')
     .run(newId(), q.id, 'package_select', JSON.stringify({ tier, accepted: true }));
 
@@ -237,9 +259,8 @@ router.post('/:token/sign', async (req, res) => {
   } catch (e) { console.error('quoted snapshot failed', e.message); }
 
   const fresh = db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id);
-  const { quoteTotals } = require('../utils/totals');
-  const tq = quoteTotals(fresh, tier);
-  const totals = { grandExGst: tq.rounded.grandExGst, grandIncGst: tq.rounded.grandIncGst, surcharges: Math.round(tq.surcharges) };
+  const at = acceptedTotals(fresh);
+  const totals = { grandExGst: Math.round(at.grandExGst), grandIncGst: Math.round(at.grandIncGst) };
 
   // Respond IMMEDIATELY — the slow work (PDF + two emails) runs in the background.
   // NOTE: the PO is NOT created here any more. A won job goes to Selections first, where the
@@ -253,12 +274,20 @@ router.post('/:token/sign', async (req, res) => {
       let pdf = null;
       const payload = pdfPayload(fresh, tier);
       try { pdf = await buildSignedPdf({ quote: fresh, totals, settings, ...payload }); } catch (e) { console.error('pdf failed', e); }
+      let sha = '';
+      if (pdf) {
+        // The stored bytes ARE the signed contract. Everything after this serves them
+        // back rather than regenerating, so later edits cannot alter the record.
+        sha = require('crypto').createHash('sha256').update(pdf).digest('hex');
+        db.prepare('UPDATE quotes SET signed_pdf=?, signed_pdf_sha256=? WHERE id=?').run(pdf, sha, fresh.id);
+      }
       const attachments = pdf ? [{ filename: `Estate-Landscapers-Signed-Contract-${fresh.quote_number}.pdf`, content: pdf }] : [];
       const html = `<p>Contract signed and accepted.</p>
         <p><b>Quote:</b> ${fresh.quote_number} — ${fresh.project_title}<br>
         <b>Client:</b> ${fresh.client_name} · ${fresh.address}<br>
         <b>Package:</b> ${tier} · <b>Total:</b> $${totals.grandIncGst.toLocaleString()} inc. GST<br>
         <b>Signed by:</b> ${name} at ${fresh.accepted_at} (UTC)</p>
+        ${sha ? `<p style="font-size:12px;color:#666">Document fingerprint (SHA-256): <code>${sha}</code><br>Keep this with your copy. The attached PDF is the signed record; its fingerprint matches ours.</p>` : ''}
         <p style="color:#888">Integrity. Precision. Value. — Estate Landscapers</p>`;
       const clientEmail = email || fresh.client_email;
       const outcome = [];
@@ -289,3 +318,4 @@ router.post('/:token/sign', async (req, res) => {
 
 module.exports = router;
 module.exports.pdfPayload = pdfPayload;
+module.exports.acceptedTotals = acceptedTotals;

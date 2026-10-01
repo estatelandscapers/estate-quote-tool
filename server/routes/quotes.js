@@ -28,6 +28,8 @@ function computeQuote(q) {
       description: it.desc_override || (pi ? pi.description : '') || it.custom_desc || '', descIsCustom: !!it.desc_override,
       valueOverride: !!it.value_override, valueLump: !!it.value_lump,
       instanceNo: it.instance_no || 1, locationNote: it.location_note || '',
+      priceItemId: it.price_item_id || null,
+      hasSiblings: hasSiblings(q.id, it),
       displayCode: (it.instance_no && it.instance_no > 1) || hasSiblings(q.id, it)
         ? `${it.custom_code || (pi ? pi.code : '')}-${it.instance_no || 1}` : (it.custom_code || (pi ? pi.code : '')),
       value: { Basic: it.val_basic, Standard: it.val_standard, Premium: it.val_premium },
@@ -45,24 +47,27 @@ function computeQuote(q) {
     else { TIERS.forEach(t => scope1TierTotals[t] += perTier[t].total); out.scope1.push(row); }
   });
 
-  const s1 = scope1TierTotals[q.default_package];
-  // Per-line bases for targeted surcharges: full value and labour portion, per tier.
+  // Per-line bases for targeted surcharges: full value and labour portion, per tier — plus
+  // the SELECTED configuration, where any line carries a tier override (the client's
+  // package changes, or an estimator's per-line choice). The grand total must follow the
+  // selection, not the plain default package, or the line items won't add up to it.
   const lineBasesByTier = {}; TIERS.forEach(t => lineBasesByTier[t] = {});
+  let selSell = null; const selBases = {};
   try {
     const cq = costQuote(q);
     (cq.perLine || []).forEach(l => TIERS.forEach(t => {
       lineBasesByTier[t][l.id] = { full: l.tiers[t].sell, labour: l.tiers[t].labourValue || 0 };
     }));
+    if (cq.mixed) {
+      selSell = cq.selected.sell;
+      (cq.perLine || []).forEach(l => { const tt = l.tiers[l.selected] || {}; selBases[l.id] = { full: tt.sell || 0, labour: tt.labourValue || 0 }; });
+    }
   } catch (e) { console.error('[surcharge] line bases unavailable:', e.message); }
   const baseTier = q.default_package || 'Standard';
-  const sur = surchargeAmount(applied, s1 + scope2Total, lineBasesByTier[baseTier]);
+  const s1 = selSell != null ? selSell : scope1TierTotals[q.default_package];
+  const sur = surchargeAmount(applied, s1 + scope2Total, selSell != null ? selBases : lineBasesByTier[baseTier]);
   const surPerTier = {}; TIERS.forEach(t => surPerTier[t] = surchargeAmount(applied, scope1TierTotals[t] + scope2Total, lineBasesByTier[t]));
-  // The grand total comes from ONE place (utils/totals.js) so the admin screen, the contract
-  // preview, the client link and the signed contract can never disagree. s1/sur above are
-  // kept for the per-tier comparison table only.
-  const { quoteTotals } = require('../utils/totals');
-  const tot = quoteTotals(q, q.default_package);
-  const grandExGst = tot.grandExGst;
+  const grandExGst = s1 + scope2Total + sur;
   const gaps = surchargeGaps(applied, out.scope1.map(r => ({ id: r.id, code: r.code, name: r.name })));
   return {
     items: out, appliedSurcharges: applied,
@@ -75,7 +80,6 @@ function computeQuote(q) {
     surchargeGaps: gaps, surchargesIncomplete: gaps.length > 0,
     lineBases: lineBasesByTier[baseTier],
     grandExGst, gst: grandExGst * 0.1, grandIncGst: grandExGst * 1.1,
-    surchargeTotal: tot.surcharges, scope1Effective: tot.scope1,
   };
 }
 
@@ -103,11 +107,26 @@ function hasSiblings(quoteId, it) {
   return db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?')
     .get(quoteId, it.price_item_id).n > 1;
 }
+// Renumber a deliverable's instances 1..n in their current order. Only ever called for a
+// DRAFT quote — once the quote is sent the numbers are frozen, because the client's drawings
+// refer to them by name ("RW-2, side of garage") and a shifting label would be a real-world
+// mix-up on site.
+function renumberSiblings(quoteId, priceItemId) {
+  if (!priceItemId) return;
+  const sibs = db.prepare('SELECT id FROM quote_items WHERE quote_id=? AND price_item_id=? ORDER BY sort_order, instance_no, rowid')
+    .all(quoteId, priceItemId);
+  const up = db.prepare('UPDATE quote_items SET instance_no=? WHERE id=?');
+  sibs.forEach((s, i) => up.run(i + 1, s.id));
+}
+// True once the client has been sent the quote — the point after which codes stop moving.
+function quoteIsSent(q) {
+  return !!(q && (q.sent_at || ['sent', 'viewed', 'accepted'].includes(q.status)));
+}
 function fullQuote(q) {
   const c = computeQuote(q);
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
   return {
-    id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number,
+    id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number, isSample: !!q.is_sample,
     projectTitle: q.project_title, client: q.client_name, clientEmail: q.client_email, address: q.address,
     date: q.quote_date, validityDays: q.validity_days, defaultPackage: q.default_package,
     paymentSchedule: q.payment_schedule, siteNotes: q.site_notes, specialClauses: q.special_clauses,
@@ -168,8 +187,8 @@ router.get('/', (req, res) => {
       client: q.client_name, projectTitle: q.project_title,
       status, acceptedPackage: q.accepted_package,
       lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
-      value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand, customerTier: q.customer_tier || 'Silver',
-      views, updatedAt: q.updated_at };
+      value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand: q.is_sample ? 'fresh' : ageBand, customerTier: q.customer_tier || 'Silver',
+      views, updatedAt: q.updated_at, isSample: !!q.is_sample };
   });
   // Superseded and lost quotes are kept forever but hidden from the working list,
   // so what you see is the work that's actually live.
@@ -406,6 +425,30 @@ router.put('/:id/number', (req, res) => {
 
 
 // New revision: copies everything, next suffix, older ones become superseded automatically
+// Make a SAMPLE from an existing quote: same items, prices and site plan, but a generic
+// client and a Cronulla address, no lead, no expiry, and flagged so it is excluded from
+// every dashboard figure and can never be accepted. Used on site visits so the client
+// can see how a quote works before their own arrives.
+router.post('/:id/make-sample', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!src) return res.status(404).json({ error: 'not found' });
+  const n = db.prepare('SELECT COUNT(*) c FROM quotes WHERE COALESCE(is_sample,0)=1').get().c + 1;
+  const num = 'SAMPLE' + (n > 1 ? '-' + n : '');
+  const id = newId();
+  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,validity_days,default_package,payment_schedule,site_notes,special_clauses,siteplan_data,siteplan_mime,applied_surcharges,customer_tier,crew_size,siteplan_na,surcharges_na,status,sent_at,is_sample)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),1)`).run(
+    id, newToken(), num, num, 'Sample — how our quotes work', 'Andrew Mitchell', '',
+    '12 Ewos Parade, Cronulla NSW 2230', new Date().toISOString().slice(0, 10), 3650,
+    src.default_package, src.payment_schedule, src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime,
+    src.applied_surcharges, src.customer_tier, src.crew_size, src.siteplan_na, src.surcharges_na, 'sent');
+  const cols = db.prepare('PRAGMA table_info(quote_items)').all().map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
+  const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')}) VALUES (?,?,${cols.map(() => '?').join(',')})`);
+  db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order, rowid').all(src.id)
+    .forEach(it => ins.run(newId(), id, ...cols.map(c => it[c])));
+  res.json({ ok: true, id, quoteNumber: num });
+});
+
 router.post('/:id/revision', (req, res) => {
   const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!src) return res.status(404).json({ error: 'Not found' });
@@ -414,17 +457,31 @@ router.post('/:id/revision', (req, res) => {
   sibs.forEach(s => { const m = String(s.quote_number).match(/\.(\d+)$/); if (m) maxSuffix = Math.max(maxSuffix, Number(m[1])); });
   const newNumber = `${src.parent_number}.${maxSuffix + 1}`;
   const id = newId();
-  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,validity_days,default_package,payment_schedule,site_notes,special_clauses,siteplan_data,siteplan_mime,applied_surcharges)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+  // Fields that belong to the JOB carry forward; fields that belong to the SENDING of a
+  // particular revision (status, signature, sent_*, accepted_*, lost_*) deliberately reset.
+  // customer_tier and crew_size both feed pricing, so losing them silently repriced the
+  // revision. lead_id keeps the new revision attached to its enquiry. siteplan_na and
+  // surcharges_na are decisions the estimator already made about this job.
+  db.prepare(`INSERT INTO quotes (id,token,parent_number,quote_number,project_title,client_name,client_email,address,quote_date,validity_days,default_package,payment_schedule,site_notes,special_clauses,siteplan_data,siteplan_mime,applied_surcharges,customer_tier,crew_size,lead_id,siteplan_na,surcharges_na)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, newToken(), src.parent_number, newNumber, src.project_title, src.client_name, src.client_email, src.address,
     new Date().toISOString().slice(0, 10), src.validity_days, src.default_package, src.payment_schedule,
-    src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime, src.applied_surcharges);
-  db.prepare('SELECT * FROM quote_items WHERE quote_id=?').all(src.id).forEach(it => {
-    db.prepare(`INSERT INTO quote_items (id,quote_id,scope,price_item_id,custom_code,custom_name,custom_unit,custom_rate,qty,tier_override,behaviour_override,shared_enabled,shared_pct,sort_order,
-      locked_basic_spec,locked_basic_sell,locked_standard_spec,locked_standard_sell,locked_premium_spec,locked_premium_sell,locked_behaviour)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(newId(), id, it.scope, it.price_item_id, it.custom_code, it.custom_name, it.custom_unit, it.custom_rate, it.qty, it.tier_override, it.behaviour_override, it.shared_enabled, it.shared_pct, it.sort_order,
-      it.locked_basic_spec, it.locked_basic_sell, it.locked_standard_spec, it.locked_standard_sell, it.locked_premium_spec, it.locked_premium_sell, it.locked_behaviour);
-  });
+    src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime, src.applied_surcharges,
+    src.customer_tier, src.crew_size, src.lead_id, src.siteplan_na, src.surcharges_na);
+  // Copy EVERY column except the row's own identity. The previous version listed 21 columns
+  // by hand and silently dropped 28 others — including custom_desc, custom_tiered, the three
+  // custom_spec_* fields and all three val_* prices. That is why a revision showed custom
+  // items with their names intact but $0 and an empty scope box: the name was copied, the
+  // price and description were not.
+  //
+  // Enumerating the columns from the table keeps this correct when columns are added later.
+  // A hand-written list is a bug waiting for the next migration.
+  const cols = db.prepare('PRAGMA table_info(quote_items)').all()
+    .map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
+  const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')})
+    VALUES (?,?,${cols.map(() => '?').join(',')})`);
+  db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order, rowid').all(src.id)
+    .forEach(it => ins.run(newId(), id, ...cols.map(c => it[c])));
   res.status(201).json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(id)));
 });
 
@@ -535,6 +592,7 @@ router.post('/pending/:itemId/dismiss', (req, res) => {
 router.post('/:id/items', (req, res) => {
   try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
   const b = req.body || {};
+  const qrow = db.prepare('SELECT id, status, sent_at FROM quotes WHERE id=?').get(req.params.id);
   const id = newId();
   const pi = b.priceItemId ? db.prepare('SELECT * FROM price_items WHERE id=?').get(b.priceItemId) : null;
   const snap = snapshotFromPriceItem(pi); // lock current rates onto this quote line
@@ -559,9 +617,22 @@ router.post('/:id/items', (req, res) => {
       1, b.saveToPricing === false ? 'declined' : 'pending', id);
   }
   // Same deliverable already on the quote? Number this one so RW-1 / RW-2 read clearly.
+  //
+  // Numbering rule: a DRAFT quote renumbers its siblings 1..n so the codes stay tidy while
+  // the quote is being built. Once the quote has been SENT the numbers are frozen — the
+  // client's drawings reference "RW-2, side of garage", so that label must never move. New
+  // instances added after sending take MAX+1 and gaps left by deletions stay as gaps.
+  //
+  // MAX+1 rather than COUNT+1: with COUNT, adding after a deletion reissues a number that is
+  // already in use (1,2,3 → delete 2 → add → 1,3,3), which put two different walls under one
+  // code on the same quote.
   if (b.priceItemId) {
-    const n = db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?').get(req.params.id, b.priceItemId).n;
-    db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?').run(n, b.locationNote || '', id);
+    const sent = !!(qrow && (qrow.sent_at || ['sent', 'viewed', 'accepted'].includes(qrow.status)));
+    const max = db.prepare('SELECT MAX(instance_no) m FROM quote_items WHERE quote_id=? AND price_item_id=? AND id<>?')
+      .get(req.params.id, b.priceItemId, id).m || 0;
+    db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?')
+      .run(max + 1, b.locationNote || '', id);
+    if (!sent) renumberSiblings(req.params.id, b.priceItemId);
   }
   res.status(201).json({ id, code: db.prepare('SELECT custom_code c FROM quote_items WHERE id=?').get(id).c });
 });
@@ -606,7 +677,39 @@ router.put('/:id/items/:itemId', (req, res) => {
   res.json({ ok: true });
 });
 router.delete('/:id/items/:itemId', (req, res) => {
-  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {} db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId); res.status(204).end(); });
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
+  const gone = db.prepare('SELECT price_item_id FROM quote_items WHERE id=?').get(req.params.itemId);
+  db.prepare('DELETE FROM quote_items WHERE id=?').run(req.params.itemId);
+  // Tidy the remaining codes on a draft. After sending, leave the gap — deleting RW-2 must
+  // not turn the client's RW-3 into RW-2 when their drawings already say otherwise.
+  const q = db.prepare('SELECT id, status, sent_at FROM quotes WHERE id=?').get(req.params.id);
+  if (gone && gone.price_item_id && !quoteIsSent(q)) renumberSiblings(req.params.id, gone.price_item_id);
+  res.status(204).end();
+});
+
+// Duplicate a line — "another one of these, somewhere else on the property".
+// Copies what describes the deliverable (tier, method, spec overrides) but deliberately NOT
+// the quantity: each retaining wall is a different length, and a carried-over number that
+// looks plausible is worse than an empty box that has to be filled in.
+router.post('/:id/items/:itemId/duplicate', (req, res) => {
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
+  const src = db.prepare('SELECT * FROM quote_items WHERE id=?').get(req.params.itemId);
+  if (!src) return res.status(404).json({ error: 'Not found' });
+  const q = db.prepare('SELECT id, status, sent_at FROM quotes WHERE id=?').get(req.params.id);
+  const id = newId();
+  const cols = Object.keys(src).filter(k => !['id', 'qty', 'instance_no', 'location_note', 'sort_order'].includes(k));
+  const sort = (db.prepare('SELECT MAX(sort_order) m FROM quote_items WHERE quote_id=?').get(req.params.id).m || 0) + 1;
+  db.prepare(`INSERT INTO quote_items (id, qty, sort_order, ${cols.join(',')}) VALUES (?,?,?,${cols.map(() => '?').join(',')})`)
+    .run(id, 0, sort, ...cols.map(c => src[c]));
+  if (src.price_item_id) {
+    const max = db.prepare('SELECT MAX(instance_no) m FROM quote_items WHERE quote_id=? AND price_item_id=? AND id<>?')
+      .get(req.params.id, src.price_item_id, id).m || 0;
+    db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?').run(max + 1, '', id);
+    if (!quoteIsSent(q)) renumberSiblings(req.params.id, src.price_item_id);
+  }
+  const row = db.prepare('SELECT instance_no FROM quote_items WHERE id=?').get(id);
+  res.status(201).json({ id, instanceNo: row.instance_no });
+});
 
 router.get('/:id/analytics', (req, res) => {
   const ev = db.prepare('SELECT * FROM quote_events WHERE quote_id=? ORDER BY created_at DESC LIMIT 300').all(req.params.id);
@@ -645,18 +748,29 @@ router.get('/:id/costing', (req, res) => {
 router.get('/:id/signed-preview', async (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
+  // A signed contract is served from the bytes stored at signing — never regenerated.
+  // Regenerating would silently rebuild it from today's prices and today's T&Cs under the
+  // client's original signature, which is not the document they signed.
+  if (q.signed_pdf && q.signed_name) {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Estate-Landscapers-Signed-Contract-${q.quote_number}.pdf"`);
+    res.setHeader('X-Signed-Original', 'true');
+    if (q.signed_pdf_sha256) res.setHeader('X-Document-SHA256', q.signed_pdf_sha256);
+    return res.end(Buffer.from(q.signed_pdf));
+  }
   const { buildSignedPdf } = require('../utils/signedPdf');
   const { pdfPayload } = require('./publicQuote');
   const fq = fullQuote(q);
-  const totals = { grandExGst: Math.round(fq.grandExGst), grandIncGst: Math.round(fq.grandExGst * 1.1), surcharges: Math.round(fq.surchargeTotal || 0) };
+  const totals = { grandExGst: Math.round(fq.grandExGst), grandIncGst: Math.round(fq.grandIncGst) };
   const settings = {};
   ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
   const signed = !!q.signed_name;
-  const preview = { ...q,
-    accepted_package: q.accepted_package || q.default_package,
-    signed_name: q.signed_name || q.client_name || '(not yet signed)',
-    signed_sig: q.signed_sig || q.client_name || '',
-    accepted_at: q.accepted_at || new Date().toISOString().slice(0, 19).replace('T', ' ') };
+  // An unsigned quote goes to the PDF exactly as it is. The old version filled
+  // signed_name, signed_sig and accepted_at with the client's name and the current time —
+  // fabricating a signature record on a document nobody had signed. One amber "preview"
+  // line does not undo five pages of "SIGNED <name>" stamps; a preview must be unmistakably
+  // unsigned everywhere a signature would appear.
+  const preview = { ...q, accepted_package: q.accepted_package || q.default_package };
   try {
     const payload = pdfPayload(preview, preview.accepted_package);
     const pdf = await buildSignedPdf({ quote: preview, totals, settings, ...payload, preview: !signed });

@@ -10,7 +10,7 @@ const isAdmin = req => req.user && req.user.role === 'admin';
 router.use((req, res, next) => req.user ? next() : res.status(403).json({ error: 'sign in required' }));
 
 router.get('/', (req, res) => {
-  const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' ORDER BY accepted_at DESC").all();
+  const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0 ORDER BY accepted_at DESC").all();
   res.json(rows.map(q => {
     const po = db.prepare('SELECT id, po_number, revision FROM purchase_orders WHERE quote_id=? AND superseded=0').get(q.id);
     return { id: q.id, quoteNumber: q.quote_number, client: q.client_name, address: q.address,
