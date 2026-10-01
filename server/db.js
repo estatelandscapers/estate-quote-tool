@@ -260,36 +260,6 @@ addColumn('price_items','recipe_status',"TEXT DEFAULT 'none'");
 addColumn('price_items','entered_cost_basic','REAL');
 addColumn('price_items','entered_cost_standard','REAL');
 addColumn('price_items','entered_cost_premium','REAL');
-
-// ---- Deliverable sections (admin organisation only — NOT shown on the client link) ----
-// A flat list of 20+ deliverables was unworkable to reorder. Sections group them in the
-// Pricing tab; the client quote and contract are unchanged and still read straight from
-// sort_order, which is recomputed as section order then position within the section.
-db.exec(`CREATE TABLE IF NOT EXISTS price_sections (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now')))`);
-addColumn('price_items','section_id','TEXT');
-
-// Seed the starting sections once, and file the existing deliverables into them by code.
-// Guarded so it never runs again — the owner can rename, add and delete sections freely.
-if (db.prepare('SELECT COUNT(*) c FROM price_sections').get().c === 0) {
-  const SECTIONS = [
-    ['Preliminaries',        ['PL','EW']],
-    ['Soft landscaping',     ['GT','GA','GM','TR','PW','ST']],
-    ['Hard landscaping',     ['RW','CP','PC']],
-    ['Fencing & gates',      ['FC','FA','FG','FT']],
-    ['Demolition & disposal',['RM','RD','SC2']],
-    ['Accessories',          ['AL','AC']],
-  ];
-  const insS = db.prepare('INSERT INTO price_sections (id,name,sort_order) VALUES (?,?,?)');
-  const setI = db.prepare('UPDATE price_items SET section_id=? WHERE code=?');
-  SECTIONS.forEach(([name, codes], i) => {
-    const sid = 'sec_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-    insS.run(sid, name, i + 1);
-    codes.forEach(c => setI.run(sid, c));
-  });
-  console.log('[db] seeded ' + SECTIONS.length + ' deliverable sections');
-}
 db.exec(`
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY, name TEXT, phone TEXT, email TEXT, address TEXT,
@@ -358,33 +328,6 @@ addColumn('quotes','link_off','INTEGER DEFAULT 0');
 addColumn('leads','docs_received','TEXT');
 addColumn('leads','docs_note','TEXT');
 addColumn('leads','docs_channel','TEXT');
-// Website enquiry identity. `enquiry_ref` replaces a `notes LIKE ref||'%'` lookup that let
-// an unauthenticated caller pass '%' and match somebody else's lead. `enquiry_token` is the
-// unguessable half — references are sequential, so format validation alone still lets an
-// attacker walk ENQ-2026-0001, 0002, ... and write into each. `enquiry_completed` makes the
-// completion callback single-use so even the real client can't append repeatedly.
-addColumn('leads','enquiry_ref','TEXT');
-addColumn('leads','enquiry_token','TEXT');
-addColumn('leads','enquiry_completed','INTEGER DEFAULT 0');
-// What the browser SAID it was going to upload, as JSON. Kept so the server can later ask
-// OneDrive what actually landed and compare. Without this there is nothing to reconcile
-// against — the server would only ever know what the browser chose to report.
-addColumn('leads','enquiry_files','TEXT');
-// A sample quote: a real quote the client can play with on their phone during the site
-// visit, flagged so it never expires, cannot be accepted, and is kept out of every total.
-addColumn('quotes','is_sample','INTEGER DEFAULT 0');
-// Website enquiries with a budget under $25k. Still accepted, flagged for triage.
-addColumn('leads','small_project','INTEGER DEFAULT 0');
-// Signature evidence. The signed PDF is STORED at signing, with its SHA-256, so the record
-// of what was agreed can never drift when the terms in Settings or the quote are edited
-// later. The consent wording, signing method, email, IP and browser go with it.
-addColumn('quotes','signed_pdf','BLOB');
-addColumn('quotes','signed_pdf_sha256','TEXT');
-addColumn('quotes','signed_method','TEXT');
-addColumn('quotes','signed_email','TEXT');
-addColumn('quotes','signed_ua','TEXT');
-addColumn('quotes','signed_consent','TEXT');
-addColumn('quotes','signed_terms','TEXT');
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

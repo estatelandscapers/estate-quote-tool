@@ -4,16 +4,6 @@
 const PDFDocument = require('pdfkit');
 
 function money(n) { return '$' + Math.round(n || 0).toLocaleString('en-AU'); }
-// Scope descriptions are one inclusion per line. pdfkit honours newlines, so we only need
-// to add the bullet and strip any dash the owner typed so they don't double up.
-function bulletise(txt) {
-  const lines = String(txt || '').split(/\r?\n/)
-    .map(s => s.replace(/^\s*[-–—*•]\s*/, '').trim())
-    .filter(Boolean);
-  if (!lines.length) return '';
-  if (lines.length === 1) return lines[0];
-  return lines.map(l => '• ' + l).join('\n');
-}
 // Sydney local time for the signature record (AEST/AEDT handled automatically)
 function sydneyTime(utcStr) {
   if (!utcStr) return '';
@@ -39,12 +29,8 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     doc.fontSize(8.5).fillColor('#555').text(`${settings.company_abn || ''}  ·  ${settings.company_lic || ''}  ·  ${settings.company_address || ''}`);
     doc.moveTo(50, doc.y + 4).lineTo(doc.page.width - 50, doc.y + 4).lineWidth(2).strokeColor('#1E5BFF').stroke();
     doc.moveDown(0.9);
-    if (preview) {
-      doc.fontSize(9).fillColor('#B08D3E').text('PREVIEW — AWAITING CLIENT SIGN-OFF', { align: 'right' }).fillColor('#000');
-      doc.fontSize(14).fillColor('#000').text('CONTRACT PREVIEW — AWAITING CLIENT SIGN-OFF');
-    } else {
-      doc.fontSize(14).fillColor('#000').text('SIGNED CONTRACT & ACCEPTANCE RECORD');
-    }
+    if (preview) doc.fontSize(9).fillColor('#B08D3E').text('PREVIEW — not a signed document', { align: 'right' }).fillColor('#000');
+    doc.fontSize(14).fillColor('#000').text('SIGNED CONTRACT & ACCEPTANCE RECORD');
     doc.moveDown(0.4).fontSize(9.5);
     doc.text(`Quote: ${quote.quote_number}          Date: ${quote.quote_date || ''}`);
     doc.text(`Client: ${quote.client_name || ''}`);
@@ -73,17 +59,14 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
         doc.fontSize(9);
         const nameH = doc.heightOfString(d.name || '', { width: wName });
         const specH = d.spec ? doc.fontSize(7.8).heightOfString(d.spec, { width: wName }) : 0;
-        // One inclusion per line, bulleted — same treatment as the client quote page so the
-        // contract reads identically to what the client accepted.
-        const descTxt = bulletise(d.description);
-        const descH = descTxt ? doc.fontSize(7.4).heightOfString(descTxt, { width: wName }) : 0;
+        const descH = d.description ? doc.fontSize(7.4).heightOfString(d.description, { width: wName }) : 0;
         const rowH = nameH + (specH ? specH + 2 : 0) + (descH ? descH + 2 : 0) + 8;
         if (doc.y + rowH > doc.page.height - 70) { doc.addPage(); headRow(); }
         const y = doc.y;
         doc.fontSize(9).font('Helvetica-Bold').fillColor('#000').text(d.code || '', cCode, y, { width: 32, lineBreak: false });
         doc.font('Helvetica').text(d.name || '', cName, y, { width: wName });
         if (d.spec) doc.fontSize(7.8).fillColor('#666').text(d.spec, cName, y + nameH + 1, { width: wName });
-        if (descTxt) doc.fontSize(7.4).fillColor('#888').text(descTxt, cName, y + nameH + (specH ? specH + 3 : 1), { width: wName });
+        if (d.description) doc.fontSize(7.4).fillColor('#888').text(d.description, cName, y + nameH + (specH ? specH + 3 : 1), { width: wName });
         doc.fontSize(9).fillColor('#000');
         doc.text(d.showQty ? `${d.qty} ${d.unit || ''}` : '', cQty, y, { width: 74, lineBreak: false });
         doc.text(d.price ? money(d.price) : '—', cPrice, y, { width: 92, align: 'right', lineBreak: false });
@@ -102,6 +85,10 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
       };
       doc.moveTo(cName, doc.y).lineTo(doc.page.width - 50, doc.y).lineWidth(0.8).strokeColor('#BBB').stroke();
       doc.y += 5;
+      if (totals.surcharges) {
+        tRow('Works subtotal', money(totals.grandExGst - totals.surcharges));
+        tRow('Site-specific surcharges', money(totals.surcharges));
+      }
       tRow('Subtotal (ex GST)', money(totals.grandExGst));
       tRow('GST (10%)', money(totals.grandIncGst - totals.grandExGst));
       tRow('TOTAL INC. GST', money(totals.grandIncGst), true);
@@ -112,8 +99,11 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     if (surcharges.length) {
       H('Site-specific surcharges');
       surcharges.forEach(ss => {
+        const y0 = doc.y;
         doc.fontSize(9).font('Helvetica-Bold').text(`${ss.code}`, { continued: true }).font('Helvetica')
-          .text(`  ${ss.name} — ${ss.detail}`);
+          .text(`  ${ss.name} — ${ss.detail}`, { width: 400 });
+        if (ss.amount != null) doc.font('Helvetica').text(money(ss.amount), 450, y0, { width: 95, align: 'right' });
+        doc.moveDown(0.2);
       });
     }
 
@@ -135,33 +125,14 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
 
     // ---- signature ----
     if (doc.y > doc.page.height - 200) doc.addPage();
-    if (preview) {
-      // No fabricated names, times or signatures. This section becomes the signature
-      // record only after the client actually signs on their quote link.
-      H('Signature record');
-      doc.fontSize(11).fillColor('#B08D3E').text('Awaiting client sign-off').fillColor('#000');
-      doc.moveDown(0.3).fontSize(9)
-        .text('This is a preview. The signature record — name, date, time and signature — is added automatically when the client accepts and signs on their quote link.');
-      doc.moveDown(1.6);
-      const boxY = doc.y;
-      doc.moveTo(52, boxY + 40).lineTo(280, boxY + 40).lineWidth(0.8).strokeColor('#666').stroke();
-      doc.y = boxY + 44;
-      doc.fontSize(8).fillColor('#666').text('Client signature — not yet signed', 52).fillColor('#000');
-    } else {
     H('Signature record');
     doc.fontSize(9.5);
     doc.text(`Signed by: ${quote.signed_name || ''}`);
     doc.text(`Signed at: ${sydneyTime(quote.accepted_at)} (Sydney time)`);
     doc.fontSize(7.5).fillColor('#999').text(`Server record (UTC): ${quote.accepted_at || ''}`).fontSize(9.5).fillColor('#000');
-    if (quote.signed_email || quote.client_email) doc.text(`Client email: ${quote.signed_email || quote.client_email}`);
+    if (quote.client_email) doc.text(`Client email: ${quote.client_email}`);
     if (quote.address) doc.text(`Site address: ${quote.address}`);
-    doc.text(`IP address: ${quote.signed_ip || 'n/a'}${quote.signed_method ? ` · Signature: ${quote.signed_method}` : ''}`);
-    if (quote.signed_ua) doc.fontSize(7.5).fillColor('#999').text(`Device: ${String(quote.signed_ua).slice(0, 140)}`).fontSize(9.5).fillColor('#000');
-    if (quote.signed_consent) {
-      doc.moveDown(0.3).fontSize(8).fillColor('#555').text('Confirmed by the client before signing:');
-      String(quote.signed_consent).split('\n').forEach(line => doc.text(`\u2713 ${line}`, { indent: 10 }));
-      doc.fontSize(9.5).fillColor('#000');
-    }
+    doc.text(`IP address: ${quote.signed_ip || 'n/a'}`);
     doc.moveDown(0.4);
     const sig = quote.signed_sig || '';
     doc.fontSize(8).fillColor('#777').text('Signature:').fillColor('#000');
@@ -180,11 +151,10 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     }
     doc.moveTo(52, doc.y).lineTo(280, doc.y).lineWidth(0.8).strokeColor('#666').stroke();
     doc.moveDown(0.3).fontSize(8).fillColor('#666').text(`${quote.signed_name || ''} — Client`, 52).fillColor('#000');
-    }
 
     // ---- terms (flow on — only page-break when genuinely near the bottom) ----
     if (doc.y > doc.page.height - 160) doc.addPage();
-    H(preview ? 'Special clauses' : 'Special clauses (as signed)');
+    H('Special clauses (as signed)');
     doc.fontSize(9).text(quote.special_clauses || settings.default_special_clauses || 'None for this quote.');
     H('Warranty');
     doc.fontSize(9).text(settings.warranty_text || '');
@@ -208,12 +178,6 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
       doc.fontSize(7).fillColor('#999')
         .text(`${settings.tagline || 'Integrity. Precision. Value.'}   ·   Quote ${quote.quote_number}   ·   Page ${i - range.start + 1} of ${range.count}`,
           50, fy + 10, { width: 260, lineBreak: false });
-      if (preview) {
-        // Amber PREVIEW stamp where the signature would sit — on every page, so no single
-        // page can be photocopied or screenshotted into looking like a signed one.
-        doc.fontSize(8).fillColor('#B08D3E')
-          .text('PREVIEW — awaiting client sign-off', doc.page.width - 232, fy - 2, { width: 185, lineBreak: false });
-      } else {
       doc.fontSize(6.5).fillColor('#AAA').text('SIGNED', doc.page.width - 232, fy - 2, { width: 40, lineBreak: false });
       if (sigRaw.startsWith('data:image')) {
         try { doc.image(Buffer.from(sigRaw.split(',')[1], 'base64'), doc.page.width - 190, fy - 8, { fit: [86, 24] }); } catch (e) {}
@@ -223,7 +187,6 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
       }
       doc.fontSize(6.5).fillColor('#AAA')
         .text(stampName, doc.page.width - 190, fy + 12, { width: 145, lineBreak: false });
-      }
       doc.page.margins.bottom = savedBottom;  // restore
     }
     doc.end();

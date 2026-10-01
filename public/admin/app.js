@@ -20,71 +20,7 @@ const BEHAV = { none: '', remeasurable: 'Remeasurable', rate_only: 'Rate only', 
 let USER = null;
 let state = { tab: 'leads', leadsSub: 'summary', precallDone: false, hideClosed: true, calMonth: null, leadId: null, leadStage: null, leadPhase: null, callStep: 0, showLost: false, pendingCheckedAt: 0, incGst: false, editorSub: 'surcharges', matCat: 'material', pricingSub: 'live', recipesSub: 'live', pendingCounts: { pricing: 0, recipes: 0 }, recipeCode: null, recipeVariant: null, selQuoteId: null, quoteId: null, poId: null, showSuperseded: false, scrollY: 0, jobsFy: 'all' };
 
-// Date as YYYY-MM-DD in the BROWSER'S timezone. Never toISOString().slice() for this:
-// toISOString converts to UTC first, and Sydney is UTC+10, so "1 October, midnight" becomes
-// "30 September, 2pm" and the date string comes out a day early. That one conversion made
-// the calendar's next-month button compute the same month forever, skipped August going
-// backwards, and cut month-end Fridays out of the visits query. It also made "today" turn
-// over at 10am instead of midnight.
-const localYmd = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-// Text boxes grow to fit their content. A two-row textarea holding an eight-line scope
-// description hid six of them behind a scrollbar too small to notice on a phone. Runs on
-// every textarea the app renders and again on each keystroke; capped so a pasted essay
-// can't take over the page.
-const autosize = ta => {
-  if (!ta || ta.tagName !== 'TEXTAREA') return;
-  ta.style.height = 'auto';
-  ta.style.height = Math.min(ta.scrollHeight + 2, 420) + 'px';
-};
-document.addEventListener('input', e => autosize(e.target));
-let _asRaf = 0;
-new MutationObserver(() => {
-  if (_asRaf) return;
-  _asRaf = requestAnimationFrame(() => { _asRaf = 0; document.querySelectorAll('textarea').forEach(autosize); });
-}).observe(document.getElementById('app'), { childList: true, subtree: true });
-
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
-// Downscale a picked image in the browser before it goes near the network.
-// This was CALLED but never defined — every site-plan upload threw silently and
-// nothing ever reached the server. A 4-8MB phone photo would also blow past the
-// 15MB JSON body limit once base64 inflates it by a third, so shrinking here is
-// not cosmetic. The server compresses again; this just makes the upload survivable.
-const UPLOAD_MAX_DIM = 2000;
-function shrinkImage(file) {
-  return new Promise((resolve, reject) => {
-    if (!file) return reject(new Error('No file'));
-    const fr = new FileReader();
-    fr.onerror = () => reject(new Error('Could not read that file'));
-    fr.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('That file is not a readable image'));
-      img.onload = () => {
-        try {
-          const longest = Math.max(img.width, img.height);
-          const scale = longest > UPLOAD_MAX_DIM ? UPLOAD_MAX_DIM / longest : 1;
-          const w = Math.max(1, Math.round(img.width * scale));
-          const h = Math.max(1, Math.round(img.height * scale));
-          const cv = document.createElement('canvas');
-          cv.width = w; cv.height = h;
-          const cx = cv.getContext('2d');
-          // PNGs may carry transparency; flatten onto white so it doesn't go black as JPEG.
-          cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h);
-          cx.drawImage(img, 0, 0, w, h);
-          // Line drawings keep PNG; photographs become JPEG. Same rule as the server.
-          const keepPng = /png/i.test(file.type) && scale === 1;
-          const outMime = keepPng ? 'image/png' : 'image/jpeg';
-          const url = cv.toDataURL(outMime, 0.85);
-          const data = url.split(',')[1] || '';
-          if (!data) return reject(new Error('Could not encode that image'));
-          resolve({ data, mime: outMime, size: Math.round((data.length * 3) / 4) });
-        } catch (e) { reject(e); }
-      };
-      img.src = fr.result;
-    };
-    fr.readAsDataURL(file);
-  });
-}
 const LOGO = `<img src="/assets/logo-icon.png" alt="Estate Landscapers" style="height:34px;width:auto;display:block;">`;
 const isAdmin = () => USER && USER.role === 'admin';
 
@@ -217,7 +153,7 @@ async function leadsSummary(v) {
       ${inPhase.length ? `<table><tbody>${inPhase.map(l => `<tr>
         <td><b>${esc(l.name || '—')}</b>${l.suburb ? ' — ' + esc(l.suburb) : ''}</td>
         <td class="muted">${esc(l.nextAction || '')}</td>
-        <td class="${l.due && l.due < localYmd() ? '' : 'muted'}" style="${l.due && l.due < localYmd() ? 'color:var(--red);' : ''}">${esc(l.due || 'no date')}</td>
+        <td class="${l.due && l.due < new Date().toISOString().slice(0, 10) ? '' : 'muted'}" style="${l.due && l.due < new Date().toISOString().slice(0, 10) ? 'color:var(--red);' : ''}">${esc(l.due || 'no date')}</td>
         <td class="right"><button class="btn btn-ghost btn-sm" data-po="${l.id}">Open</button></td></tr>`).join('')}</tbody></table>`
         : '<p class="muted">Nothing at this step.</p>'}</div>`;
     $('#hidePhase').addEventListener('click', () => { state.leadPhase = null; leadsSummary(v); });
@@ -230,9 +166,9 @@ async function leadsEnquiries(v) {
   const [board, data, stageData] = await Promise.all([api('/leads/board'), api('/leads'), api('/leads/stages')]);
   if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
   const rows = data.leads || [];
-  const today = localYmd();
+  const today = new Date().toISOString().slice(0, 10);
   const line = (l, cls) => `<div class="today ${cls} ${l.phase === 4 ? 'q' : ''}">
-      <div><b>${esc(l.name || '—')}</b>${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
+      <div><b>${esc(l.name || '—')}</b>${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
         <br><span class="muted" style="font-size:11px;">Step ${l.phase} · ${esc(l.stageLabel)} · <b>${esc(l.nextAction)}</b>${l.due ? ' · due ' + esc(l.due) : ''}${l.quoteNumber ? ' · quote ' + esc(l.quoteNumber) : ''}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" data-snooze="${l.id}">😴 Snooze 3 days</button>
@@ -257,62 +193,28 @@ async function leadsEnquiries(v) {
       <label style="font-size:11.5px;display:flex;align-items:center;gap:7px;margin-bottom:9px;">
         <input type="checkbox" id="hideClosed" ${state.hideClosed !== false ? 'checked' : ''} style="width:auto;">
         Hide closed and lost enquiries <span class="muted" id="hiddenCount"></span></label>
-      <label style="font-size:11.5px;display:flex;align-items:center;gap:7px;margin-bottom:9px;">Small projects
-        <select id="smallFilter" style="width:auto;min-height:0;padding:4px 8px;font-size:11.5px;">
-          <option value="all" ${(state.smallFilter || 'all') === 'all' ? 'selected' : ''}>Show all</option>
-          <option value="only" ${state.smallFilter === 'only' ? 'selected' : ''}>Small projects only</option>
-          <option value="hide" ${state.smallFilter === 'hide' ? 'selected' : ''}>Hide small projects</option></select></label>
       <div id="allTable"></div></div>`;
 
   const paint = () => {
     const hide = state.hideClosed !== false;
     const closed = rows.filter(r => ['Won', 'Lost'].includes(r.status));
-    const sf = state.smallFilter || 'all';
-    const shown = (hide ? rows.filter(r => !['Won', 'Lost'].includes(r.status)) : rows)
-      .filter(r => sf === 'all' || (sf === 'only' ? r.smallProject : !r.smallProject));
+    const shown = hide ? rows.filter(r => !['Won', 'Lost'].includes(r.status)) : rows;
     $('#hiddenCount').textContent = hide && closed.length ? `(${closed.length} hidden)` : '';
-    $('#allTable').innerHTML = shown.length ? `<div id="bulkBar" style="display:none;margin-bottom:8px;">
-        <button class="btn btn-danger btn-sm" id="bulkDel">Delete selected (<span id="bulkN">0</span>)</button>
-        <span class="muted" style="font-size:11px;margin-left:8px;">Enquiries with a quote attached are protected and will be skipped.</span>
-      </div><table class="resp"><thead><tr><th style="width:26px;"><input type="checkbox" id="selAll" style="width:auto;" title="Select all shown"></th><th>Name</th><th>Contact</th><th>Site</th><th>Step</th><th>Next</th><th>Quote</th><th></th></tr></thead><tbody>
+    $('#allTable').innerHTML = shown.length ? `<table class="resp"><thead><tr><th>Name</th><th>Contact</th><th>Site</th><th>Step</th><th>Next</th><th>Quote</th><th></th></tr></thead><tbody>
       ${shown.map(l => { const ph = STAGE_PHASE[l.stage] || 1; return `<tr${['Won', 'Lost'].includes(l.status) ? ' style="opacity:.55;"' : ''}>
-        <td><input type="checkbox" class="selLead" data-sel="${l.id}" style="width:auto;"></td>
-        <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.smallProject ? ` <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>` : ''}${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
+        <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
         <td data-l="Contact">${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
         <td data-l="Site">${esc(l.suburb || l.address || '')}</td>
         <td data-l="Step"><span class="tag stepTag s${ph}">STEP ${ph}</span>${['Won', 'Lost'].includes(l.status) ? `<br><span class="muted" style="font-size:10px;">${esc(l.status)}</span>` : ''}</td>
         <td data-l="Next">${l.followupOverdue ? '<span class="tag age-flag">overdue</span> ' : ''}${esc(l.nextFollowup || '—')}${l.msgCount ? `<br><span class="muted" style="font-size:10px;">${l.msgCount} msg</span>` : ''}</td>
-        <td data-l="Quote">${l.quoteNumber ? esc(l.quoteNumber) : (l.quoteMissing ? '<span class="tag age-flag" title="The quote linked to this enquiry no longer exists">quote missing</span>' : '<span class="muted">—</span>')}</td>
+        <td data-l="Quote">${l.quoteNumber ? esc(l.quoteNumber) : '<span class="muted">—</span>'}</td>
         <td class="right"><button class="btn btn-ghost btn-sm" data-lopen2="${l.id}">Open</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`; }).join('')}
       </tbody></table>` : '<p class="muted">No open enquiries.</p>';
-    // Multi-select. The bar only appears once something is ticked, so the table stays
-    // clean for everyday use.
-    const syncBulk = () => {
-      const picked = v.querySelectorAll('.selLead:checked').length;
-      const bar = $('#bulkBar'); if (!bar) return;
-      bar.style.display = picked ? 'block' : 'none';
-      const n = $('#bulkN'); if (n) n.textContent = picked;
-    };
-    v.querySelectorAll('.selLead').forEach(c => c.addEventListener('change', syncBulk));
-    const selAll = $('#selAll');
-    if (selAll) selAll.addEventListener('change', () => {
-      v.querySelectorAll('.selLead').forEach(c => { c.checked = selAll.checked; }); syncBulk();
-    });
-    const bulkBtn = $('#bulkDel');
-    if (bulkBtn) bulkBtn.addEventListener('click', async () => {
-      const ids = [...v.querySelectorAll('.selLead:checked')].map(c => c.dataset.sel);
-      if (!ids.length) return;
-      if (!confirm(`Delete ${ids.length} enquir${ids.length === 1 ? 'y' : 'ies'}? Enquiries with a quote are skipped automatically. This cannot be undone.`)) return;
-      const r = await api('/leads/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
-      toast(`Deleted ${r.deleted}` + (r.skipped && r.skipped.length ? ` — kept ${r.skipped.length} with quotes` : ''));
-      leadsEnquiries(v);
-    });
     v.querySelectorAll('[data-lopen2]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen2; leadConsole(v); }));
     v.querySelectorAll('[data-ld]').forEach(b => b.addEventListener('click', async () => {
       if (confirm('Delete this enquiry?')) { await api('/leads/' + b.dataset.ld, { method: 'DELETE' }); leadsEnquiries(v); } }));
   };
   $('#hideClosed').addEventListener('change', e => { state.hideClosed = e.target.checked; paint(); });
-  $('#smallFilter').addEventListener('change', e => { state.smallFilter = e.target.value; paint(); });
   paint();
   v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen; leadConsole(v); }));
   v.querySelectorAll('[data-snooze]').forEach(b => b.addEventListener('click', async () => {
@@ -325,14 +227,14 @@ async function leadsEnquiries(v) {
 async function leadsCalendar(v) {
   const base = state.calMonth ? new Date(state.calMonth + '-01T00:00:00') : new Date();
   const y = base.getFullYear(), m = base.getMonth();
-  const from = localYmd(new Date(y, m, 1));
-  const to = localYmd(new Date(y, m + 1, 1));
+  const from = new Date(y, m, 1).toISOString().slice(0, 10);
+  const to = new Date(y, m + 1, 1).toISOString().slice(0, 10);
   const [cal, bookable] = await Promise.all([api(`/leads/calendar?from=${from}&to=${to}`), api('/leads/calendar/bookable')]);
   const byDay = {}; (cal.visits || []).forEach(x => { (byDay[x.date] = byDay[x.date] || []).push(x); });
   const monthName = new Date(y, m, 1).toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
   const firstDow = (new Date(y, m, 1).getDay() + 6) % 7;          // Monday first
   const daysIn = new Date(y, m + 1, 0).getDate();
-  const todayIso = localYmd();
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   let cells = '';
   for (let i = 0; i < firstDow; i++) cells += '<div class="calday out"></div>';
@@ -363,7 +265,7 @@ async function leadsCalendar(v) {
       ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<div class="caldow">${x}</div>`).join('')}
       ${cells}</div></div></div>`;
 
-  const shift = n => { const d = new Date(y, m + n, 1); state.calMonth = localYmd(d).slice(0, 7); leadsCalendar(v); };
+  const shift = n => { const d = new Date(y, m + n, 1); state.calMonth = d.toISOString().slice(0, 7); leadsCalendar(v); };
   $('#calPrev').addEventListener('click', () => shift(-1));
   $('#calNext').addEventListener('click', () => shift(1));
   $('#calToday').addEventListener('click', () => { state.calMonth = null; leadsCalendar(v); });
@@ -725,7 +627,7 @@ async function callScreen(v) {
   // Step 0 — what we already know. Confirmed here, not asked again on the call.
   if (state.callStep === 0 && !state.precallDone) return precallScreen(v, sc, saved, leadsData);
   const lead = (leadsData.leads || []).find(x => x.id === state.leadId) || {};
-  CALL = { sc, a: saved.answers || {}, lead, i: state.callStep || 0, outcome: null, fridays: sc.fridays, slots: sc.slots || [] };
+  CALL = { sc, a: saved.answers || {}, lead, i: state.callStep || 0, outcome: null, fridays: sc.fridays };
   paintCall(v);
 }
 
@@ -756,11 +658,7 @@ function paintCall(v) {
   const confirmLine = knownBits.length
     ? `\n\nI've got most of it here already — ${knownBits.join(', ')}. Is that still right?`
     : '';
-  // A full address (one with a street number) is confirmed, not re-asked.
-  const onFile = String(CALL.a.siteAddress || CALL.lead.address || '').trim();
-  const hasFull = /\d/.test(onFile);
-  const sayRaw = (s.sayConfirm && hasFull) ? s.sayConfirm.replace('{address}', onFile) : (s.say || '');
-  const say = String(sayRaw)
+  const say = String(s.say || '')
     .replace(/\{\{confirm\}\}/g, confirmLine)
     .replace(/\{\{first\}\}/g, first)
     .replace(/\{\{me\}\}/g, (state.user && state.user.name) || 'Smit')
@@ -804,18 +702,6 @@ function paintCall(v) {
 function renderAnswer(v, s) {
   const box = $('#ans'); const a = CALL.a;
   const chip = (val, label, on) => `<button class="cchip ${on ? 'on' : ''}" data-opt="${esc(val)}">${esc(label || val)}</button>`;
-
-  if (s.type === 'text') {
-    // Pre-filled from the record so a complete address only needs a nod.
-    const cur = a[s.key] != null ? a[s.key] : (s.key === 'siteAddress' ? (CALL.lead.address || CALL.lead.suburb || '') : '');
-    box.innerHTML = `<input id="txtAns" value="${esc(cur)}" placeholder="${esc(s.placeholder || '')}" style="width:100%;max-width:520px;">
-      ${s.hint ? `<div class="muted" style="font-size:10.5px;margin-top:5px;">${esc(s.hint)}</div>` : ''}`;
-    const inp = $('#txtAns');
-    inp.addEventListener('input', () => { a[s.key] = inp.value; });
-    inp.addEventListener('change', () => { a[s.key] = inp.value.trim(); saveCall(); });
-    if (a[s.key] == null && cur) a[s.key] = cur;
-    return;
-  }
 
   if (s.type === 'outcome') {
     box.innerHTML = `<div class="chips">${s.options.map(o => chip(o.v, o.label, CALL.outcome === o.v)).join('')}</div>
@@ -938,17 +824,12 @@ function renderAnswer(v, s) {
     box.innerHTML = `<div class="chips">${s.options.map(o => chip(o.v, o.label, CALL.visitOutcome === o.v)).join('')}</div>
       <div id="friBox" style="margin-top:10px;${CALL.visitOutcome === 'booked' ? '' : 'display:none;'}">
         <div class="chips">${CALL.fridays.map(f => `<button class="cchip ${CALL.visitDate === f.iso ? 'on' : ''}" data-fri="${f.iso}">${esc(f.label)}</button>`).join('')}
-          <input type="date" id="friOther" value="${esc(CALL.visitDate || '')}" style="max-width:190px;"></div>
-        <div class="muted" style="font-size:10.5px;margin:10px 0 4px;">What time? — this is what goes on the calendar</div>
-        <div class="chips">${(CALL.slots || []).map(sl => `<button class="cchip ${CALL.visitTime === sl ? 'on' : ''}" data-slot="${esc(sl)}">${esc(sl)}</button>`).join('')}</div></div>`;
+          <input type="date" id="friOther" value="${esc(CALL.visitDate || '')}" style="max-width:190px;"></div></div>`;
     box.querySelectorAll('[data-opt]').forEach(b => b.addEventListener('click', () => {
       CALL.visitOutcome = b.dataset.opt; renderAnswer(v, s);
     }));
     box.querySelectorAll('[data-fri]').forEach(b => b.addEventListener('click', () => {
       CALL.visitDate = b.dataset.fri; renderAnswer(v, s);
-    }));
-    box.querySelectorAll('[data-slot]').forEach(b => b.addEventListener('click', () => {
-      CALL.visitTime = b.dataset.slot; renderAnswer(v, s);
     }));
     const fo = $('#friOther'); if (fo) fo.addEventListener('change', () => { CALL.visitDate = fo.value; });
     return;
@@ -1014,7 +895,7 @@ function refreshBp(v) {
 async function finishCall(v) {
   const r = await api(`/leads/${CALL.lead.id}/call/finish`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers: CALL.a, outcome: CALL.outcome, callbackWhen: CALL.callbackWhen,
-      visitOutcome: CALL.visitOutcome, visitDate: CALL.visitDate, visitTime: CALL.visitTime, referredBy: CALL.referredBy }) });
+      visitOutcome: CALL.visitOutcome, visitDate: CALL.visitDate, referredBy: CALL.referredBy }) });
   if (r.error) return toast(r.error);
   state.callStep = 0;
   v.innerHTML = `<div class="card">
@@ -1058,7 +939,7 @@ async function leadConsole(v) {
   const groups = [...new Set(stages.map(s => s.group))];
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.suburb || l.address || '')}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
+      <div><h2>${esc(l.name || 'Lead')}</h2><div class="sub">${esc(l.suburb || l.address || '')}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
         ${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" id="goQuote">Quote ${esc(l.quoteNumber)}</button>`
@@ -1129,43 +1010,21 @@ async function leadConsole(v) {
           <button class="btn btn-blue" id="ms_email">Email</button>
           <button class="btn btn-ghost" id="ms_sms">SMS</button>
           <button class="btn btn-ghost" id="ms_call">📞 Log a call</button>
-          <button class="btn btn-ghost" id="ms_sample" title="Loads the sample-quote message above — then send it with WhatsApp, Email or SMS">📱 Sample quote</button>
-          <button class="btn btn-ghost" id="ms_notfit" title="Loads a polite decline. Sending it closes the enquiry as Not a fit">Not a fit</button>
         </div>
         <div class="legend" style="margin-bottom:12px;">WhatsApp and SMS open on your phone with the message ready — press send there. The tool records it either way. Email is sent from here with your signature.</div>
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">History</div>
-        <div class="timeline" id="leadTimeline">
-          ${history.length ? history.map(m => {
-            // Short entries render as before. Long ones get "Read more", expanding to the
-            // FULL text with line breaks kept — the whole email, not the first 90 chars.
-            const clip = txt => {
-              const t = String(txt || ''); if (!t) return '';
-              if (t.length <= 90) return `<div class="muted" style="font-size:10.5px;margin-top:2px;white-space:pre-wrap;">${esc(t)}</div>`;
-              return `<div class="muted tlBody" style="font-size:10.5px;margin-top:2px;">
-                <span class="tlShort">${esc(t.slice(0, 90))}… <a href="#" class="tlMore" style="color:var(--blue);font-weight:700;">Read more</a></span>
-                <span class="tlFull" style="display:none;white-space:pre-wrap;">${esc(t)}
-                <br><a href="#" class="tlLess" style="color:var(--blue);font-weight:700;">Show less</a></span></div>`;
-            };
-            return `<div class="tl" style="--c:${(CHAN[m.channel] || CHAN.note)[1]};">
+        <div class="timeline">
+          ${history.length ? history.map(m => `<div class="tl" style="--c:${(CHAN[m.channel] || CHAN.note)[1]};">
             <b>${esc(String(m.at || '').slice(0, 16))}</b> — ${esc((CHAN[m.channel] || CHAN.note)[0])}${m.outcome === 'sent' ? ' sent' : ''}
             ${m.sentBy ? `<span class="muted"> · ${esc(m.sentBy)}</span>` : ''}
-            ${m.subject ? `<div class="muted" style="font-size:10.5px;margin-top:2px;"><b>${esc(m.subject)}</b></div>` : ''}
-            ${clip(m.body)}${clip(m.note)}</div>`; }).join('')
+            ${m.body ? `<div class="muted" style="font-size:10.5px;margin-top:2px;">${esc(m.body.slice(0, 90))}${m.body.length > 90 ? '…' : ''}</div>` : ''}
+            ${m.note ? `<div class="muted" style="font-size:10.5px;margin-top:2px;">${esc(m.note)}</div>` : ''}</div>`).join('')
             : '<div class="muted" style="font-size:11.5px;">Nothing sent yet.</div>'}
         </div>
       </div>
     </div></div>`;
 
   $('#backLeads').addEventListener('click', () => { state.leadId = null; state.leadStage = null; leadsTab(v); });
-  const tlEl = $('#leadTimeline');
-  if (tlEl) tlEl.addEventListener('click', e => {
-    const more = e.target.closest('.tlMore'), less = e.target.closest('.tlLess');
-    if (!more && !less) return;
-    e.preventDefault();
-    const body = e.target.closest('.tlBody');
-    body.querySelector('.tlShort').style.display = more ? 'none' : '';
-    body.querySelector('.tlFull').style.display = more ? '' : 'none';
-  });
   const gq = $('#goQuote'); if (gq) gq.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = l.quoteId; state.leadId = null; shell(); });
   const tq = $('#toQuote'); if (tq) tq.addEventListener('click', async () => {
     const r = await api('/leads/' + l.id + '/convert', { method: 'POST' });
@@ -1214,10 +1073,10 @@ async function leadConsole(v) {
         ${cmp ? `<a class="btn btn-ghost btn-sm" href="/admin#quote-${cmp.quoteId}" target="_blank" id="openQuoteTab">Open the quote in a new tab ↗</a>` : ''}
       </div><div class="rule"></div>
       <div class="grid2">
-        <div><table class="kv">${A.rows.map(r => `<tr><td class="muted" style="width:42%;">${esc(r.k)}</td><td>${esc(r.v)}</td></tr>`).join('')}</table></div>
+        <div><table>${A.rows.map(r => `<tr><td class="muted" style="width:42%;">${esc(r.k)}</td><td>${esc(r.v)}</td></tr>`).join('')}</table></div>
         <div>${cmp ? `
           <div class="alab">Quote ${esc(cmp.quoteNumber)} — ${money(cmp.totalIncGst)} inc GST</div>
-          <table class="kv">${cmp.onQuote.map(x => `<tr><td style="width:30%;"><b>${esc(x.code)}</b></td>
+          <table>${cmp.onQuote.map(x => `<tr><td style="width:30%;"><b>${esc(x.code)}</b></td>
             <td>${esc(x.name)}<br><span style="font-size:10.5px;color:${x.status === 'ok' ? 'var(--green)' : 'var(--amber)'};">
             ${x.status === 'ok' ? '✓ matches the call' : x.status === 'differs' ? '⚠ ' + esc(x.qtyNote) : '⚠ not discussed on the call'}</span></td></tr>`).join('')}
             ${cmp.missing.map(c => `<tr><td><b>${esc(c)}</b></td><td><span style="font-size:10.5px;color:var(--red);">⚠ discussed on the call but missing from the quote</span></td></tr>`).join('')}
@@ -1268,16 +1127,11 @@ async function leadConsole(v) {
     });
   }
 
-  // Set by "Not a fit": the NEXT send closes the lead. Cleared whenever another message is
-  // loaded, so an unrelated follow-up can never close an enquiry by accident. Declared
-  // before loadMsg, which clears it and runs immediately below.
-  let closeAs = null;
   let msg = {};
   async function loadMsg() {
     const qs = new URLSearchParams({ stage: state.leadStage || stage });
     if ($('#ms_date').value) qs.set('date', $('#ms_date').value);
     if ($('#ms_time').value) qs.set('time', $('#ms_time').value);
-    closeAs = null;
     msg = await api(`/leads/${l.id}/message?` + qs.toString());
     $('#ms_subject').value = msg.subject || '';
     $('#ms_body').value = msg.body || '';
@@ -1294,7 +1148,7 @@ async function leadConsole(v) {
   const record = async (channel, extra) => {
     await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channel, stage: state.leadStage || stage, subject: $('#ms_subject').value,
-        body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...extra, ...(closeAs || {}) }) });
+        body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...extra }) });
   };
   $('#ms_wa').addEventListener('click', async () => {
     if (!msg.phoneOk) return toast('Add a mobile number first');
@@ -1312,25 +1166,10 @@ async function leadConsole(v) {
     const btn = $('#ms_email'); btn.disabled = true; btn.textContent = 'Sending…';
     const r = await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channel: 'email', stage: state.leadStage || stage, to: $('#ld_email').value,
-        subject: $('#ms_subject').value, body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...(closeAs || {}) }) });
+        subject: $('#ms_subject').value, body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null }) });
     btn.disabled = false; btn.textContent = 'Email';
     if (r.error) return toast(r.error);
     toast('Email sent'); leadConsole(v);
-  });
-  $('#ms_notfit').addEventListener('click', async () => {
-    const r = await api(`/leads/${l.id}/not-a-fit-message`);
-    if (r.error) return toast(r.error);
-    $('#ms_subject').value = r.subject; $('#ms_body').value = r.message; autosize($('#ms_body'));
-    closeAs = { stage: 'closeout', status: 'Lost', reason: 'Not a fit', nextFollowup: null };
-    $('#ms_warn').innerHTML = '<span style="color:#8a5a00;font-weight:700;">Sending this closes the enquiry as Not a fit.</span>';
-    toast('Not-a-fit reply loaded — send with Email, WhatsApp or SMS');
-  });
-  $('#ms_sample').addEventListener('click', async () => {
-    closeAs = null;
-    const r = await api(`/leads/${l.id}/sample-message`);
-    if (r.error) return toast(r.error);
-    $('#ms_subject').value = r.subject; $('#ms_body').value = r.message; autosize($('#ms_body'));
-    toast('Sample quote message loaded — now send it with WhatsApp, Email or SMS');
   });
   $('#ms_call').addEventListener('click', async () => {
     const note = prompt('What happened on the call?');
@@ -1366,7 +1205,7 @@ async function quotesList(v) {
       <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>
         ${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
       <td>${q.status === 'accepted' || isLost ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td>${q.views}</td>
-      <td class="right">${q.isSample ? `<span class="tag" style="background:#FFF4E5;color:#8a5a00;margin-right:6px;">SAMPLE</span>` : ``}<button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
+      <td class="right"><button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
         ${isLost ? `<button class="btn btn-ghost btn-sm" data-reopen="${q.id}">Reopen</button>`
           : (q.status === 'accepted' || isSup ? '' : `<button class="btn btn-ghost btn-sm" data-lost="${q.id}">Lost</button>`)}
         <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button></td></tr>`; }).join('')}
@@ -1457,7 +1296,7 @@ async function quoteEditor(v) {
         ${String(q.quoteNumber).includes('.') ? `<span class="muted" style="font-size:12px;font-weight:500;">rev ${esc(String(q.quoteNumber).split('.')[1])}</span>` : ''}
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button><a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
       ${isAdmin() ? `<button class="btn btn-ghost" id="linkTog">${q.linkOff ? '🔒 Link is OFF — turn on' : 'Turn link off'}</button>` : ''}
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
@@ -1574,7 +1413,6 @@ async function quoteEditor(v) {
     <div id="siteplanArea">${q.hasSiteplan ? `<img src="/api/public/quote/${q.token}/siteplan?t=${Date.now()}" style="max-width:100%;border:1px solid var(--line);border-radius:10px;margin-bottom:10px;">` : '<p class="muted">No drawing uploaded.</p>'}</div>
     <div class="row" style="gap:14px;flex-wrap:wrap;">
       <input type="file" id="planFile" accept="image/png,image/jpeg" style="max-width:300px;width:auto;">
-      <button class="btn btn-blue btn-sm" id="uploadPlan">Upload</button>
       ${q.hasSiteplan ? '<button class="btn btn-ghost btn-sm" id="removePlan">Remove</button>' : ''}
       <label style="font-size:11px;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="planNa" ${q.siteplanNa ? 'checked' : ''} style="width:auto;"> Mark N/A</label>
     </div>
@@ -1655,24 +1493,9 @@ async function quoteEditor(v) {
   const sq = $('#sendQuote'); if (sq) sq.addEventListener('click', () => openSendDialog(q));
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
-  const mk = $('#mkSample'); if (mk) mk.addEventListener('click', async () => {
-    if (!confirm('Create a sample quote from this one? It gets a generic client and a Cronulla address, never expires, cannot be accepted, and is left out of every total.')) return;
-    const r = await api('/quotes/' + q.id + '/make-sample', { method: 'POST' });
-    if (r.error) return toast(r.error);
-    state.quoteId = r.id; state.scrollY = 0; toast('Sample ' + r.quoteNumber + ' created'); route();
-  });
   $('#newRev').addEventListener('click', async () => { const r = await api('/quotes/' + q.id + '/revision', { method: 'POST' }); state.quoteId = r.id; state.scrollY = 0; toast('Revision ' + r.quoteNumber + ' created — old link superseded'); route(); });
-  $('#saveDraft').addEventListener('click', async () => {
-    const ok = await uploadPlan(true);          // flush a picked-but-not-uploaded drawing
-    await autosave();
-    toast(ok ? 'Draft saved' : 'Draft saved — but the drawing did not upload');
-    if (ok && !pendingPlan) reload();
-  });
-  $('#saveSend').addEventListener('click', async () => {
-    const ok = await uploadPlan(true);
-    await autosave();
-    toast(ok ? 'Saved — live link ready' : 'Saved — but the drawing did not upload');
-  });
+  $('#saveDraft').addEventListener('click', async () => { await autosave(); toast('Draft saved'); });
+  $('#saveSend').addEventListener('click', async () => { await autosave(); toast('Saved — live link ready'); });
 
   // tick to stage, one Save to add them all — no page reload per click
   const staged = new Set();
@@ -1727,47 +1550,17 @@ async function quoteEditor(v) {
     reload();
   }));
   const naChip = v.querySelector('[data-sur-na]'); if (naChip) naChip.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appliedSurcharges: [], surchargesNa: !q.surchargesNa }) }); reload(); });
-  // Upload is now an explicit button, not a side-effect of picking a file. A picked-but-
-  // not-uploaded file is remembered so Save draft can flush it — losing a drawing because
-  // the wrong button was pressed is exactly the failure this is meant to prevent.
-  let pendingPlan = null;
-  const planStatus = () => {
-    let el = $('#planStatus');
-    if (!el) { el = document.createElement('div'); el.id = 'planStatus';
-      el.style.cssText = 'font-size:11.5px;margin-top:7px;'; $('#planFile').parentNode.appendChild(el); }
-    return el;
-  };
-  const uploadPlan = async (quiet) => {
-    if (!pendingPlan) return true;
-    const file = pendingPlan;
-    const before = file.size;
-    try {
-      if (!quiet) toast('Preparing image…');
-      const { data, mime, size } = await shrinkImage(file);
-      const r = await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data, mime }) });
-      if (r && r.error) throw new Error(r.error);
-      pendingPlan = null;
-      const saved = before > size ? ` (${Math.round(before / 1024)}KB → ${Math.round(size / 1024)}KB)` : '';
-      toast('Drawing uploaded' + saved);
-      return true;
-    } catch (err) {
-      // Never fail silently again — that was the original bug.
-      planStatus().innerHTML = `<span style="color:var(--red);font-weight:700;">Upload failed — ${esc(err.message || 'unknown error')}. The file is still selected; try Upload again.</span>`;
-      toast('Upload failed');
-      return false;
-    }
-  };
-  $('#planFile').addEventListener('change', e => {
-    pendingPlan = e.target.files[0] || null;
-    planStatus().innerHTML = pendingPlan
-      ? `<b>${esc(pendingPlan.name)}</b> ready — click <b>Upload</b> (or Save draft) to store it.`
-      : '';
-  });
-  $('#uploadPlan').addEventListener('click', async () => {
-    if (!pendingPlan) return toast('Choose a file first');
+  $('#planFile').addEventListener('change', async e => {
+    const file = e.target.files[0]; if (!file) return;
     state.scrollY = window.scrollY;
-    if (await uploadPlan()) reload();
+    const before = file.size;
+    toast('Preparing image…');
+    const { data, mime, size } = await shrinkImage(file);
+    await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data, mime }) });
+    const saved = before > size ? ` (${Math.round(before / 1024)}KB → ${Math.round(size / 1024)}KB)` : '';
+    toast('Drawing uploaded' + saved);
+    reload();
   });
   const rmPlan = $('#removePlan'); if (rmPlan) rmPlan.addEventListener('click', async () => { state.scrollY = window.scrollY; await api('/quotes/' + q.id + '/siteplan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: null, mime: null }) }); reload(); });
   $('#planNa').addEventListener('change', async e => { await api('/quotes/' + q.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteplanNa: e.target.checked }) }); });
@@ -1804,11 +1597,10 @@ async function quoteEditor(v) {
       } else tierCells = `<td class="center muted" colspan="3">—</td>`;
       const diff = cl && cl.selected !== c.base;
       const up = diff && TIERS.indexOf(cl.selected) > TIERS.indexOf(c.base);
-      return `<tr data-line="${it.id}" data-pi="${it.priceItemId || ''}" title="Double-click to add another one of these">
-        <td><b>${esc(it.displayCode || it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
+      return `<tr>
+        <td><b>${esc(it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
         <td>${esc(it.name)}
           ${behav ? `<br><span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${behav}</span>` : ''}
-          ${it.hasSiblings ? `<input data-loc="${it.id}" value="${esc(it.locationNote || '')}" placeholder="where on site? e.g. front boundary" style="font-size:10.5px;margin-top:4px;width:100%;max-width:260px;" title="Shown to the client and on the crew's site PO">` : ''}
           <textarea data-desc="${it.id}" rows="2" placeholder="Scope description shown to the client…" style="font-size:10.5px;margin-top:4px;width:100%;">${esc(it.description || '')}</textarea>
           <label style="font-size:10px;display:flex;align-items:center;gap:6px;margin-top:4px;" title="Price this line from a supplier quote instead of the rate card">
             <input type="checkbox" data-vo="${it.id}" ${it.valueOverride ? 'checked' : ''} style="width:auto;"> site-specific value</label>
@@ -1829,9 +1621,9 @@ async function quoteEditor(v) {
         </td>
         <td><input type="number" step="0.01" value="${it.qty}" data-qty="${it.id}" style="width:70px;"> ${esc(it.unit)}</td>
         ${tierCells}
-        <td class="right">${it.priceItemId ? `<button class="btn btn-ghost btn-sm" data-dup="${it.id}" title="Add another one of these — e.g. a second retaining wall elsewhere on the property">+</button> ` : ''}${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
+        <td class="right">${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
     };
-    const head = `<table class="qb"><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
+    const head = `<table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
     $('#scope1').innerHTML = q.items.scope1.length ? head + q.items.scope1.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 1 items yet.</p>';
     $('#scope2').innerHTML = q.items.scope2.length ? head + q.items.scope2.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 2 items yet.</p>';
     if (c.mixed) {
@@ -1850,26 +1642,6 @@ async function quoteEditor(v) {
     }));
     v.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.qty}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qty: parseFloat(i.value) || 0 }) }); refreshCosting(); }));
     v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
-    // "Another one of these, somewhere else on the property." Two ways in: the + button and
-    // a double-click on the row. Quantity starts empty so it has to be measured, not assumed.
-    const duplicate = async id => {
-      state.scrollY = window.scrollY;
-      const r = await api(`/quotes/${q.id}/items/${id}/duplicate`, { method: 'POST' });
-      if (r && r.error) return toast(r.error);
-      toast('Added — set the quantity and where it is on site');
-      reload();
-    };
-    v.querySelectorAll('[data-dup]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); duplicate(b.dataset.dup); }));
-    v.querySelectorAll('tr[data-line]').forEach(tr => tr.addEventListener('dblclick', e => {
-      // Never hijack a double-click inside a field — that's how you select a word.
-      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'OPTION'].includes(e.target.tagName)) return;
-      if (!tr.dataset.pi) return toast('Custom lines can\'t be duplicated');
-      duplicate(tr.dataset.line);
-    }));
-    v.querySelectorAll('[data-loc]').forEach(i => i.addEventListener('change', async () => {
-      await api(`/quotes/${q.id}/items/${i.dataset.loc}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locationNote: i.value }) });
-      toast('Location saved');
-    }));
     v.querySelectorAll('[data-method]').forEach(s => s.addEventListener('change', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${s.dataset.method}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: s.value || null }) }); reload(); }));
     v.querySelectorAll('[data-waste]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.waste}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wastageOverride: i.value === '' ? null : parseFloat(i.value) }) }); refreshCosting(); toast('Wastage updated'); }));
     // Show/hide the fields in place. This used to call reload(), which re-fetched five
@@ -2056,7 +1828,7 @@ async function poEditor(v) {
       <div>
         <div class="scope-title">Site copy — approved deliverables (no $)</div>
         <table><thead><tr><th>Code</th><th>Item / spec + hrs</th><th>Qty</th></tr></thead><tbody>
-          ${po.siteItems.map(i => `<tr><td><b>${esc(i.code || '')}</b></td><td>${esc(i.name)}${i.spec ? `<br><span class="muted" style="font-size:11px;white-space:pre-line;">${esc(i.spec)}</span>` : ''}</td><td>${i.qty} ${esc(i.unit || '')}</td></tr>`).join('')}
+          ${po.siteItems.map(i => `<tr><td><b>${esc(i.code || '')}</b></td><td>${esc(i.name)}${i.spec ? `<br><span class="muted" style="font-size:11px;">${esc(i.spec)}</span>` : ''}</td><td>${i.qty} ${esc(i.unit || '')}</td></tr>`).join('')}
         </tbody></table>
         ${po.siteChallenges.length ? `<div style="margin-top:8px;">${po.siteChallenges.map(c => `<span class="chip on">${esc(c)}</span>`).join('')}</div>` : ''}
       </div>
@@ -2144,7 +1916,7 @@ async function vendorsTab(v) {
   ${list.map(x => `<tr><td><b>${esc(x.name)}</b></td>
     <td>${x.isSupplier ? '<span class="tag t-sup">Supplier</span>' : ''} ${x.isSubcontractor ? '<span class="tag t-subv">Subcontractor</span>' : ''}</td>
     <td>${esc(x.area || '')}</td><td>${esc(x.contact || '')} ${esc(x.phone || '')}</td><td>${esc(x.terms || '')}</td>
-    <td>${x.isSubcontractor ? (x.insuranceExpiry && x.insuranceExpiry < localYmd() ? '<span class="tag tag-superseded">Insurance expired</span>' : '<span class="tag tag-accepted">OK</span>') : '—'}</td>
+    <td>${x.isSubcontractor ? (x.insuranceExpiry && x.insuranceExpiry < new Date().toISOString().slice(0, 10) ? '<span class="tag tag-superseded">Insurance expired</span>' : '<span class="tag tag-accepted">OK</span>') : '—'}</td>
     <td>${(x.supplies || []).length}</td>
     <td class="right"><button class="btn btn-ghost btn-sm" data-ev="${x.id}">Open</button> <button class="btn btn-danger btn-sm" data-dv="${x.id}">✕</button></td></tr>`).join('')}
   </tbody></table></div><div id="vDetail"></div>`;
@@ -2178,7 +1950,7 @@ async function vendorsTab(v) {
       ${(x.supplies || []).length ? `<table><thead><tr><th>Code</th><th>Item</th><th>Unit</th><th class="right">Cost</th><th>Delivery rule</th><th>Review by</th><th>Default</th></tr></thead><tbody>
         ${x.supplies.map(s => `<tr><td><b>${esc(s.code)}</b></td><td>${esc(s.name)}</td><td>${esc(s.unit || '')}</td>
           <td class="right">${s.cost != null ? money2(s.cost) : '—'}</td><td>${esc(s.deliveryRule || '—')}</td>
-          <td>${esc(s.reviewBy || '—')}${s.reviewBy && s.reviewBy < localYmd() ? ' <span class="tag tag-superseded">stale</span>' : ''}</td>
+          <td>${esc(s.reviewBy || '—')}${s.reviewBy && s.reviewBy < new Date().toISOString().slice(0, 10) ? ' <span class="tag tag-superseded">stale</span>' : ''}</td>
           <td>${s.isDefault ? '<span class="tag tag-accepted">Default</span>' : ''}</td></tr>`).join('')}
         </tbody></table>` : '<p class="muted">Nothing linked yet.</p>'}
       ${(x.usedInRecipes || []).length ? `<div class="legend">Used in recipes: ${x.usedInRecipes.map(esc).join(', ')}</div>` : ''}
@@ -2624,7 +2396,7 @@ async function selectionDetail(v) {
 // ---------------- PRICING ----------------
 async function pricingSheet(v) {
   const sub = state.pricingSub || 'live';
-  const [items, pending, sections] = await Promise.all([api('/price-list'), isAdmin() ? api('/quotes/pending/price-items') : Promise.resolve([]), isAdmin() ? api('/price-list/sections') : Promise.resolve([])]);
+  const [items, pending] = await Promise.all([api('/price-list'), isAdmin() ? api('/quotes/pending/price-items') : Promise.resolve([])]);
   const pendCount = (pending || []).length;
   v.innerHTML = `<div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -2663,109 +2435,32 @@ async function pricingSheet(v) {
     return;
   }
 
-  // Grouped by section, with a typed position number per row. Reordering 20 deliverables
-  // with one-step-at-a-time arrows meant up to 19 clicks and a full reload each; typing the
-  // numbers and pressing Apply once is a single round trip. Sections are admin-only — the
-  // client link and contract are unchanged.
-  const SEC = (sections || []);
-  const groups = SEC.map(s => ({ id: s.id, name: s.name, items: items.filter(p => p.sectionId === s.id) }));
-  const unsorted = items.filter(p => !p.sectionId || !SEC.some(s => s.id === p.sectionId));
-  if (unsorted.length) groups.push({ id: '', name: 'Unsorted', items: unsorted });
-
-  const secOpts = (selId) => `<option value="">Unsorted</option>` +
-    SEC.map(s => `<option value="${s.id}" ${s.id === selId ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
-
-  const rowFor = (p, i) => `<tr data-row="${p.id}">
-      ${isAdmin() ? `<td data-l="#" style="width:62px;"><input type="number" min="1" step="1" value="${i + 1}" data-pos="${p.id}" style="width:52px;text-align:center;"></td>` : ''}
-      <td data-l="Code"><b>${esc(p.code)}</b></td>
+  body.innerHTML = `<table class="resp"><thead><tr><th>Code</th><th>Deliverable</th><th>Unit</th><th>Behaviour</th><th class="right">Basic</th><th class="right">Standard</th><th class="right">Premium</th><th></th></tr></thead><tbody>
+    ${items.map(p => `<tr><td data-l="Code"><b>${esc(p.code)}</b></td>
       <td data-l="Deliverable">${esc(p.name)}${p.fromCustom ? ' <span class="tag t-cust">from custom</span>' : ''}${p.recipeStatus === 'pending' ? ' <span class="tag tag-incomplete">recipe pending</span>' : ''}
-        ${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(String(p.description).split(/\r?\n/)[0].slice(0, 80))}${String(p.description).includes('\n') ? ' …' : ''}</span>` : ''}</td>
-      ${isAdmin() ? `<td data-l="Section"><select data-sec="${p.id}" style="font-size:11px;max-width:150px;">${secOpts(p.sectionId)}</select></td>` : ''}
-      <td data-l="Unit">${esc(p.unit || '')}</td>
+        ${p.description ? `<br><span class="muted" style="font-size:10.5px;">${esc(p.description.slice(0, 80))}</span>` : ''}</td>
+      <td data-l="Unit">${esc(p.unit || '')}</td><td data-l="Behaviour" class="muted">${esc(p.behaviour || 'none')}</td>
       <td data-l="Basic" class="right">${money((p.tiers && p.tiers.Basic) ? p.tiers.Basic.sell : 0)}</td>
       <td data-l="Standard" class="right">${money((p.tiers && p.tiers.Standard) ? p.tiers.Standard.sell : 0)}</td>
       <td data-l="Premium" class="right">${money((p.tiers && p.tiers.Premium) ? p.tiers.Premium.sell : 0)}</td>
-      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`;
-
-  const head = `<thead><tr>${isAdmin() ? '<th>#</th>' : ''}<th>Code</th><th>Deliverable</th>${isAdmin() ? '<th>Section</th>' : ''}<th>Unit</th><th class="right">Basic</th><th class="right">Standard</th><th class="right">Premium</th><th></th></tr></thead>`;
-
-  body.innerHTML = `
-    ${isAdmin() ? `<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-      <span class="muted" style="font-size:11.5px;">Type the position numbers, change a section, then Apply. Order flows through to the quote builder, client link and contract.</span>
-      <span style="flex:1;"></span>
-      <button class="btn btn-blue btn-sm" id="applyOrder">Apply order</button>
-      <button class="btn btn-ghost btn-sm" id="manageSecs">Manage sections</button>
-    </div><div id="secMgr"></div>` : ''}
-    ${groups.map(g => `<div style="margin-bottom:14px;">
-      <div class="wl" style="margin-bottom:4px;">${esc(g.name)} <span class="muted" style="font-weight:400;">· ${g.items.length}</span></div>
-      ${g.items.length ? `<table class="resp">${head}<tbody>${g.items.map(rowFor).join('')}</tbody></table>`
-        : '<p class="muted" style="font-size:11.5px;margin:0 0 6px;">Nothing in this section yet.</p>'}
-    </div>`).join('')}`;
-
-  const ap = $('#addPi'); if (ap) ap.addEventListener('click', () => editPriceItem(null, v, SEC));
-  body.querySelectorAll('[data-pi]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(x => x.id === b.dataset.pi), v, SEC)));
-
-  const applyBtn = $('#applyOrder');
-  if (applyBtn) applyBtn.addEventListener('click', async () => {
-    const payload = items.map(p => {
-      const pos = body.querySelector(`[data-pos="${p.id}"]`);
-      const sel = body.querySelector(`[data-sec="${p.id}"]`);
-      return { id: p.id, sectionId: sel ? (sel.value || null) : p.sectionId, position: pos ? parseInt(pos.value) || 9999 : 9999 };
-    });
-    const r = await api('/price-list/arrange', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: payload }) });
-    if (r && r.error) return toast(r.error);
-    toast('Order applied'); pricingSheet(v);
-  });
-
-  const mgr = $('#manageSecs');
-  if (mgr) mgr.addEventListener('click', () => {
-    const box = $('#secMgr');
-    if (box.innerHTML) { box.innerHTML = ''; return; }
-    box.innerHTML = `<div class="card" style="padding:11px 13px;margin-bottom:10px;">
-      <div class="wl" style="margin:0 0 7px;">Sections</div>
-      <table><tbody>${SEC.map(s => `<tr>
-        <td><input value="${esc(s.name)}" data-sname="${s.id}" style="font-size:12px;"></td>
-        <td style="width:70px;"><input type="number" min="1" value="${s.sortOrder}" data-sord="${s.id}" style="width:58px;text-align:center;"></td>
-        <td class="right" style="width:40px;"><button class="btn btn-danger btn-sm" data-sdel="${s.id}">✕</button></td></tr>`).join('')}
-      </tbody></table>
-      <div class="row" style="gap:7px;margin-top:8px;flex-wrap:wrap;">
-        <input id="newSecName" placeholder="New section name" style="max-width:220px;font-size:12px;">
-        <button class="btn btn-ghost btn-sm" id="addSec">+ Add section</button>
-      </div>
-      <div class="muted" style="font-size:10.5px;margin-top:6px;">Deleting a section keeps its deliverables — they move to Unsorted.</div></div>`;
-    $('#addSec').addEventListener('click', async () => {
-      const name = $('#newSecName').value.trim();
-      if (!name) return toast('Give the section a name');
-      const r = await api('/price-list/sections', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-      if (r && r.error) return toast(r.error);
-      toast('Section added'); pricingSheet(v);
-    });
-    box.querySelectorAll('[data-sname]').forEach(i => i.addEventListener('change', async () => {
-      await api('/price-list/sections/' + i.dataset.sname, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: i.value }) });
-      toast('Renamed'); pricingSheet(v);
-    }));
-    box.querySelectorAll('[data-sord]').forEach(i => i.addEventListener('change', async () => {
-      await api('/price-list/sections/' + i.dataset.sord, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sortOrder: i.value }) });
-      pricingSheet(v);
-    }));
-    box.querySelectorAll('[data-sdel]').forEach(b => b.addEventListener('click', async () => {
-      const n = items.filter(x => x.sectionId === b.dataset.sdel).length;
-      if (!confirm(n ? `Delete this section? Its ${n} deliverable(s) move to Unsorted — none are deleted.` : 'Delete this section?')) return;
-      const r = await api('/price-list/sections/' + b.dataset.sdel, { method: 'DELETE' });
-      toast(r && r.moved ? `Section deleted — ${r.moved} moved to Unsorted` : 'Section deleted');
-      pricingSheet(v);
-    }));
-  });
+      <td class="right">${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-mv="up|${p.id}" title="Move up">↑</button>
+        <button class="btn btn-ghost btn-sm" data-mv="down|${p.id}" title="Move down">↓</button>
+        <button class="btn btn-ghost btn-sm" data-pi="${p.id}">Edit</button>` : ''}</td></tr>`).join('')}
+    </tbody></table>`;
+  const ap = $('#addPi'); if (ap) ap.addEventListener('click', () => editPriceItem(null, v));
+  body.querySelectorAll('[data-pi]').forEach(b => b.addEventListener('click', () => editPriceItem(items.find(x => x.id === b.dataset.pi), v)));
+  body.querySelectorAll('[data-mv]').forEach(b => b.addEventListener('click', async () => {
+    const [dir, id] = b.dataset.mv.split('|');
+    await api('/price-list/' + id + '/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }) });
+    pricingSheet(v);
+  }));
 }
-function editPriceItem(item, v, sections) {
+function editPriceItem(item, v) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   const t = item ? item.tiers : { Basic: {}, Standard: {}, Premium: {} };
-  const SEC = sections || [];
   bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${item ? 'Edit' : 'Add'} deliverable</h2>
     <div class="grid3"><div class="field"><label>Code</label><input id="p_code" value="${esc(item?.code || '')}"></div><div class="field"><label>Unit</label><input id="p_unit" value="${esc(item?.unit || 'ea')}"></div><div class="field"><label>Behaviour</label><select id="p_behav">${Object.entries(BEHAV).map(([k, val]) => `<option value="${k}" ${item?.behaviour === k ? 'selected' : ''}>${val || 'Standard'}</option>`).join('')}</select></div></div>
     <div class="field"><label>Name</label><input id="p_name" value="${esc(item?.name || '')}"></div>
-    <div class="field"><label>Section <span class="muted" style="font-weight:400;">— organises the Pricing tab only, not shown to the client</span></label>
-      <select id="p_sec"><option value="">Unsorted</option>${SEC.map(s => `<option value="${s.id}" ${item && item.sectionId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
     <div class="field"><label>Scope description — shown to the client, on the contract and the site PO</label>
       <textarea id="p_desc" rows="3" placeholder="e.g. Supply and install turf to prepared areas including underlay sand, starter fertiliser and consolidation.">${esc(item?.description || '')}</textarea>
       <span class="muted" style="font-size:10px;">This is the default. It can be tailored per quote in the builder, and again at Selections for the site team.</span></div>
@@ -2774,7 +2469,7 @@ function editPriceItem(item, v, sections) {
   document.body.appendChild(bg);
   $('#p_cancel').addEventListener('click', () => bg.remove());
   $('#p_save').addEventListener('click', async () => {
-    const body = { code: $('#p_code').value, name: $('#p_name').value, unit: $('#p_unit').value, behaviour: $('#p_behav').value, description: $('#p_desc').value, sectionId: $('#p_sec').value || null, tiers: { Basic: { spec: $('#p_Basic_spec').value, sell: +$('#p_Basic_sell').value }, Standard: { spec: $('#p_Standard_spec').value, sell: +$('#p_Standard_sell').value }, Premium: { spec: $('#p_Premium_spec').value, sell: +$('#p_Premium_sell').value } } };
+    const body = { code: $('#p_code').value, name: $('#p_name').value, unit: $('#p_unit').value, behaviour: $('#p_behav').value, description: $('#p_desc').value, tiers: { Basic: { spec: $('#p_Basic_spec').value, sell: +$('#p_Basic_sell').value }, Standard: { spec: $('#p_Standard_spec').value, sell: +$('#p_Standard_sell').value }, Premium: { spec: $('#p_Premium_spec').value, sell: +$('#p_Premium_sell').value } } };
     if (item) await api('/price-list/' + item.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); else await api('/price-list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     bg.remove(); toast('Saved'); pricingSheet(v || $('#view'));
   });
@@ -2882,15 +2577,6 @@ async function settingsTab(v) {
       <span id="testResult" style="font-size:11.5px;"></span>
     </div>
     <button class="btn btn-blue" id="saveCompany">Save company</button></div>
-  <div class="card"><h2>Lead inbox (Gmail)</h2>
-    <div class="sub">Watches the mailbox for hipages Job Details emails and turns each accepted lead into an enquiry automatically. Configured with IMAP_HOST / IMAP_USER / IMAP_PASS / IMAP_FROM in Railway.</div>
-    <div class="rule"></div>
-    <div id="ingestStatus" style="font-size:12px;margin-bottom:10px;"><span class="muted">Loading…</span></div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <button class="btn btn-ghost btn-sm" id="ingestTest">Test Gmail connection</button>
-      <button class="btn btn-blue btn-sm" id="ingestRun">Pull last 2 weeks of jobs now</button>
-      <span id="ingestResult" style="font-size:11.5px;"></span>
-    </div></div>
   <div class="card"><h2>Package descriptions</h2><div class="rule"></div>${TIERS.map(t => `<div class="field"><label>${t}</label><textarea id="set_pkg_desc_${t.toLowerCase()}" rows="2">${esc(s['pkg_desc_' + t.toLowerCase()])}</textarea></div>`).join('')}<button class="btn btn-blue" id="savePkg">Save descriptions</button></div>
   <div class="card"><h2>Contract text</h2><div class="sub">Protections: one per line as "Title|Detail".</div><div class="rule"></div>
     <div class="field"><label>Default special clauses</label><textarea id="set_default_special_clauses" rows="3">${esc(s.default_special_clauses)}</textarea></div>
@@ -2921,34 +2607,6 @@ async function settingsTab(v) {
       : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.error || 'failed')}</span><br><span class="muted">${esc(r.hint || '')}</span>`;
   });
   $('#saveCompany').addEventListener('click', save(['company_name', 'company_abn', 'company_lic', 'company_phone', 'company_email', 'association_line', 'company_address', 'tagline'], 'Company saved'));
-  // Lead inbox: quick status (no IMAP login) on tab open; the live login runs on the button
-  // because it takes seconds against Gmail.
-  (async () => {
-    const el = $('#ingestStatus'); if (!el) return;
-    try {
-      const st = await api('/leads/ingest/status');
-      const byP = (st.byPlatform || []).map(x => `${esc(x.platform || 'other')}: ${x.n}`).join(' · ');
-      el.innerHTML = st.configured
-        ? `<span class="tag tag-accepted">CONFIGURED</span> watching <b>${esc(st.user)}</b>, every ${st.pollMinutes} min` +
-          (byP ? `<br><span class="muted">Leads created so far — ${byP}</span>` : '') +
-          (st.needsReview ? `<br><span style="color:var(--red);font-weight:700;">${st.needsReview} lead(s) flagged for review</span>` : '')
-        : `<span class="tag tag-superseded">NOT CONFIGURED</span> <span class="muted">set the four IMAP variables in Railway, then redeploy</span>`;
-    } catch (e) { el.innerHTML = '<span class="muted">Status unavailable</span>'; }
-  })();
-  $('#ingestTest').addEventListener('click', async () => {
-    const el = $('#ingestResult'); el.innerHTML = '<span class="muted">Connecting to Gmail…</span>';
-    const r = await api('/leads/ingest/test');
-    el.innerHTML = r.ok
-      ? `<span style="color:var(--green);font-weight:700;">✓ Connected as ${esc(r.user)}</span> — ${r.matching} hipages email(s) in the last ${r.windowDays || 14} days`
-      : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.error || 'failed')}</span>${r.hint ? `<br><span class="muted">${esc(r.hint)}</span>` : ''}`;
-  });
-  $('#ingestRun').addEventListener('click', async () => {
-    const el = $('#ingestResult'); el.innerHTML = '<span class="muted">Reading mailbox…</span>';
-    const r = await api('/leads/ingest/run', { method: 'POST' });
-    el.innerHTML = r.ok
-      ? `<span style="color:var(--green);font-weight:700;">✓ ${r.created} new lead(s) created</span>, ${r.skipped} already in — see the Leads tab`
-      : `<span style="color:var(--red);font-weight:700;">✕ ${esc(r.reason || 'failed')}</span>`;
-  });
   $('#savePkg').addEventListener('click', save(['pkg_desc_basic', 'pkg_desc_standard', 'pkg_desc_premium'], 'Descriptions saved'));
   $('#saveContract').addEventListener('click', save(['default_special_clauses', 'warranty_text', 'protections_text', 'standard_conditions'], 'Contract text saved'));
   $('#addUser').addEventListener('click', async () => {

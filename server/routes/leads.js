@@ -6,42 +6,18 @@ const { newId } = require('../utils/ids');
 const router = express.Router();
 const STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
 
-// Single place where a lead's true step is worked out AND written back.
-//
-// The stored `stage` column drifts: a quote gets sent from the quote builder and nothing
-// updates the lead, so it sits on "call1" while a quote is live. Every read now recomputes
-// from evidence and persists the correction, so the column is the source of truth again
-// rather than a stale second opinion.
-//
-// Deliberately conservative: it never touches a lead whose derived stage already matches,
-// and derivedStage preserves the chase position (quotechase1/2/final) rather than
-// collapsing everything back to "quote sent".
-function syncLeadStage(l) {
-  const { derivedStage } = require('../utils/leadTemplates');
-  const quote = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
-  let docs = []; try { docs = JSON.parse(l.docs_received || '[]') || []; } catch (e) {}
-  const want = derivedStage(l, quote, docs.length > 0);
-  if (want && want !== l.stage) {
-    db.prepare("UPDATE leads SET stage=?, updated_at=datetime('now') WHERE id=?").run(want, l.id);
-    console.log(`[lead] ${l.name}: stage ${l.stage} -> ${want}${!quote && l.quote_id ? ' (linked quote no longer exists)' : ''}`);
-    l.stage = want;
-  }
-  return { stage: want, quote, docsIn: docs.length > 0 };
-}
-
 function view(l) {
   const ageDays = Math.max(0, Math.floor((Date.now() - new Date(l.created_at + 'Z').getTime()) / 864e5));
-  const { stage, quote: q } = syncLeadStage(l);
+  let q = null;
+  if (l.quote_id) q = db.prepare('SELECT quote_number, status FROM quotes WHERE id=?').get(l.quote_id);
   const today = new Date().toISOString().slice(0, 10);
   return { id: l.id, name: l.name, phone: l.phone, email: l.email, address: l.address,
     source: l.source, notes: l.notes, status: l.status, ageDays,
-    stage, nextFollowup: l.next_followup || null,
+    stage: l.stage || 'noanswer', nextFollowup: l.next_followup || null,
     followupOverdue: !!(l.next_followup && l.next_followup < today && !['Won', 'Lost'].includes(l.status)),
     jobType: l.job_type || '', suburb: l.suburb || '',
     msgCount: db.prepare('SELECT COUNT(*) c FROM lead_messages WHERE lead_id=?').get(l.id).c,
-    smallProject: !!l.small_project, enquiryRef: l.enquiry_ref || null, declinedReason: l.declined_reason || null,
     quoteId: l.quote_id, quoteNumber: q ? q.quote_number : null, quoteStatus: q ? q.status : null,
-    quoteMissing: !!(l.quote_id && !q),
     createdAt: l.created_at };
 }
 // literal path must be declared before any '/:id' route
@@ -76,29 +52,6 @@ router.put('/:id', (req, res) => {
 });
 router.delete('/:id', (req, res) => { db.prepare('DELETE FROM leads WHERE id=?').run(req.params.id); res.status(204).end(); });
 
-// Delete many leads at once — for cleaning up a bad import without 110 clicks.
-// Two protections: a lead with a quote attached is skipped, never deleted (losing a real
-// client to a cleanup sweep is unrecoverable); and the mail_ingest records are KEPT with
-// their lead link cleared, because they are the dedupe memory — delete them and the next
-// mailbox poll would recreate the very junk that was just removed.
-router.post('/bulk-delete', (req, res) => {
-  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
-  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.slice(0, 500) : [];
-  if (!ids.length) return res.status(400).json({ error: 'No leads selected' });
-  let deleted = 0; const skipped = [];
-  const hasQuote = db.prepare('SELECT id FROM quotes WHERE lead_id=? LIMIT 1');
-  for (const id of ids) {
-    const lead = db.prepare('SELECT id, name FROM leads WHERE id=?').get(id);
-    if (!lead) continue;
-    if (hasQuote.get(id)) { skipped.push(lead.name || id); continue; }
-    db.prepare('UPDATE mail_ingest SET lead_id=NULL WHERE lead_id=?').run(id);
-    db.prepare('DELETE FROM lead_messages WHERE lead_id=?').run(id);
-    db.prepare('DELETE FROM leads WHERE id=?').run(id);
-    deleted++;
-  }
-  res.json({ ok: true, deleted, skipped });
-});
-
 // Convert a lead into a quote — carries the details across, links both ways.
 router.post('/:id/convert', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
@@ -132,12 +85,13 @@ router.get('/board', (req, res) => {
   const weekEnd = wk.toISOString().slice(0, 10);
   const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') ORDER BY next_followup").all();
   const decorate = l => {
-    const { stage, quote } = syncLeadStage(l);
-    const s = stageById(stage);
+    let quote = null;
+    if (l.quote_id) quote = db.prepare('SELECT quote_number, status FROM quotes WHERE id=?').get(l.quote_id);
+    let docs = []; try { docs = JSON.parse(l.docs_received || '[]'); } catch (e) {}
+    const s = stageById(require('../utils/leadTemplates').derivedStage(l, quote, docs.length > 0));
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '',
       phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase,
       nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup,
-      quoteMissing: !!(l.quote_id && !quote),
       quoteNumber: quote ? quote.quote_number : null, quoteStatus: quote ? quote.status : null };
   };
   const overdue = rows.filter(l => l.next_followup && l.next_followup < today).map(decorate);
@@ -148,9 +102,9 @@ router.get('/board', (req, res) => {
   const phaseCounts = {};
   PHASES.forEach(p => phaseCounts[p.id] = 0);
   rows.forEach(l => {
-    // Not every row goes through decorate() — a follow-up dated beyond this week falls in
-    // none of the four buckets — so sync here too. It is a no-op when already correct.
-    const p = phaseOf(syncLeadStage(l).stage);
+    const q = l.quote_id ? db.prepare('SELECT status FROM quotes WHERE id=?').get(l.quote_id) : null;
+    let d = []; try { d = JSON.parse(l.docs_received || '[]'); } catch (e) {}
+    const p = phaseOf(require('../utils/leadTemplates').derivedStage(l, q, d.length > 0));
     phaseCounts[p] = (phaseCounts[p] || 0) + 1;
   });
   res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES });
@@ -161,9 +115,10 @@ router.get('/:id/state', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'not found' });
   // Old databases carry pre-v21 stage names — map them onto the four-step process.
-  const sync = syncLeadStage(l);
-  const quoteRow = sync.quote;
-  const s = stageById(sync.stage);
+  const { derivedStage } = require('../utils/leadTemplates');
+  let quoteRow = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
+  let docsList = []; try { docsList = JSON.parse(l.docs_received || '[]'); } catch (e) {}
+  const s = stageById(derivedStage(l, quoteRow, docsList.length > 0));
   const phase = s.phase;
   const nextPhase = Math.min(5, phase + 1);
   const quote = quoteRow;
@@ -242,7 +197,6 @@ router.get('/:id/answers', (req, res) => {
 
   const rows = [];
   const push = (k, v) => { if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length)) rows.push({ k, v: label(v) }); };
-  push('Site address', a.siteAddress);
   push('Property', [a.propertyType, a.builder, a.handover && 'handover ' + a.handover].filter(Boolean).join(' · '));
   push('Drawings', a.plans);
   push('To remove', a.toRemove);
@@ -300,16 +254,47 @@ router.get('/:id/answers', (req, res) => {
   res.json({ hasCall: Object.keys(a).length > 0, rows, compare, ballpark: bp });
 });
 
+// ---- PUBLIC ENQUIRY FORM ------------------------------------------------------
+// The website form posts here. No sign-in (it's a public form), so it is deliberately
+// narrow: it can only create a lead, nothing else, and it is rate limited.
+const recentPosts = new Map();
+router.post('/public/enquiry', (req, res) => {
+  const b = req.body || {};
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  // Simple flood guard — 5 per IP per hour.
+  const now = Date.now();
+  const hits = (recentPosts.get(ip) || []).filter(t => now - t < 3600000);
+  if (hits.length >= 5) return res.status(429).json({ error: 'Too many enquiries. Please call us on 0414 147 008.' });
+  hits.push(now); recentPosts.set(ip, hits);
+
+  // Honeypot — a hidden field only a bot fills in. Accept it silently so the bot
+  // believes it worked and doesn't retry with a different approach.
+  if (b.website) return res.status(201).json({ ok: true });
+
+  const name = String(b.name || '').trim().slice(0, 120);
+  const phone = String(b.phone || '').trim().slice(0, 30);
+  if (!name || !phone) return res.status(400).json({ error: 'Please give us your name and a contact number.' });
+
+  const id = newId();
+  const scope = Array.isArray(b.scope) ? b.scope.slice(0, 20) : [];
+  db.prepare(`INSERT INTO leads (id,name,phone,email,suburb,source,notes,status,stage,next_followup,job_type,call_answers)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, name, phone, String(b.email || '').trim().slice(0, 160), String(b.suburb || '').trim().slice(0, 120),
+    'Our website', String(b.message || '').slice(0, 2000), 'New', 'call1',
+    new Date().toISOString().slice(0, 10),                       // call them today
+    scope.join(', '),
+    JSON.stringify({ scope, _prefill: {
+      name, phone, email: b.email || null, suburb: b.suburb || null,
+      description: b.message || null, timing: b.timing || null,
+      propertyType: b.propertyType || null, platform: 'our website' } }));
+  console.log(`[web] enquiry from ${name} (${b.suburb || 'no suburb'}) — lead created`);
+  res.status(201).json({ ok: true, message: "Thanks — we'll call you back, usually the same day." });
+});
+
 // ---- SITE VISIT CALENDAR -----------------------------------------------------
 // Standalone — no Google or Outlook connection. Fridays are the default visit day but
 // any date can be booked.
 const SLOTS = ['7:30am', '9:00am', '10:30am', '12:00pm', '1:30pm', '3:00pm'];
-function timeKey(t) {
-  const m = String(t || '').trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
-  if (!m) return -1;
-  let h = parseInt(m[1], 10) % 12; if ((m[3] || '').toLowerCase() === 'pm') h += 12;
-  return h * 60 + parseInt(m[2] || '0', 10);
-}
 
 router.get('/calendar', (req, res) => {
   const from = req.query.from || new Date().toISOString().slice(0, 8) + '01';
@@ -317,16 +302,10 @@ router.get('/calendar', (req, res) => {
   const rows = db.prepare(`SELECT v.*, l.name, l.suburb, l.address, l.phone, q.quote_number
     FROM site_visits v LEFT JOIN leads l ON l.id=v.lead_id LEFT JOIN quotes q ON q.id=v.quote_id
     WHERE v.visit_date >= ? AND v.visit_date < ? AND v.status <> 'cancelled'
-    ORDER BY v.visit_date`).all(from, to);
-  // Times are stored as text ("7:30am", "11:30am"), and text sorts "11:30am" before
-  // "7:30am" because "1" comes before "7". Sort by the clock instead. Untimed first.
-  rows.sort((a, b) => a.visit_date.localeCompare(b.visit_date) || timeKey(a.visit_time) - timeKey(b.visit_time));
+    ORDER BY v.visit_date, v.visit_time`).all(from, to);
   res.json({ from, to, slots: SLOTS,
     visits: rows.map(v => ({ id: v.id, leadId: v.lead_id, date: v.visit_date, time: v.visit_time,
-      // A street address (one with a number) beats the suburb on the calendar — it is what
-      // the crew navigates to. Suburb-only leads still show the suburb.
-      status: v.status, name: v.name, suburb: (v.address && /\d/.test(v.address)) ? v.address : (v.suburb || v.address || ''),
-      address: v.address || '', phone: v.phone,
+      status: v.status, name: v.name, suburb: v.suburb || v.address || '', phone: v.phone,
       quoteNumber: v.quote_number, note: v.note, bookedBy: v.booked_by })) });
 });
 
@@ -393,18 +372,10 @@ router.get('/ingest/status', (req, res) => {
       subject: r.subject, needsReview: !!r.needs_review, reviewed: !!r.reviewed, at: r.created_at })) });
 });
 
-// Live connection test — logs in to Gmail and counts matching mail. Slow (seconds), so
-// it runs on a button, not on tab load.
-router.get('/ingest/test', async (req, res) => {
-  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
-  res.json(await MAIL.testConnection());
-});
-
-// Read the mailbox now, rather than waiting for the timer. limit 100 so a two-week
-// backfill on first run isn't cut short.
+// Read the mailbox now, rather than waiting for the timer.
 router.post('/ingest/run', async (req, res) => {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
-  const r = await MAIL.pollOnce({ limit: 100 });
+  const r = await MAIL.pollOnce({ limit: 50 });
   res.json(r);
 });
 
@@ -520,7 +491,7 @@ router.get('/sources', (req, res) => {
   res.json({ groups: groups(), referral: REFERRAL });
 });
 router.get('/call/script', (req, res) => {
-  res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2), slots: SLOTS });
+  res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2) });
 });
 
 // Everything the rep has tapped so far, plus the live ballpark.
@@ -570,22 +541,7 @@ router.post('/:id/call/finish', (req, res) => {
     subject = 'Your landscaping enquiry — Estate Landscapers';
   } else if (b.visitOutcome === 'booked' && b.visitDate) {
     stage = 'confirm'; status = 'Contacted'; next = b.visitDate;
-    const vt = String(b.visitTime || '').trim();
-    // Same calendar row the Book button writes, so a visit booked on the call shows up
-    // on the calendar. Previously the script set the lead's date and wrote the email but
-    // never touched site_visits — the visit existed in the message and nowhere else.
-    if (vt) {
-      const clash = db.prepare("SELECT lead_id FROM site_visits WHERE visit_date=? AND visit_time=? AND status='booked'").get(b.visitDate, vt);
-      if (clash && clash.lead_id !== l.id) return res.status(409).json({ error: `${vt} on ${b.visitDate} is already booked. Pick another time.` });
-    }
-    const existing = db.prepare("SELECT id FROM site_visits WHERE lead_id=? AND status='booked'").get(l.id);
-    if (existing) db.prepare("UPDATE site_visits SET visit_date=?, visit_time=?, updated_at=datetime('now') WHERE id=?").run(b.visitDate, vt, existing.id);
-    else db.prepare(`INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,note,booked_by) VALUES (?,?,?,?,?,?,?)`)
-      .run(newId(), l.id, l.quote_id || null, b.visitDate, vt, 'Booked on the discovery call', req.user ? (req.user.name || req.user.username) : '');
-    db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(newId(), l.id, 'note', 'visitbooked', null, null, req.user ? (req.user.name || req.user.username) : '', 'logged',
-        `Site visit booked ${b.visitDate}${vt ? ' ' + vt : ''} (on the call)`);
-    const d = new Date(b.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }) + (vt ? ` at ${vt}` : '');
+    const d = new Date(b.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
     const plansWanted = (a.plans || []).filter(p => ['architectural', 'hydraulic', 'da', 'landscape'].includes(p));
     const pn = { architectural: 'architectural drawings', hydraulic: 'hydraulic drawings', da: 'DA consent', landscape: 'landscape plan' };
     const plansLine = plansWanted.length
@@ -601,19 +557,6 @@ router.post('/:id/call/finish', (req, res) => {
     subject = 'Following up — Estate Landscapers';
   }
 
-  // Address captured on the call goes onto the record — the calendar, the site PO and
-  // the quote all read it from here. Suburb is filled in only if the record had none, so
-  // a hipages "Burraneer, 2230" isn't overwritten by a guess.
-  const addr = String(a.siteAddress || '').trim();
-  if (addr && addr !== (l.address || '')) {
-    let suburb = l.suburb || '';
-    if (!suburb) {
-      const m = addr.match(/,\s*([A-Za-z][A-Za-z' -]+?)(?:\s+(?:NSW|QLD|VIC|ACT|SA|WA|TAS|NT))?\s*(\d{4})?\s*$/i);
-      if (m) suburb = m[1].trim() + (m[2] ? ', ' + m[2] : '');
-    }
-    db.prepare("UPDATE leads SET address=?, suburb=?, updated_at=datetime('now') WHERE id=?").run(addr, suburb, l.id);
-    l.address = addr; l.suburb = suburb;
-  }
   const sets = ['stage=?', 'status=?', 'next_followup=?', 'call_answers=?'];
   const vals = [stage, status, next, JSON.stringify(a)];
   if (a.source) { sets.push('source=?'); vals.push(a.source); }
@@ -692,46 +635,10 @@ router.post('/:id/message', async (req, res) => {
   const auto = nextDueFrom(doneStage);
   sets.push('next_followup=?'); vals.push(explicit !== undefined ? (explicit || null) : auto);
   if (b.status) { sets.push('status=?'); vals.push(b.status); }
-  if (b.reason) { sets.push('declined_reason=?'); vals.push(String(b.reason).slice(0, 120)); }
   vals.push(l.id);
   db.prepare(`UPDATE leads SET ${sets.join(',')}, updated_at=datetime('now') WHERE id=?`).run(...vals);
   console.log(`[lead] ${channel} on ${l.name} by ${who} (${outcome})`);
   res.status(201).json({ ok: true, outcome });
-});
-
-// The sample-quote message for this lead: link to the current sample plus wording the rep
-// can send from the enquiry with WhatsApp, Email or SMS exactly like any other message.
-router.get('/:id/sample-message', (req, res) => {
-  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
-  if (!l) return res.status(404).json({ error: 'not found' });
-  const s = db.prepare("SELECT * FROM quotes WHERE COALESCE(is_sample,0)=1 AND COALESCE(link_off,0)=0 ORDER BY created_at DESC LIMIT 1").get();
-  if (!s) return res.status(404).json({ error: 'No sample quote yet. Open a quote and use "Make sample copy" first.' });
-  const first = String(l.name || 'there').trim().split(/\s+/)[0];
-  const me = settingGet('company_contact_name') || (req.user && (req.user.name || req.user.username)) || 'Smit';
-  const phone = settingGet('company_phone') || '';
-  const link = `${req.protocol}://${req.get('host')}/q/${s.token}`;
-  res.json({ ok: true, link, quoteNumber: s.quote_number,
-    subject: 'How our quotes work — a sample from Estate Landscapers',
-    message: `Hi ${first},\n\nGood to meet you today. Here's a sample of how our quotes work — it's an example job in Cronulla, not yours, so the numbers won't match your project:\n\n${link}\n\nHave a play with the Basic, Standard and Premium packages to see how the scope and price change. Your own quote will arrive the same way within 48 hours of the site visit.\n\n${me}\n${phone}` });
-});
-
-// "Not a fit" reply — for small jobs, or any job we choose not to quote. Loaded into the
-// lead's send box; the lead closes (reason "Not a fit") only when it is actually sent.
-router.get('/:id/not-a-fit-message', (req, res) => {
-  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
-  if (!l) return res.status(404).json({ error: 'not found' });
-  const first = String(l.name || 'there').trim().split(/\s+/)[0];
-  const suburb = String(l.suburb || '').split(',')[0].trim();
-  const ref = l.enquiry_ref || '';
-  const phone = settingGet('company_phone') || '0414 147 008';
-  const contact = settingGet('company_email') || 'enquiry@estatelandscapers.com.au';
-  res.json({ ok: true,
-    subject: `Your landscaping enquiry${ref ? ' ' + ref : ''}`,
-    message: `Hi ${first},\n\n`
-      + `Thank you for getting in touch with Estate Landscapers about your project${suburb ? ' in ' + suburb : ''}, and for taking the time to send the details.\n\n`
-      + `Having looked at what's involved, we're not the right fit for this one. We build complete landscape packages, and our crews and machinery are scheduled around that scale of work, which means we couldn't give a job of this size the value it deserves.\n\n`
-      + `We'd rather tell you that now than keep you waiting. If your plans grow into a larger package, or you're planning a new build or a full yard, we'd be glad to hear from you again: just reply to this email${ref ? ' with your reference, ' + ref : ''}.\n\n`
-      + `All the best with the project,\n\nEstate Landscapers\n${contact} · ${phone}` });
 });
 
 router.get('/:id/history', (req, res) => {
