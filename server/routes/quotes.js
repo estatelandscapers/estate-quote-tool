@@ -131,6 +131,10 @@ function fullQuote(q) {
     date: q.quote_date, validityDays: q.validity_days, defaultPackage: q.default_package,
     paymentSchedule: q.payment_schedule, siteNotes: q.site_notes, specialClauses: q.special_clauses,
     hasSiteplan: !!q.siteplan_data, status: laterRev > 0 ? 'superseded' : q.status,
+    // The DISPLAY status above says "superseded" whenever a newer revision exists — even if
+    // this one is still a signed, live job. The real record status is needed to offer the
+    // close-as-superseded action on exactly those quotes.
+    signedLive: q.status === 'accepted',
     acceptedPackage: q.accepted_package, acceptedAt: q.accepted_at, signedName: q.signed_name,
     updatedAt: q.updated_at, createdAt: q.created_at,
     customerTier: q.customer_tier || 'Silver', crewSize: q.crew_size || 2,

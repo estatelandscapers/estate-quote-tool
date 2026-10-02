@@ -267,12 +267,6 @@ async function leadsSummary(v) {
         : '<p class="muted">Nothing at this step.</p>'}</div>`;
     $('#hidePhase').addEventListener('click', () => { state.leadPhase = null; leadsSummary(v); });
     v.querySelectorAll('[data-po]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.po; leadConsole(v); }));
-  v.querySelectorAll('[data-close-old]').forEach(b => b.addEventListener('click', async () => {
-    if (!confirm(`Close this job as superseded by ${b.dataset.byNum}?\n\nIt stops counting in Projects, Selections and revenue. The signed contract record is kept.`)) return;
-    const r = await api(`/quotes/${b.dataset.closeOld}/supersede`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ byId: b.dataset.by }) });
-    if (r.error) return toast(r.error);
-    toast(`${r.closed} closed — superseded by ${r.by}`); route();
-  }));
   }
 }
 
@@ -1509,7 +1503,7 @@ async function quoteEditor(v) {
         ${String(q.quoteNumber).includes('.') ? `<span class="muted" style="font-size:12px;font-weight:500;">rev ${esc(String(q.quoteNumber).split('.')[1])}</span>` : ''}
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && q.status === 'accepted' && !q.isSample ? `<button class="btn btn-danger" id="supersedeQ" title="Close this accepted quote because a newer revision replaced it">Close — superseded</button>` : ``}${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && q.signedLive && !q.isSample ? `<button class="btn btn-danger" id="supersedeQ" title="Close this accepted quote because a newer revision replaced it">Close — superseded</button>` : ``}${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
       ${isAdmin() ? `<button class="btn btn-ghost" id="linkTog">${q.linkOff ? '🔒 Link is OFF — turn on' : 'Turn link off'}</button>` : ''}
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
@@ -2043,6 +2037,12 @@ async function jobsTab(v) {
   $('#fySel').addEventListener('change', e => { state.jobsFy = e.target.value; jobsTab(v); });
   $('#gstTog').addEventListener('change', e => { state.incGst = e.target.checked; jobsTab(v); });
   v.querySelectorAll('[data-po]').forEach(b => b.addEventListener('click', () => { state.tab = 'po'; state.poId = b.dataset.po; shell(); }));
+  v.querySelectorAll('[data-close-old]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm(`Close this job as superseded by ${b.dataset.byNum}?\n\nIt stops counting in Projects, Selections and revenue. The signed contract record is kept.`)) return;
+    const r = await api(`/quotes/${b.dataset.closeOld}/supersede`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ byId: b.dataset.by }) });
+    if (r.error) return toast(r.error);
+    toast(`${r.closed} closed — superseded by ${r.by}`); route();
+  }));
   if (fys.length) {
     const fy = state.jobsFy !== 'all' ? state.jobsFy : fys[0];
     const y = await api('/jobs/yearend/' + fy);
