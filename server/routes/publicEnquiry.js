@@ -147,6 +147,13 @@ router.post('/enquiry', async (req, res) => {
       .run(id, name, phone, email, address, 'Our website', noteLines, 'New', 'call1',
         sydneyParts().ymd, jobType, suburb, JSON.stringify(prefill), 'website');   // call them today, Sydney date
     if (smallProject) db.prepare('UPDATE leads SET small_project=1 WHERE id=?').run(id);
+    try {
+      require('../utils/push').notify({
+        title: `New website enquiry${smallProject ? ' (small project)' : ''}: ${name}`,
+        body: [jobType, suburb, phone].filter(Boolean).join(' · ') + ` · ${ref}`,
+        url: '/admin/?lead=' + id, tag: 'lead-' + id,
+      }).catch(() => {});
+    } catch (e) {}
 
     // The completion callback is authenticated by this token, not by the reference. Refs are
     // sequential and therefore guessable; without a secret, anyone could post file names into

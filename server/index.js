@@ -159,6 +159,21 @@ const runOneDriveBackup = async (req, res) => {
 app.get('/api/backup/onedrive/run', runOneDriveBackup);
 app.post('/api/backup/onedrive/run', runOneDriveBackup);
 
+// ---- push notifications (team devices) ----
+const PUSH = require('./utils/push');
+const requireUser = (req, res) => { if (!req.user) { res.status(401).json({ error: 'login' }); return false; } return true; };
+app.get('/api/push/vapid', (req, res) => { if (!requireUser(req, res)) return; res.json({ key: PUSH.keys().pub, devices: PUSH.count() }); });
+app.post('/api/push/subscribe', (req, res) => {
+  if (!requireUser(req, res)) return;
+  try { PUSH.subscribe(req.user.username || req.user.name, req.body && req.body.subscription, req.get('user-agent')); res.json({ ok: true, devices: PUSH.count() }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/push/unsubscribe', (req, res) => { if (!requireUser(req, res)) return; PUSH.unsubscribe(req.body && req.body.endpoint); res.json({ ok: true }); });
+app.post('/api/push/test', async (req, res) => {
+  if (!requireUser(req, res)) return;
+  res.json(await PUSH.notify({ title: 'Estate Landscapers', body: 'Test notification — new leads will arrive like this.', url: '/admin/', tag: 'test' }));
+});
+
 app.get('/api/backup/status', (req, res) => {
   const key = process.env.BACKUP_KEY || 'CHANGE-ME';
   if ((req.query.key || '') !== key) return res.status(403).json({ error: 'forbidden' });

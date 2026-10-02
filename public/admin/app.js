@@ -38,6 +38,8 @@ const sydTime = v => {
     .formatToParts(d).reduce((a, x) => (a[x.type] = x.value, a), {});
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 };
+// tel: link for an Australian number as typed ("0421 836 441" -> tel:+61421836441).
+const telHref = ph => { const d = String(ph || '').replace(/\D/g, ''); if (!d) return ''; return 'tel:' + (d.startsWith('61') ? '+' + d : d.startsWith('0') ? '+61' + d.slice(1) : d); };
 const localYmd = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 // Text boxes grow to fit their content. A two-row textarea holding an eight-line scope
@@ -125,11 +127,42 @@ function shell() {
       <div class="nav">${tabs.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}" style="position:relative;">${t[1]}${badge(t[0])}</button>`).join('')}</div>
       <div class="spacer"></div>
       <span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}</span>
+      <button class="btn btn-ghost btn-sm" id="bell" title="Lead notifications on this device">🔔</button>
       <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
     </div>
     <div class="wrap" id="view"></div>`;
   document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; state.selQuoteId = null; route(); }));
   $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
+  // Notification bell: enable push on this device, or send a test once enabled.
+  const bell = $('#bell');
+  const paintBell = async () => {
+    if (!('Notification' in window) || !('PushManager' in window)) { bell.textContent = '🔔'; bell.title = 'Notifications need the app installed to your home screen'; return; }
+    const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null);
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    bell.textContent = sub ? '🔔 On' : '🔔';
+    bell.title = sub ? 'Notifications are on for this device — tap to send a test' : 'Tap to get a notification on this device when a lead arrives';
+  };
+  paintBell();
+  bell.addEventListener('click', async () => {
+    if (!('Notification' in window) || !('PushManager' in window)) {
+      return toast('On iPhone, first add the tool to your home screen (Safari → Share → Add to Home Screen), then open it from there.');
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (sub) { const r = await api('/push/test', { method: 'POST' }); return toast(r.sent ? `Test sent to ${r.sent} device(s)` : 'No devices registered'); }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') return toast('Notifications were not allowed. Check this app in your phone settings.');
+    const { key } = await api('/push/vapid');
+    const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/').padEnd(key.length + (4 - key.length % 4) % 4, '='));
+    const appKey = Uint8Array.from(raw, c => c.charCodeAt(0));
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appKey });
+    const r = await api('/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: sub.toJSON() }) });
+    if (r.error) return toast(r.error);
+    toast('Notifications on — you\'ll get one here when a lead arrives'); paintBell();
+  });
+  // A notification opens straight into its lead: /admin/?lead=<id>
+  const qp = new URLSearchParams(location.search);
+  if (qp.get('lead')) { state.tab = 'leads'; state.leadId = qp.get('lead'); history.replaceState(null, '', '/admin/'); }
   route();
 }
 function route() {
@@ -290,7 +323,7 @@ async function leadsEnquiries(v) {
       ${shown.map(l => { const ph = STAGE_PHASE[l.stage] || 1; return `<tr${['Won', 'Lost'].includes(l.status) ? ' style="opacity:.55;"' : ''}>
         <td><input type="checkbox" class="selLead" data-sel="${l.id}" style="width:auto;"></td>
         <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.smallProject ? ` <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>` : ''}${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
-        <td data-l="Contact">${esc(l.phone || '')}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
+        <td data-l="Contact">${l.phone ? `<a href="${telHref(l.phone)}" style="color:inherit;">${esc(l.phone)}</a>` : ''}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
         <td data-l="Site">${esc(l.suburb || l.address || '')}</td>
         <td data-l="Step"><span class="tag stepTag s${ph}">STEP ${ph}</span>${['Won', 'Lost'].includes(l.status) ? `<br><span class="muted" style="font-size:10px;">${esc(l.status)}</span>` : ''}</td>
         <td data-l="Next">${l.followupOverdue ? '<span class="tag age-flag">overdue</span> ' : ''}${esc(l.nextFollowup || '—')}${l.msgCount ? `<br><span class="muted" style="font-size:10px;">${l.msgCount} msg</span>` : ''}</td>
@@ -1073,6 +1106,7 @@ async function leadConsole(v) {
       <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.suburb || l.address || '')}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
+        ${l.phone ? `<a class="btn btn-blue btn-sm" href="${telHref(l.phone)}" style="text-decoration:none;">📞 Call ${esc(l.phone)}</a>` : ''}
         ${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" id="goQuote">Quote ${esc(l.quoteNumber)}</button>`
           : '<button class="btn btn-blue btn-sm" id="toQuote">→ Convert to quote</button>'}
       </div></div>

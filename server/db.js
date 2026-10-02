@@ -311,6 +311,10 @@ CREATE TABLE IF NOT EXISTS mail_ingest (
   needs_review INTEGER DEFAULT 0, reviewed INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id TEXT PRIMARY KEY, user TEXT, endpoint TEXT UNIQUE, keys_json TEXT, ua TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS lead_messages (
   id TEXT PRIMARY KEY, lead_id TEXT REFERENCES leads(id) ON DELETE CASCADE,
   channel TEXT, stage TEXT, subject TEXT, body TEXT,
@@ -704,4 +708,4 @@ if (!settingGet2('seed_v12')) {
  settingSet2('seed_v12', '1');
 }
 
-module.exports = { db, settingGet, settingSet };
+module.exports = { db, settingGet, settingSet, settingGet2, settingSet2 };

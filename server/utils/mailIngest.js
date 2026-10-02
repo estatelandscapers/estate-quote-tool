@@ -201,6 +201,13 @@ function createFromEmail({ messageId, from, subject, text, html, receivedAt }) {
     String(text || '').slice(0, 20000), JSON.stringify(p), needsReview ? 1 : 0);
 
   console.log(`[mail] lead created from ${platform || 'unknown'}: ${p.name || 'unnamed'}${needsReview ? ' (NEEDS REVIEW)' : ''}`);
+  try {
+    require('./push').notify({
+      title: `New ${platform || 'email'} lead: ${p.name || 'unnamed'}`,
+      body: [jobType, p.suburb, p.phone].filter(Boolean).join(' · ') || 'Open to see the details',
+      url: '/admin/?lead=' + id, tag: 'lead-' + id,
+    }).catch(() => {});
+  } catch (e) {}
   return { leadId: id, platform, parsed: p, needsReview };
 }
 

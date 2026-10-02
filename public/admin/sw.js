@@ -7,7 +7,7 @@
 //
 // /api/ is never cached at all. A cached quote total or lead list is worse than an error.
 
-const VERSION = 'estate-v12';
+const VERSION = 'estate-v13';
 const SHELL = ['/admin/', '/admin/index.html', '/admin/app.js', '/admin/styles.css',
   '/admin/login.html', '/admin/manifest.json', '/admin/icons/icon-192.png'];
 
@@ -43,4 +43,22 @@ self.addEventListener('fetch', e => {
       return Response.error();
     })
   );
+});
+
+// ---- push notifications ----
+self.addEventListener('push', e => {
+  let d = {}; try { d = e.data ? e.data.json() : {}; } catch (x) { d = { title: 'Estate Landscapers', body: e.data && e.data.text() }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Estate Landscapers', {
+    body: d.body || '', icon: '/admin/icons/icon-192.png', badge: '/admin/icons/icon-192.png',
+    tag: d.tag || 'estate', renotify: true, data: { url: d.url || '/admin/' },
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || '/admin/';
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    const w = list.find(c => 'focus' in c);
+    if (w) { w.navigate(url); return w.focus(); }
+    return self.clients.openWindow(url);
+  }));
 });
