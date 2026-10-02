@@ -68,7 +68,9 @@ router.get('/', (req, res) => {
     const ohAlloc = ohDaily * crewDays;
     const fcPct = act ? pct(act.forecast) : null;
     const projPct = act ? pct(act.projected) : null;
+    const newer = db.prepare("SELECT id, quote_number FROM quotes WHERE parent_number=? AND id<>? AND status='accepted' AND created_at > ?").get(q.parent_number, q.id, q.created_at);
     return { id: q.id, quoteNumber: q.quote_number, client: q.client_name, address: q.address,
+      replacedBy: newer ? { id: newer.id, quoteNumber: newer.quote_number } : null,
       acceptedAt: q.accepted_at, fy, tier: q.accepted_package, mixed: !!(q.accepted_mixed && q.accepted_mixed !== '[]'),
       sellExGst: sell, quotedCost: qc, quotedGM: sell - qc, quotedGMPct: sell > 0 ? Math.round((sell - qc) / sell * 1000) / 10 : 0,
       actualCost: ac, actualGM: ac != null ? sell - ac : null, actualGMPct: pct(ac),

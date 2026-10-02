@@ -429,6 +429,33 @@ router.put('/:id/number', (req, res) => {
 // client and a Cronulla address, no lead, no expiry, and flagged so it is excluded from
 // every dashboard figure and can never be accepted. Used on site visits so the client
 // can see how a quote works before their own arrives.
+// Close an accepted quote that a newer accepted revision has replaced. Status becomes
+// 'superseded' so Projects, Selections and year-end revenue stop counting it; the stored
+// signed PDF and signature record are untouched. If the lead pointed at the old quote it is
+// re-pointed at the new one, so the enquiry stays Won on the right job.
+function supersedeQuote(oldId, newId_, who) {
+  const old = db.prepare('SELECT * FROM quotes WHERE id=?').get(oldId);
+  if (!old) return { error: 'not found' };
+  if (old.status !== 'accepted') return { error: 'Only an accepted quote can be closed as superseded.' };
+  const nw = newId_ ? db.prepare('SELECT * FROM quotes WHERE id=?').get(newId_) : null;
+  db.prepare(`UPDATE quotes SET status='superseded', superseded_at=datetime('now'), superseded_by=?, link_off=1, updated_at=datetime('now') WHERE id=?`)
+    .run(nw ? nw.id : null, old.id);
+  if (nw) {
+    db.prepare('UPDATE leads SET quote_id=? WHERE quote_id=?').run(nw.id, old.id);
+    if (!nw.lead_id && old.lead_id) db.prepare('UPDATE quotes SET lead_id=? WHERE id=?').run(old.lead_id, nw.id);
+  }
+  console.log(`[quote] ${old.quote_number} closed as superseded${nw ? ' by ' + nw.quote_number : ''}${who ? ' (' + who + ')' : ''}`);
+  return { ok: true, closed: old.quote_number, by: nw ? nw.quote_number : null };
+}
+
+// Manual close: admin, with the replacing revision if there is one.
+router.post('/:id/supersede', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const r = supersedeQuote(req.params.id, req.body && req.body.byId, req.user.name || req.user.username);
+  if (r.error) return res.status(400).json(r);
+  res.json(r);
+});
+
 router.post('/:id/make-sample', (req, res) => {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
   const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
@@ -781,6 +808,7 @@ router.get('/:id/signed-preview', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.supersedeQuote = supersedeQuote;
 module.exports.createQuote = createQuote;
 module.exports.fullQuote = fullQuote;
 module.exports.cachedTotals = cachedTotals;

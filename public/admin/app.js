@@ -267,6 +267,12 @@ async function leadsSummary(v) {
         : '<p class="muted">Nothing at this step.</p>'}</div>`;
     $('#hidePhase').addEventListener('click', () => { state.leadPhase = null; leadsSummary(v); });
     v.querySelectorAll('[data-po]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.po; leadConsole(v); }));
+  v.querySelectorAll('[data-close-old]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm(`Close this job as superseded by ${b.dataset.byNum}?\n\nIt stops counting in Projects, Selections and revenue. The signed contract record is kept.`)) return;
+    const r = await api(`/quotes/${b.dataset.closeOld}/supersede`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ byId: b.dataset.by }) });
+    if (r.error) return toast(r.error);
+    toast(`${r.closed} closed — superseded by ${r.by}`); route();
+  }));
   }
 }
 
@@ -1503,7 +1509,7 @@ async function quoteEditor(v) {
         ${String(q.quoteNumber).includes('.') ? `<span class="muted" style="font-size:12px;font-weight:500;">rev ${esc(String(q.quoteNumber).split('.')[1])}</span>` : ''}
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && q.status === 'accepted' && !q.isSample ? `<button class="btn btn-danger" id="supersedeQ" title="Close this accepted quote because a newer revision replaced it">Close — superseded</button>` : ``}${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
       ${isAdmin() ? `<button class="btn btn-ghost" id="linkTog">${q.linkOff ? '🔒 Link is OFF — turn on' : 'Turn link off'}</button>` : ''}
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
@@ -1701,6 +1707,12 @@ async function quoteEditor(v) {
   const sq = $('#sendQuote'); if (sq) sq.addEventListener('click', () => openSendDialog(q));
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
+  const sp = $('#supersedeQ'); if (sp) sp.addEventListener('click', async () => {
+    if (!confirm('Close this accepted quote as superseded? It stops counting as a live job; the signed record is kept.')) return;
+    const r = await api('/quotes/' + q.id + '/supersede', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    if (r.error) return toast(r.error);
+    toast(r.closed + ' closed as superseded'); route();
+  });
   const mk = $('#mkSample'); if (mk) mk.addEventListener('click', async () => {
     if (!confirm('Create a sample quote from this one? It gets a generic client and a Cronulla address, never expires, cannot be accepted, and is left out of every total.')) return;
     const r = await api('/quotes/' + q.id + '/make-sample', { method: 'POST' });
@@ -2014,8 +2026,8 @@ async function jobsTab(v) {
       <td class="right">${jb.projectedCost != null ? money(jb.projectedCost * (state.incGst ? 1.1 : 1)) : '—'}</td>
       <td class="right"><b style="color:${jb.projectedGMPct == null ? 'var(--grey)' : jb.projectedGMPct >= (jb.forecastGMPct || 0) ? 'var(--green)' : 'var(--red)'};">${jb.projectedGMPct != null ? jb.projectedGMPct + '%' : '—'}</b></td>
       <td>${jb.driftPts == null ? '<span class="muted">—</span>' : `<span class="tag ${jb.driftPts >= 0 ? 'tag-accepted' : 'tag-superseded'}">${jb.driftPts > 0 ? '+' : ''}${jb.driftPts} pts</span>`}</td>`}
-      <td><span class="tag ${jb.jobStatus === 'complete' ? 'tag-closed' : 'tag-open'}">${jb.jobStatus}</span></td>
-      <td class="right">${jb.poId ? `<button class="btn btn-ghost btn-sm" data-po="${jb.poId}">PO</button>` : ''}</td></tr>`;
+      <td><span class="tag ${jb.jobStatus === 'complete' ? 'tag-closed' : 'tag-open'}">${jb.jobStatus}</span>${jb.replacedBy ? `<br><span class="tag tag-superseded" title="A newer revision of this quote has been signed">replaced by ${esc(jb.replacedBy.quoteNumber)}</span>` : ''}</td>
+      <td class="right">${jb.replacedBy && isAdmin() ? `<button class="btn btn-danger btn-sm" data-close-old="${jb.id}" data-by="${jb.replacedBy.id}" data-by-num="${esc(jb.replacedBy.quoteNumber)}" title="Close this job — it was replaced by ${esc(jb.replacedBy.quoteNumber)}">Close ${esc(jb.quoteNumber)}</button> ` : ''}${jb.poId ? `<button class="btn btn-ghost btn-sm" data-po="${jb.poId}">PO</button>` : ''}</td></tr>`;
     }).join('') || '<tr><td colspan="12" class="muted">No jobs won yet.</td></tr>'}</tbody></table>
     ${!isAdmin() ? '' : `<div class="grid4" style="margin-top:12px;">
       <div class="stat"><div class="k">Gross margin (before overheads)</div><div class="v">${(data.summary || {}).grossPct || 0}%</div></div>

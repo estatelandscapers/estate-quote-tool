@@ -389,6 +389,10 @@ addColumn('quotes','signed_email','TEXT');
 addColumn('quotes','signed_ua','TEXT');
 addColumn('quotes','signed_consent','TEXT');
 addColumn('quotes','signed_terms','TEXT');
+// An accepted quote replaced by a later accepted revision. Its signed record stays intact;
+// it simply stops counting as a live job (Projects, Selections, revenue).
+addColumn('quotes','superseded_at','TEXT');
+addColumn('quotes','superseded_by','TEXT');
 // One-time: list totals are cached per quote and only recomputed when the quote changes.
 // The total formula changed (it now follows the client's package changes), so every cached
 // value is cleared once and recomputed lazily on the next list. Keyed so it runs once.

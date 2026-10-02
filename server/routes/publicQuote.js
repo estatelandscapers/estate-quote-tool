@@ -258,6 +258,16 @@ router.post('/:token/sign', async (req, res) => {
       .run(Math.round(sellSel * 100) / 100, Math.round(costSel * 100) / 100, JSON.stringify(cc.changes || []), q.id);
   } catch (e) { console.error('quoted snapshot failed', e.message); }
 
+  // The client has signed a newer revision: any EARLIER accepted revision of the same quote
+  // is now superseded, so the job is not counted twice.
+  try {
+    const earlier = db.prepare("SELECT id, quote_number FROM quotes WHERE parent_number=? AND id<>? AND status='accepted' AND created_at < ?")
+      .all(q.parent_number, q.id, q.created_at);
+    if (earlier.length) {
+      const { supersedeQuote } = require('./quotes');
+      earlier.forEach(e => supersedeQuote(e.id, q.id, 'auto: newer revision signed'));
+    }
+  } catch (e) { console.error('[quote] auto-supersede failed:', e.message); }
   const fresh = db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id);
   const at = acceptedTotals(fresh);
   const totals = { grandExGst: Math.round(at.grandExGst), grandIncGst: Math.round(at.grandIncGst) };
