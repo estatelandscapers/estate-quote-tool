@@ -437,6 +437,23 @@ router.put('/:id/number', (req, res) => {
 // 'superseded' so Projects, Selections and year-end revenue stop counting it; the stored
 // signed PDF and signature record are untouched. If the lead pointed at the old quote it is
 // re-pointed at the new one, so the enquiry stays Won on the right job.
+// Per-deliverable surcharge percentages are keyed by quote_item id. Any copy of a quote
+// (revision, sample) creates new item ids, so those keys must be remapped or every
+// percentage silently detaches and the whole table shows "not set".
+function remapSurchargeLines(appliedJson, idMap) {
+  try {
+    const applied = JSON.parse(appliedJson || '[]');
+    applied.forEach(s => {
+      if (s && s.lines) {
+        const out = {};
+        Object.entries(s.lines).forEach(([k, v]) => { if (idMap[k]) out[idMap[k]] = v; });
+        s.lines = out;
+      }
+    });
+    return JSON.stringify(applied);
+  } catch (e) { return appliedJson; }
+}
+
 function supersedeQuote(oldId, newId_, who) {
   const old = db.prepare('SELECT * FROM quotes WHERE id=?').get(oldId);
   if (!old) return { error: 'not found' };
@@ -475,8 +492,10 @@ router.post('/:id/make-sample', (req, res) => {
     src.applied_surcharges, src.customer_tier, src.crew_size, src.siteplan_na, src.surcharges_na, 'sent');
   const cols = db.prepare('PRAGMA table_info(quote_items)').all().map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
   const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')}) VALUES (?,?,${cols.map(() => '?').join(',')})`);
+  const idMap = {};
   db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order, rowid').all(src.id)
-    .forEach(it => ins.run(newId(), id, ...cols.map(c => it[c])));
+    .forEach(it => { const nid = newId(); idMap[it.id] = nid; ins.run(nid, id, ...cols.map(c => it[c])); });
+  db.prepare('UPDATE quotes SET applied_surcharges=? WHERE id=?').run(remapSurchargeLines(src.applied_surcharges, idMap), id);
   res.json({ ok: true, id, quoteNumber: num });
 });
 
@@ -511,8 +530,10 @@ router.post('/:id/revision', (req, res) => {
     .map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
   const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')})
     VALUES (?,?,${cols.map(() => '?').join(',')})`);
+  const idMap = {};
   db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order, rowid').all(src.id)
-    .forEach(it => ins.run(newId(), id, ...cols.map(c => it[c])));
+    .forEach(it => { const nid = newId(); idMap[it.id] = nid; ins.run(nid, id, ...cols.map(c => it[c])); });
+  db.prepare('UPDATE quotes SET applied_surcharges=? WHERE id=?').run(remapSurchargeLines(src.applied_surcharges, idMap), id);
   res.status(201).json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(id)));
 });
 

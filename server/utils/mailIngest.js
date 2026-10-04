@@ -234,7 +234,7 @@ async function testConnection() {
   const c = mailConfig();
   if (!configured()) return { ok: false, error: 'Not configured — set IMAP_HOST, IMAP_USER and IMAP_PASS in Railway.' };
   const { ImapFlow } = require('imapflow');
-  const client = new ImapFlow({ host: c.host, port: c.port, secure: true,
+  const client = new ImapFlow({ host: c.host, port: c.port, secure: process.env.IMAP_SECURE !== '0',
     auth: { user: c.user, pass: c.pass }, logger: false,
     // Without these a blocked or misrouted network leaves the button spinning for the
     // OS TCP timeout — minutes. Fail in seconds with a message instead.
@@ -267,13 +267,22 @@ async function testConnection() {
 const BACKFILL_DAYS = 14;
 
 // Read anything matching, create leads, never touch flags in filtered mode.
-async function pollOnce({ limit = 25 } = {}) {
+// Every check runs one at a time. The instant listener, the safety-net timer and the
+// "Pull now" button can all fire close together; run in parallel, two checks could both see
+// the same new email as unprocessed and create the lead twice.
+let pollChain = Promise.resolve();
+function pollOnce(opts) {
+  const run = pollChain.then(() => pollOnceInner(opts));
+  pollChain = run.catch(() => {});
+  return run;
+}
+async function pollOnceInner({ limit = 25 } = {}) {
   const c = mailConfig();
   if (!configured()) return { ok: false, reason: 'Mailbox not configured — set IMAP_HOST, IMAP_USER and IMAP_PASS.' };
 
   const { ImapFlow } = require('imapflow');
   const { simpleParser } = require('mailparser');
-  const client = new ImapFlow({ host: c.host, port: c.port, secure: true,
+  const client = new ImapFlow({ host: c.host, port: c.port, secure: process.env.IMAP_SECURE !== '0',
     auth: { user: c.user, pass: c.pass }, logger: false });
 
   const created = [], skipped = [];
@@ -296,10 +305,17 @@ async function pollOnce({ limit = 25 } = {}) {
         .run(newId(), mid || ('no-id-' + newId()), subject || '', from || '', why);
       const ingestAll = process.env.IMAP_INGEST_ALL === '1';
       for (const uid of take) {
+        // Read the Message-ID first and download the full message only if it's new. The
+        // search window is two weeks, so without this every check re-downloaded every
+        // hipages email in that window just to discover it had already been processed.
+        const head = await client.fetchOne(String(uid), { envelope: true }, { uid: true });
+        if (!head) continue;
+        const envId = head.envelope && head.envelope.messageId;
+        if (envId && alreadySeen(envId)) { skipped.push('duplicate'); continue; }
         const msg = await client.fetchOne(String(uid), { source: true, envelope: true }, { uid: true });
         if (!msg) continue;
         const parsed = await simpleParser(msg.source);
-        const messageId = parsed.messageId || (msg.envelope && msg.envelope.messageId) || null;
+        const messageId = parsed.messageId || envId || null;
         if (alreadySeen(messageId)) { skipped.push('duplicate'); continue; }
         const from = (parsed.from && parsed.from.text) || '';
         const subject = parsed.subject || '';
@@ -329,14 +345,50 @@ async function pollOnce({ limit = 25 } = {}) {
 
 // Poll on a timer once the app is up. Interval is a setting; 0 turns it off.
 let timer = null;
+// ---- instant mode: IMAP IDLE ---------------------------------------------------------
+// A standing connection on which Gmail announces new mail the moment it lands, so a lead
+// reaches the tool in seconds instead of waiting for the next timed check. The timed check
+// keeps running underneath as a safety net for anything missed while reconnecting.
+const idle = { client: null, connected: false, since: null, retryMs: 15000, lastEvent: null, debounce: null };
+async function startIdle() {
+  if (process.env.IMAP_IDLE === '0' || !configured()) return;
+  const c = mailConfig();
+  const { ImapFlow } = require('imapflow');
+  const client = new ImapFlow({ host: c.host, port: c.port, secure: process.env.IMAP_SECURE !== '0', auth: { user: c.user, pass: c.pass }, logger: false });
+  idle.client = client;
+  const reconnect = why => {
+    if (idle.client !== client) return;          // already superseded
+    idle.connected = false; idle.client = null;
+    console.log(`[mail] instant listener dropped (${why}); reconnecting in ${Math.round(idle.retryMs / 1000)}s`);
+    setTimeout(() => startIdle().catch(() => {}), idle.retryMs).unref();
+    idle.retryMs = Math.min(idle.retryMs * 2, 5 * 60000);
+  };
+  client.on('error', e => reconnect(e.message));
+  client.on('close', () => reconnect('closed'));
+  client.on('exists', () => {
+    idle.lastEvent = new Date().toISOString();
+    // A burst of arrivals becomes one check, a few seconds after the last one.
+    clearTimeout(idle.debounce);
+    idle.debounce = setTimeout(() => pollOnce().catch(e => console.error('[mail]', e.message)), 3000);
+  });
+  try {
+    await client.connect();
+    await client.mailboxOpen(c.folder);          // imapflow idles automatically while open
+    idle.connected = true; idle.since = new Date().toISOString(); idle.retryMs = 15000;
+    console.log(`[mail] instant: listening on ${c.user} for new mail`);
+  } catch (e) { reconnect(e.message); }
+}
+function idleState() { return { instant: idle.connected, since: idle.since, lastEvent: idle.lastEvent }; }
+
 function startPolling() {
   const mins = parseInt(process.env.IMAP_POLL_MINUTES || settingGet('imap_poll_minutes') || '10', 10);
   if (timer) clearInterval(timer);
   if (!mins || !configured()) return false;
   timer = setInterval(() => { pollOnce().catch(e => console.error('[mail]', e.message)); }, mins * 60000);
-  console.log(`[mail] watching ${mailConfig().user} every ${mins} min`);
+  console.log(`[mail] watching ${mailConfig().user} — instant, with a safety-net check every ${mins} min`);
   setTimeout(() => pollOnce().catch(() => {}), 8000);   // one pass shortly after boot
+  setTimeout(() => startIdle().catch(() => {}), 10000);
   return true;
 }
 
-module.exports = { pollOnce, startPolling, configured, mailConfig, parseEnquiry, detectPlatform, createFromEmail, PLATFORMS, parseHipages, testConnection };
+module.exports = { idleState, pollOnce, startPolling, configured, mailConfig, parseEnquiry, detectPlatform, createFromEmail, PLATFORMS, parseHipages, testConnection };

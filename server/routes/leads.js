@@ -385,7 +385,7 @@ router.get('/ingest/status', (req, res) => {
   const recent = db.prepare(`SELECT m.*, l.name FROM mail_ingest m LEFT JOIN leads l ON l.id=m.lead_id
     ORDER BY m.created_at DESC LIMIT 20`).all();
   const counts = db.prepare(`SELECT platform, COUNT(*) n FROM mail_ingest GROUP BY platform`).all();
-  res.json({ configured: MAIL.configured(), host: c.host, user: c.user, folder: c.folder,
+  res.json({ ...MAIL.idleState(), configured: MAIL.configured(), host: c.host, user: c.user, folder: c.folder,
     pollMinutes: parseInt(settingGet('imap_poll_minutes') || '10', 10),
     needsReview: db.prepare('SELECT COUNT(*) n FROM mail_ingest WHERE needs_review=1 AND reviewed=0').get().n,
     byPlatform: counts,

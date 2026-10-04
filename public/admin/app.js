@@ -1589,6 +1589,8 @@ async function quoteEditor(v) {
           ${s.mode === 'targeted' ? `<select data-sbasis="${i}" style="width:210px;font-size:11px;">
             <option value="full" ${s.basis !== 'labour' ? 'selected' : ''}>On the full deliverable value</option>
             <option value="labour" ${s.basis === 'labour' ? 'selected' : ''}>On the labour within it</option></select>` : ''}
+          ${(q.surchargeList || []).slice(0, i).filter(x => x.kind === 'percent' && x.mode === 'targeted').map(x =>
+            `<button class="btn btn-ghost btn-sm" data-scopy="${i}|${(q.surchargeList || []).indexOf(x)}" title="Copy ${esc(x.code)}'s deliverable percentages, targeting and basis onto ${esc(s.code)}">Same as ${esc(x.code)}</button>`).join('')}
           <span class="st-amt">base ${money(s.base)} → <b>${money(s.amount)}</b></span>
         </div>
         ${s.mode === 'targeted' ? `<table class="st-tbl"><thead><tr><th>Deliverable</th><th class="right">Line value</th><th class="right">Labour in it</th><th style="width:120px;">% affected</th><th class="right">Charged on</th></tr></thead><tbody>
@@ -1604,6 +1606,7 @@ async function quoteEditor(v) {
           }).join('')}
         </tbody></table>
         <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap;">
+          <button class="btn btn-blue btn-sm" data-ssave="${i}" style="display:none;">Save percentages</button>
           <button class="btn btn-ghost btn-sm" data-sall="${i}">All 100%</button>
           <button class="btn btn-ghost btn-sm" data-snone="${i}">All 0%</button>
         </div>` : ''}
@@ -1755,12 +1758,23 @@ async function quoteEditor(v) {
   const surPut = (i, body) => api(`/quotes/${q.id}/surcharges/${i}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(() => reload());
   v.querySelectorAll('[data-smode]').forEach(s => s.addEventListener('change', () => surPut(s.dataset.smode, { mode: s.value })));
   v.querySelectorAll('[data-sbasis]').forEach(s => s.addEventListener('change', () => surPut(s.dataset.sbasis, { basis: s.value })));
-  v.querySelectorAll('[data-spct]').forEach(inp => inp.addEventListener('change', async () => {
+  // Percentages are typed into a local draft and written in ONE save per surcharge.
+  // Saving on every field repainted the whole editor between entries — fifteen
+  // deliverables meant fifteen reloads, each one stealing focus from the next box.
+  const surDraft = {};
+  const draftFor = i => surDraft[i] || (surDraft[i] = { ...((q.surchargeList[i] || {}).lines || {}) });
+  v.querySelectorAll('[data-spct]').forEach(inp => inp.addEventListener('input', () => {
     const [i, itemId] = inp.dataset.spct.split('|');
-    const cur = (q.surchargeList[i].lines) || {};
-    const next = { ...cur };
-    if (inp.value === '') delete next[itemId]; else next[itemId] = Math.max(0, Math.min(100, parseFloat(inp.value) || 0));
-    surPut(i, { lines: next });
+    const d = draftFor(i);
+    if (inp.value === '') delete d[itemId]; else d[itemId] = Math.max(0, Math.min(100, parseFloat(inp.value) || 0));
+    const btn = v.querySelector(`[data-ssave="${i}"]`);
+    if (btn) { btn.style.display = ''; btn.textContent = `Save percentages (${Object.keys(d).length} set)`; }
+  }));
+  v.querySelectorAll('[data-ssave]').forEach(b => b.addEventListener('click', () => surPut(b.dataset.ssave, { lines: draftFor(b.dataset.ssave) })));
+  v.querySelectorAll('[data-scopy]').forEach(b => b.addEventListener('click', () => {
+    const [to, from] = b.dataset.scopy.split('|').map(Number);
+    const src = q.surchargeList[from] || {};
+    surPut(to, { mode: 'targeted', basis: src.basis || 'full', lines: { ...(src.lines || {}) } });
   }));
   v.querySelectorAll('[data-sall]').forEach(b => b.addEventListener('click', () => {
     const lines = {}; (q.items.scope1 || []).forEach(it => lines[it.id] = 100);
@@ -2987,7 +3001,7 @@ async function settingsTab(v) {
       const st = await api('/leads/ingest/status');
       const byP = (st.byPlatform || []).map(x => `${esc(x.platform || 'other')}: ${x.n}`).join(' · ');
       el.innerHTML = st.configured
-        ? `<span class="tag tag-accepted">CONFIGURED</span> watching <b>${esc(st.user)}</b>, every ${st.pollMinutes} min` +
+        ? `<span class="tag tag-accepted">CONFIGURED</span> watching <b>${esc(st.user)}</b> — ${st.instant ? '<b style="color:var(--green)">instant</b> (new mail arrives in seconds)' : 'instant listener reconnecting'}, safety-net check every ${st.pollMinutes} min` +
           (byP ? `<br><span class="muted">Leads created so far — ${byP}</span>` : '') +
           (st.needsReview ? `<br><span style="color:var(--red);font-weight:700;">${st.needsReview} lead(s) flagged for review</span>` : '')
         : `<span class="tag tag-superseded">NOT CONFIGURED</span> <span class="muted">set the four IMAP variables in Railway, then redeploy</span>`;
