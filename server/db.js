@@ -403,6 +403,17 @@ try {
     console.log('[db] list totals cache cleared (formula v2)');
   }
 } catch (e) { console.error('[db] totals cache reset failed:', e.message); }
+// One-time: special clauses used to be frozen into each quote at creation, so edits to the
+// Editor default never reached existing quotes — and there is no per-quote clauses UI, so
+// that frozen copy could never be seen or changed. Unsigned quotes now inherit the live
+// default (blank = inherit); signed quotes keep their text as part of the signed record.
+try {
+  if (settingGet2('clauses_inherit') !== '1') {
+    const n = db.prepare("UPDATE quotes SET special_clauses='' WHERE status NOT IN ('accepted','superseded') AND (signed_name IS NULL OR signed_name='')").run().changes;
+    settingSet2('clauses_inherit', '1');
+    console.log(`[db] ${n} unsigned quote(s) now inherit the default special clauses`);
+  }
+} catch (e) { console.error('[db] clauses migration failed:', e.message); }
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

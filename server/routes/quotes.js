@@ -265,7 +265,7 @@ function createQuote(b = {}) {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, newToken(), parent, parent, b.projectTitle || 'Landscape Works', b.client || '', b.clientEmail || '',
     b.address || '', b.date || new Date().toISOString().slice(0, 10), b.defaultPackage || 'Standard',
-    b.paymentSchedule || 'standard', '', settingGet('default_special_clauses') || '', b.leadId || null,
+    b.paymentSchedule || 'standard', '', '', b.leadId || null,   // special clauses inherit the Editor default until signing
     b.crewSize || defaultCrew, b.customerTier || settingGet('default_customer_tier') || 'Silver');
   return db.prepare('SELECT * FROM quotes WHERE id=?').get(id);
 }
@@ -488,7 +488,7 @@ router.post('/:id/make-sample', (req, res) => {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),1)`).run(
     id, newToken(), num, num, 'Sample — how our quotes work', 'Andrew Mitchell', '',
     '12 Ewos Parade, Cronulla NSW 2230', new Date().toISOString().slice(0, 10), 3650,
-    src.default_package, src.payment_schedule, src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime,
+    src.default_package, src.payment_schedule, src.site_notes, '', src.siteplan_data, src.siteplan_mime,
     src.applied_surcharges, src.customer_tier, src.crew_size, src.siteplan_na, src.surcharges_na, 'sent');
   const cols = db.prepare('PRAGMA table_info(quote_items)').all().map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
   const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')}) VALUES (?,?,${cols.map(() => '?').join(',')})`);
@@ -516,7 +516,9 @@ router.post('/:id/revision', (req, res) => {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, newToken(), src.parent_number, newNumber, src.project_title, src.client_name, src.client_email, src.address,
     new Date().toISOString().slice(0, 10), src.validity_days, src.default_package, src.payment_schedule,
-    src.site_notes, src.special_clauses, src.siteplan_data, src.siteplan_mime, src.applied_surcharges,
+    // A revision is a NEW offer: it inherits the current Editor clauses ('' = inherit),
+    // not the text frozen into a previously signed revision.
+    src.site_notes, '', src.siteplan_data, src.siteplan_mime, src.applied_surcharges,
     src.customer_tier, src.crew_size, src.lead_id, src.siteplan_na, src.surcharges_na);
   // Copy EVERY column except the row's own identity. The previous version listed 21 columns
   // by hand and silently dropped 28 others — including custom_desc, custom_tiered, the three

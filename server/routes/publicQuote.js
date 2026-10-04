@@ -236,9 +236,13 @@ router.post('/:token/sign', async (req, res) => {
   const method = String(signature || '').startsWith('data:image') ? 'drawn' : 'typed';
   // Snapshot of the terms as they stood at signing. The PDF is the primary record; this is
   // the machine-readable copy of the same thing.
+  // Clauses freeze NOW: the quote row gets the text that was actually shown, so the signed
+  // record stands on its own even after the Editor default changes again.
+  const effectiveClauses = q.special_clauses || settingGet('default_special_clauses') || '';
+  db.prepare('UPDATE quotes SET special_clauses=? WHERE id=?').run(effectiveClauses, q.id);
   const termsSnap = JSON.stringify({
     standard_conditions: settingGet('standard_conditions') || '', warranty_text: settingGet('warranty_text') || '',
-    special_clauses: q.special_clauses || '', payment_schedule: q.payment_schedule || '', tier, signedAt: new Date().toISOString() });
+    special_clauses: effectiveClauses, payment_schedule: q.payment_schedule || '', tier, signedAt: new Date().toISOString() });
   db.prepare(`UPDATE quotes SET status='accepted', accepted_package=?, accepted_at=datetime('now'),
     signed_name=?, signed_sig=?, signed_ip=?, signed_method=?, signed_email=?, signed_ua=?, signed_consent=?, signed_terms=?,
     client_email=COALESCE(NULLIF(?, ''), client_email), updated_at=datetime('now') WHERE id=?`)
