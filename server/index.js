@@ -47,6 +47,11 @@ app.use('/api/public/quote', require('./routes/publicQuote'));
 app.use('/api/public', require('./routes/publicEnquiry')); // website enquiry form
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
+// Machine-to-machine API for the Site Management Tool (keyed, no session).
+app.use('/api/service', require('./routes/service'));
+console.log(process.env.SERVICE_API_KEY
+  ? '[service] API enabled at /api/service (Bearer key)'
+  : '[service] API present but disabled — set SERVICE_API_KEY to enable');
 
 app.use('/assets', express.static(path.join(__dirname, '..', 'public', 'assets')));
 app.use('/admin', express.static(path.join(__dirname, '..', 'public', 'admin')));

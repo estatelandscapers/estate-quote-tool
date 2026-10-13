@@ -20,8 +20,12 @@ function requireAuth(req, res, next) {
   const p = req.path;
   // Maintenance guards itself with BACKUP_KEY, so it can be run from a browser address
   // bar without signing in — same as the backup download.
+  // The service API is for other machines (the Site Management Tool), which can never
+  // hold a login cookie — without this exemption every service call died here with 401
+  // before its key was even looked at. The namespace enforces SERVICE_API_KEY itself.
   if (p.startsWith('/api/public/') || p.startsWith('/api/auth/') || p.startsWith('/api/backup')
-    || p.startsWith('/api/restore') || p.startsWith('/api/maintenance/')) return next();
+    || p.startsWith('/api/restore') || p.startsWith('/api/maintenance/')
+    || p.startsWith('/api/service/')) return next();
   if (!p.startsWith('/api/')) return next();
   const u = getUser(req);
   if (!u) return res.status(401).json({ error: 'auth required' });
