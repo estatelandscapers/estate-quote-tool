@@ -162,6 +162,17 @@ const runOneDriveBackup = async (req, res) => {
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 };
 app.get('/api/backup/onedrive/run', runOneDriveBackup);
+// Archive the running source to OneDrive on demand (same key as backups).
+const runReleaseArchive = async (req, res) => {
+  if (process.env.BACKUP_KEY && (req.query.key || '') !== process.env.BACKUP_KEY) return res.status(403).json({ error: 'bad key' });
+  try {
+    // ?force=1 re-archives the current version even if it was uploaded before.
+    if (req.query.force === '1') require('./db').settingSet2('last_release_archived', '');
+    res.json(await require('./utils/releaseArchive').maybeArchive('manual'));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+};
+app.get('/api/backup/release/run', runReleaseArchive);
+app.post('/api/backup/release/run', runReleaseArchive);
 app.post('/api/backup/onedrive/run', runOneDriveBackup);
 
 // ---- push notifications (team devices) ----
@@ -261,4 +272,6 @@ app.listen(PORT, () => {
   console.log(`  Public quotes: http://localhost:${PORT}/q/<token>`);
   // Dormant unless ONEDRIVE_BACKUP=1, so deploying this cannot change behaviour by itself.
   try { require('./utils/backupOneDrive').start(); } catch (e) { console.error('[backup] scheduler failed to start:', e.message); }
+  // Each deploy archives its own source zip to OneDrive (version + ISO date).
+  try { require('./utils/releaseArchive').start(); } catch (e) { console.error('[release] failed to start:', e.message); }
 });

@@ -174,4 +174,4 @@ function start() {
   setTimeout(tick, 60 * 1000);        // also check a minute after boot
 }
 
-module.exports = { runBackup, start, enabled, FOLDER };
+module.exports = { runBackup, start, enabled, FOLDER, uploadResumable };
