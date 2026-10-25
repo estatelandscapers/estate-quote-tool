@@ -369,13 +369,33 @@ table.kv tr:last-child td{border-bottom:none;}
 .stat.hero .n{color:rgba(255,255,255,.8);}
 
 /* ---- v21: pipeline board ---- */
-.today{display:flex;gap:8px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--bg);margin-bottom:12px;}
-.today .lbl{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--grey);}
-.today .item{display:flex;gap:7px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:11.5px;}
-.today .item.over{border-color:var(--red);}
-.today .item .who{font-weight:700;cursor:pointer;}
-.today .item .act{color:var(--grey);}
-.today .item button{border:1px solid var(--line);background:var(--card);border-radius:6px;padding:2px 7px;font-size:10.5px;font-weight:700;cursor:pointer;color:inherit;font-family:inherit;}
+/* Today strip: one lead per full-width row, the whole row carries the colour, actions pinned right. */
+.tstrip{border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:10px 12px;margin-bottom:12px;}
+.tstrip .head{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;}
+.tstrip .lbl{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--grey);}
+.tstrip .cnt{font-size:11px;color:var(--grey);}
+.tstrip .cnt b{color:var(--red);}
+.tstrip .rows{display:flex;flex-direction:column;gap:6px;}
+.trow{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(200px,1.6fr) 110px auto;gap:12px;align-items:center;background:var(--card);border:1.5px solid var(--line);border-left-width:5px;border-radius:8px;padding:8px 10px 8px 12px;font-size:12.5px;}
+.trow.over{border-color:var(--red);background:#FFF1F0;}
+.trow.due{border-color:#B9770E;background:#FFF6E5;}
+:root[data-theme="dark"] .trow.over{background:#2A1616;}
+:root[data-theme="dark"] .trow.due{background:#2A2214;}
+.trow .who{font-weight:700;cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.trow .who span{font-weight:500;color:var(--grey);}
+.trow .act{color:var(--grey);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.trow .late{font-weight:800;font-size:11px;letter-spacing:.3px;text-transform:uppercase;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.trow.over .late{color:var(--red);}
+.trow.due .late{color:#B9770E;}
+.trow .btns{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap;}
+.trow button{border:1px solid var(--line);background:var(--card);border-radius:6px;padding:4px 9px;font-size:11px;font-weight:700;cursor:pointer;color:inherit;font-family:inherit;}
+.trow button.done{border-color:var(--blue);color:var(--blue);}
+.tstrip .more{font-size:11.5px;color:var(--grey);margin-top:8px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;}
+.tstrip .more a{color:var(--blue);font-weight:700;cursor:pointer;}
+@media(max-width:720px){
+  .trow{grid-template-columns:1fr auto;grid-template-areas:"who btns" "act late";row-gap:4px;}
+  .trow .who{grid-area:who;}.trow .act{grid-area:act;white-space:normal;}.trow .late{grid-area:late;text-align:right;}.trow .btns{grid-area:btns;}
+}
 .boardtools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;}
 .boardtools input[type=search]{font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--card);color:inherit;min-width:220px;}
 .boardtools .chk{font-size:11.5px;color:var(--grey);display:flex;align-items:center;gap:6px;}

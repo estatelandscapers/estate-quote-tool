@@ -304,7 +304,7 @@ async function leadsSummary(v) {
       </div></div>
 
     <div class="card"><h2>Lead pipeline</h2><div class="sub">Drag a card to move it a step — it holds there until new evidence (a quote, drawings, a discovery call) moves it on. Each column scrolls, searches and sorts on its own. Won needs a signed quote or a PO, from the quote page.</div><div class="rule"></div>
-      <div class="today" id="todayStrip"></div>
+      <div class="tstrip" id="todayStrip"></div>
       <div class="boardtools">
         <input type="search" id="boardSearch" placeholder="Search all columns — name, suburb, quote number" value="${esc(state.boardSearch || '')}">
         <label class="chk"><input type="checkbox" id="smallOnly" ${state.smallOnly ? 'checked' : ''}> Small projects only</label>
@@ -331,10 +331,19 @@ async function leadsSummary(v) {
 
   // ---- Today strip: overdue first, then due today ----
   const dueList = [...board.overdue, ...board.dueToday];
-  $('#todayStrip').innerHTML = `<span class="lbl">Today</span>${dueList.slice(0, 6).map(l => `<div class="item ${l.due && l.due < today ? 'over' : ''}"><span class="who" data-open="${l.id}">${esc(l.name)}${l.suburb ? ' · ' + esc(l.suburb) : ''}</span><span class="act">${esc(l.nextAction)}${l.due && l.due < today ? ` · ${Math.round((new Date(today) - new Date(l.due)) / 864e5)}d overdue` : ''}</span><button data-done="${l.id}" title="Mark this action done and move to the next">✓ Done</button><button data-snooze="${l.id}">+1 day</button></div>`).join('')}${dueList.length > 6 ? `<span class="muted" style="font-size:11.5px;">+${dueList.length - 6} more — see Enquiries</span>` : ''}${dueList.length ? '' : '<span class="muted" style="font-size:11.5px;">Nothing due today.</span>'}${board.thisWeek.length ? `<span class="muted" style="font-size:11.5px;margin-left:auto;">${board.thisWeek.length} due later this week</span>` : ''}`;
-  $$('[data-done]').forEach(b => b.addEventListener('click', async () => { const r = await api('/leads/' + b.dataset.done + '/done', { method: 'POST' }); toast(r.error || ('Done — next: ' + (r.nextAction || 'review'))); leadsSummary(v); }));
-  $$('[data-snooze]').forEach(b => b.addEventListener('click', async () => { await api('/leads/' + b.dataset.snooze + '/snooze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 1 }) }); toast('Moved to tomorrow'); leadsSummary(v); }));
-  $$('#todayStrip [data-open]').forEach(s => s.addEventListener('click', () => { state.leadId = s.dataset.open; leadConsole(v); }));
+  const paintToday = () => {
+    const showAll = !!state.todayAll;
+    const rows = showAll ? dueList : dueList.slice(0, 6);
+    const lateOf = l => { if (!l.due) return ''; const d = Math.round((new Date(today) - new Date(l.due)) / 864e5); return d > 0 ? `${d}d overdue` : 'Due today'; };
+    $('#todayStrip').innerHTML = `<div class="head"><span class="lbl">Today</span><span class="cnt">${board.overdue.length ? `<b>${board.overdue.length} overdue</b>` : 'nothing overdue'} · ${board.dueToday.length} due today${board.thisWeek.length ? ` · ${board.thisWeek.length} more this week` : ''}</span></div>
+      <div class="rows">${rows.map(l => `<div class="trow ${l.due && l.due < today ? 'over' : 'due'}"><div class="who" data-open="${l.id}">${esc(l.name || '—')}${l.suburb ? ` <span>· ${esc(l.suburb)}</span>` : ''}</div><div class="act">${esc(l.nextAction)}</div><div class="late">${lateOf(l)}</div><div class="btns"><button class="done" data-done="${l.id}" title="Mark this action done and move to the next">✓ Done</button><button data-snooze="${l.id}">+1 day</button></div></div>`).join('') || '<div class="muted" style="font-size:11.5px;">Nothing due today.</div>'}</div>
+      ${dueList.length > 6 ? `<div class="more"><span>Showing ${rows.length} of ${dueList.length} due · <a id="todayMore">${showAll ? 'show fewer' : 'show all ' + dueList.length}</a></span><span>Sorted: most overdue first</span></div>` : ''}`;
+    const tm = $('#todayMore'); if (tm) tm.addEventListener('click', () => { state.todayAll = !state.todayAll; paintToday(); });
+    $$('[data-done]').forEach(b => b.addEventListener('click', async () => { const r = await api('/leads/' + b.dataset.done + '/done', { method: 'POST' }); toast(r.error || ('Done — next: ' + (r.nextAction || 'review'))); leadsSummary(v); }));
+    $$('[data-snooze]').forEach(b => b.addEventListener('click', async () => { await api('/leads/' + b.dataset.snooze + '/snooze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 1 }) }); toast('Moved to tomorrow'); leadsSummary(v); }));
+    $$('#todayStrip [data-open]').forEach(s => s.addEventListener('click', () => { state.leadId = s.dataset.open; leadConsole(v); }));
+  };
+  paintToday();
 
   // ---- the board ----
   const SORTS = ['next', 'newest', 'oldest', 'value', 'az'];
