@@ -16,11 +16,30 @@ const STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
 // Deliberately conservative: it never touches a lead whose derived stage already matches,
 // and derivedStage preserves the chase position (quotechase1/2/final) rather than
 // collapsing everything back to "quote sent".
+function evidenceSnapshot(l, quote, docs) {
+  let answers = 0; try { answers = Object.keys(JSON.parse(l.call_answers || '{}') || {}).length; } catch (e) {}
+  return { quoteId: quote ? quote.id : null, docs: (docs || []).length, answers };
+}
 function syncLeadStage(l) {
   const { derivedStage } = require('../utils/leadTemplates');
   const quote = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
   let docs = []; try { docs = JSON.parse(l.docs_received || '[]') || []; } catch (e) {}
-  const want = derivedStage(l, quote, docs.length > 0);
+  let want = derivedStage(l, quote, docs.length > 0);
+  // A step the owner set by dragging the card holds until NEW evidence arrives. The
+  // snapshot taken at drag time (quote id, drawings count, discovery answers) is what
+  // "new" is measured against; a won quote always wins.
+  if (l.stage_override && want !== 'won' && !['lost','closeout','disqualified'].includes(want)) {
+    const snap = evidenceSnapshot(l, quote, docs);
+    let at = {}; try { at = JSON.parse(l.override_snapshot || '{}') || {}; } catch (e) {}
+    const fresh = snap.quoteId !== (at.quoteId || null) || snap.docs > (at.docs || 0) || snap.answers > (at.answers || 0);
+    if (fresh) {
+      db.prepare('UPDATE leads SET stage_override=NULL, override_snapshot=NULL WHERE id=?').run(l.id); l.stage_override = null;
+    } else {
+      const ph = Number(l.stage_override);
+      const { phaseOf: po } = require('../utils/leadTemplates');
+      want = po(l.stage) === ph ? l.stage : ({ 1: 'call1', 2: 'qualified', 3: 'docsin', 4: 'quotesent' })[ph] || want;
+    }
+  }
   if (want && want !== l.stage) {
     db.prepare("UPDATE leads SET stage=?, updated_at=datetime('now') WHERE id=?").run(want, l.id);
     console.log(`[lead] ${l.name}: stage ${l.stage} -> ${want}${!quote && l.quote_id ? ' (linked quote no longer exists)' : ''}`);
@@ -38,6 +57,7 @@ function view(l) {
     stage, nextFollowup: l.next_followup || null,
     followupOverdue: !!(l.next_followup && l.next_followup < today && !['Won', 'Lost'].includes(l.status)),
     jobType: l.job_type || '', suburb: l.suburb || '',
+    parked: !!l.parked, overridden: !!l.stage_override,
     msgCount: db.prepare('SELECT COUNT(*) c FROM lead_messages WHERE lead_id=?').get(l.id).c,
     smallProject: !!l.small_project, enquiryRef: l.enquiry_ref || null, declinedReason: l.declined_reason || null,
     quoteId: l.quote_id, quoteNumber: q ? q.quote_number : null, quoteStatus: q ? q.status : null,
@@ -48,7 +68,7 @@ function view(l) {
 router.get('/stages', (req, res) => res.json({ stages: STAGES, phases: PHASES }));
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM leads ORDER BY created_at DESC').all();
-  const open = rows.filter(l => !['Won', 'Lost'].includes(l.status));
+  const open = rows.filter(l => !['Won', 'Lost'].includes(l.status) && !l.parked);
   res.json({ leads: rows.map(view), openCount: open.length, statuses: STATUS });
 });
 router.post('/', (req, res) => {
@@ -126,20 +146,45 @@ const { fullQuote } = require('./quotes');
 
 
 // ---- Today's list: the single view that makes follow-up consistent -------------
+// Client-link activity across every quote, newest first — the Summary tab's feed.
+router.get('/link-activity', (req, res) => {
+  res.json({ rows: require('../utils/linkAnalytics').feed(parseInt(req.query.limit, 10) || 60) });
+});
+
 router.get('/board', (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const wk = new Date(); wk.setDate(wk.getDate() + 7);
   const weekEnd = wk.toISOString().slice(0, 10);
-  const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') ORDER BY next_followup").all();
+  const showParked = req.query.parked === '1';
+  const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') AND COALESCE(parked,0)=0 ORDER BY next_followup").all();
+  const LA = require('../utils/linkAnalytics');
   const decorate = l => {
     const { stage, quote } = syncLeadStage(l);
     const s = stageById(stage);
-    return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '',
-      phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase,
-      nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup,
+    let value = null, link = null, fullQ = null;
+    if (quote) {
+      fullQ = db.prepare('SELECT * FROM quotes WHERE id=?').get(quote.id);
+      try { value = require('./quotes').cachedTotals(fullQ).ex; } catch (e) {}
+      try { link = LA.quick(fullQ); } catch (e) {}
+    }
+    return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '', source: l.source || '',
+      phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase, overridden: !!l.stage_override,
+      nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup, small: !!l.small_project, createdAt: l.created_at,
       quoteMissing: !!(l.quote_id && !quote),
-      quoteNumber: quote ? quote.quote_number : null, quoteStatus: quote ? quote.status : null };
+      quoteId: quote ? quote.id : null, quoteNumber: quote ? quote.quote_number : null, quoteStatus: quote ? quote.status : null,
+      value: value != null ? Math.round(value) : null,
+      link: link ? { signal: link.signal, why: link.signalWhy, opens: link.opens, lastOpened: link.lastOpened } : null };
   };
+  // Won jobs sit in the fifth column: accepted quotes (not superseded, not samples).
+  const won = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0 ORDER BY accepted_at DESC LIMIT 40").all().map(q => {
+    const lead = q.lead_id ? db.prepare('SELECT id, suburb, address, source FROM leads WHERE id=?').get(q.lead_id) : null;
+    let value = null; try { value = q.won_method === 'manual' && q.won_value != null ? q.won_value : (q.quoted_sell != null ? q.quoted_sell : require('./quotes').cachedTotals(q).ex); } catch (e) {}
+    return { id: lead ? lead.id : null, quoteId: q.id, name: q.client_name, suburb: (lead && (lead.suburb || lead.address)) || q.address || '', source: lead ? lead.source : '',
+      stage: 'won', stageLabel: 'Won', phase: 5, nextAction: q.selections_locked ? 'Purchase order raised' : 'Lock selections', due: null,
+      quoteNumber: q.quote_number, quoteStatus: 'accepted', value: value != null ? Math.round(value) : null, acceptedAt: q.accepted_at,
+      wonMethod: q.won_method || 'esign', wonHow: q.won_how || null };
+  });
+  const parked = showParked ? db.prepare("SELECT * FROM leads WHERE COALESCE(parked,0)=1 ORDER BY parked_at DESC").all().map(l => ({ id: l.id, name: l.name, suburb: l.suburb || l.address || '', parkedAt: l.parked_at, source: l.source || '' })) : [];
   const overdue = rows.filter(l => l.next_followup && l.next_followup < today).map(decorate);
   const dueToday = rows.filter(l => l.next_followup === today).map(decorate);
   const thisWeek = rows.filter(l => l.next_followup && l.next_followup > today && l.next_followup <= weekEnd).map(decorate);
@@ -153,7 +198,75 @@ router.get('/board', (req, res) => {
     const p = phaseOf(syncLeadStage(l).stage);
     phaseCounts[p] = (phaseCounts[p] || 0) + 1;
   });
-  res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES });
+  const all = [...overdue, ...dueToday, ...thisWeek, ...rows.filter(l => l.next_followup && l.next_followup > weekEnd).map(decorate), ...undated];
+  res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES, cards: all, won, parked,
+    parkedCount: db.prepare('SELECT COUNT(*) c FROM leads WHERE COALESCE(parked,0)=1').get().c });
+});
+
+// ---- board actions ------------------------------------------------------------------
+// Drag a card to a step. Won is refused here (it needs a signed or PO-approved quote —
+// use Mark won on the quote page); the other four set an override that holds until new
+// evidence arrives.
+router.put('/:id/step', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const step = parseInt((req.body || {}).step, 10);
+  if (![1, 2, 3, 4].includes(step)) return res.status(400).json({ error: step === 5 ? 'Won needs a signed quote or a PO — mark it won from the quote page.' : 'bad step' });
+  if (step === 4 && !l.quote_id) return res.status(400).json({ error: 'Step 4 needs a quote. Build the quote and the lead moves there on its own.' });
+  const quote = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
+  let docs = []; try { docs = JSON.parse(l.docs_received || '[]') || []; } catch (e) {}
+  const stage = ({ 1: 'call1', 2: 'qualified', 3: 'docsin', 4: 'quotesent' })[step];
+  const status = step >= 4 ? 'Quoted' : step >= 2 ? 'Contacted' : (l.status === 'New' ? 'New' : 'Contacted');
+  db.prepare("UPDATE leads SET stage=?, status=?, stage_override=?, override_snapshot=?, next_followup=?, parked=0, updated_at=datetime('now') WHERE id=?")
+    .run(stage, status, step, JSON.stringify(evidenceSnapshot(l, quote, docs)), nextDueFrom(stage), l.id);
+  db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
+    .run(newId(), l.id, 'note', stage, req.user ? (req.user.name || req.user.username) : '', 'logged', `Moved to step ${step} on the board`);
+  res.json({ ok: true, stage, step });
+});
+// Park: off the board and out of the follow-up list until unparked.
+router.post('/:id/park', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  db.prepare("UPDATE leads SET parked=1, parked_at=datetime('now'), next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(l.id);
+  db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', l.stage, req.user ? (req.user.name || req.user.username) : '', 'logged', 'Parked');
+  res.json({ ok: true });
+});
+router.post('/:id/unpark', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  db.prepare("UPDATE leads SET parked=0, parked_at=NULL, next_followup=?, updated_at=datetime('now') WHERE id=?").run(new Date().toISOString().slice(0, 10), l.id);
+  db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', l.stage, req.user ? (req.user.name || req.user.username) : '', 'logged', 'Unparked');
+  res.json({ ok: true });
+});
+// Drop-bar outcomes: lost (not proceeding) and not-a-fit. Both close the lead; the
+// not-a-fit email can still be sent from the lead page afterwards.
+router.post('/:id/outcome', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const o = (req.body || {}).outcome;
+  if (!['lost', 'nofit'].includes(o)) return res.status(400).json({ error: 'bad outcome' });
+  const stage = o === 'lost' ? 'lost' : 'disqualified', reason = o === 'lost' ? ((req.body || {}).reason || 'Not proceeding') : 'Not a fit';
+  db.prepare("UPDATE leads SET stage=?, status='Lost', next_followup=NULL, declined_reason=?, stage_override=NULL, override_snapshot=NULL, updated_at=datetime('now') WHERE id=?").run(stage, reason, l.id);
+  if (l.quote_id) { try { db.prepare("UPDATE quotes SET lost_at=COALESCE(lost_at, datetime('now')), lost_reason=COALESCE(lost_reason, ?), link_off=1, updated_at=datetime('now') WHERE id=? AND status<>'accepted'").run(reason, l.quote_id); } catch (e) {} }
+  db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', stage, req.user ? (req.user.name || req.user.username) : '', 'logged', reason);
+  res.json({ ok: true, stage });
+});
+// "Done" on the Today strip: the current next action is done, so the lead advances to the
+// stage that follows and gets its next due date.
+router.post('/:id/done', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const { stage } = syncLeadStage(l);
+  const cur = stageById(stage);
+  const NEXT = { call1: 'call2', call2: 'call3', call3: 'call4', call4: 'closeout', callback: 'qualified', qualified: 'docsasked', docsasked: 'docsin', docsin: 'visitbooked', visitbooked: 'visitdone', visitdone: 'quotesent',
+    quotesent: 'quotechase1', quotechase1: 'quotechase2', quotechase2: 'quotefinal', quotefinal: 'closeout' };
+  const nextId = NEXT[cur.id];
+  if (!nextId) return res.status(400).json({ error: 'Nothing to advance from here' });
+  const nx = stageById(nextId);
+  const status = nx.id === 'closeout' ? 'Lost' : nx.phase >= 4 ? 'Quoted' : nx.phase >= 2 ? 'Contacted' : l.status;
+  db.prepare("UPDATE leads SET stage=?, status=?, next_followup=?, updated_at=datetime('now') WHERE id=?").run(nx.id, status, nx.id === 'closeout' ? null : nextDueFrom(nx.id), l.id);
+  db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', cur.id, req.user ? (req.user.name || req.user.username) : '', 'logged', `Done: ${cur.nextAction || cur.label}`);
+  res.json({ ok: true, stage: nx.id, nextAction: nx.nextAction });
 });
 
 // Everything one lead screen needs: where it is, what's missing, what to do next.

@@ -39,9 +39,13 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     doc.fontSize(8.5).fillColor('#555').text(`${settings.company_abn || ''}  ·  ${settings.company_lic || ''}  ·  ${settings.company_address || ''}`);
     doc.moveTo(50, doc.y + 4).lineTo(doc.page.width - 50, doc.y + 4).lineWidth(2).strokeColor('#1E5BFF').stroke();
     doc.moveDown(0.9);
+    const manual = !preview && quote.won_method === 'manual';
+    const HOW = { po: 'client purchase order', contract: 'signed contract returned', email: 'written approval by email' };
     if (preview) {
       doc.fontSize(9).fillColor('#B08D3E').text('PREVIEW — AWAITING CLIENT SIGN-OFF', { align: 'right' }).fillColor('#000');
       doc.fontSize(14).fillColor('#000').text('CONTRACT PREVIEW — AWAITING CLIENT SIGN-OFF');
+    } else if (manual) {
+      doc.fontSize(14).fillColor('#000').text('CONTRACT & ACCEPTANCE RECORD — APPROVED BY ' + (HOW[quote.won_how] || 'client approval').toUpperCase());
     } else {
       doc.fontSize(14).fillColor('#000').text('SIGNED CONTRACT & ACCEPTANCE RECORD');
     }
@@ -156,6 +160,17 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
       doc.moveTo(52, boxY + 40).lineTo(280, boxY + 40).lineWidth(0.8).strokeColor('#666').stroke();
       doc.y = boxY + 44;
       doc.fontSize(8).fillColor('#666').text('Client signature — not yet signed', 52).fillColor('#000');
+    } else if (manual) {
+    H('Approval record');
+    doc.fontSize(9.5);
+    doc.text(`Approved by: ${HOW[quote.won_how] || 'client approval'}${quote.won_ref ? ' — reference ' + quote.won_ref : ''}`);
+    if (quote.won_approved_by) doc.text(`On the client's side: ${quote.won_approved_by}`);
+    doc.text(`Approval date: ${sydneyTime(quote.accepted_at)} (Sydney time)`);
+    doc.text(`Recorded by: ${quote.won_marked_by || ''} (Estate Landscapers)`);
+    if (quote.won_value != null) doc.text(`Contract value as approved: $${Math.round(quote.won_value).toLocaleString('en-AU')} ex GST`);
+    if (quote.won_file_sha256) doc.fontSize(7.5).fillColor('#999').text(`Approval document on file: ${quote.won_file_name || ''} · SHA-256 ${quote.won_file_sha256}`).fontSize(9.5).fillColor('#000');
+    if (quote.won_note) doc.moveDown(0.3).fontSize(9).fillColor('#444').text(quote.won_note).fillColor('#000');
+    doc.moveDown(0.6).fontSize(8).fillColor('#666').text('No electronic signature was applied on the client link; the client\'s approval document is the signed instrument.', 52).fillColor('#000');
     } else {
     H('Signature record');
     doc.fontSize(9.5);
@@ -207,7 +222,7 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
     const range = doc.bufferedPageRange();
     const lastPage = range.start + range.count - 1;
     const sigRaw = quote.signed_sig || '';
-    const stampName = `${quote.signed_name || ''}${quote.accepted_at ? '  ·  ' + sydneyTime(quote.accepted_at) : ''}`;
+    const stampName = `${quote.signed_name || quote.won_approved_by || ''}${quote.accepted_at ? '  ·  ' + sydneyTime(quote.accepted_at) : ''}`;
     for (let i = range.start; i <= lastPage; i++) {
       doc.switchToPage(i);
       const savedBottom = doc.page.margins.bottom;
@@ -222,6 +237,10 @@ function buildSignedPdf({ quote, totals, settings, deliverables = [], surcharges
         // page can be photocopied or screenshotted into looking like a signed one.
         doc.fontSize(8).fillColor('#B08D3E')
           .text('PREVIEW — awaiting client sign-off', doc.page.width - 232, fy - 2, { width: 185, lineBreak: false });
+      } else if (manual) {
+      doc.fontSize(8).fillColor('#2E7D46')
+        .text(`APPROVED — ${HOW[quote.won_how] || 'client approval'}${quote.won_ref ? ' ' + quote.won_ref : ''}`, doc.page.width - 232, fy - 2, { width: 185, lineBreak: false });
+      doc.fontSize(6.5).fillColor('#AAA').text(stampName, doc.page.width - 232, fy + 12, { width: 185, lineBreak: false });
       } else {
       doc.fontSize(6.5).fillColor('#AAA').text('SIGNED', doc.page.width - 232, fy - 2, { width: 40, lineBreak: false });
       if (sigRaw.startsWith('data:image')) {

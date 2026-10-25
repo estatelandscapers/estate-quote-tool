@@ -273,5 +273,6 @@ app.listen(PORT, () => {
   // Dormant unless ONEDRIVE_BACKUP=1, so deploying this cannot change behaviour by itself.
   try { require('./utils/backupOneDrive').start(); } catch (e) { console.error('[backup] scheduler failed to start:', e.message); }
   // Each deploy archives its own source zip to OneDrive (version + ISO date).
+  try { require('./utils/linkAnalytics').start(); } catch (e) { console.error('[links] failed to start:', e.message); }
   try { require('./utils/releaseArchive').start(); } catch (e) { console.error('[release] failed to start:', e.message); }
 });

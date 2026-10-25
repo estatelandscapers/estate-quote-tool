@@ -311,6 +311,16 @@ CREATE TABLE IF NOT EXISTS mail_ingest (
   needs_review INTEGER DEFAULT 0, reviewed INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS quote_sessions (
+  id TEXT PRIMARY KEY, quote_id TEXT, visitor_key TEXT, started_at TEXT, ended_at TEXT,
+  active_seconds INTEGER DEFAULT 0, device TEXT, city TEXT, sections TEXT, lines TEXT,
+  package_clicks TEXT, max_scroll INTEGER DEFAULT 0, reached_accept INTEGER DEFAULT 0,
+  sign_step INTEGER DEFAULT 0, copy_attempts INTEGER DEFAULT 0, print_attempts INTEGER DEFAULT 0,
+  events INTEGER DEFAULT 0, rolled_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS visitor_geo (
+  visitor_key TEXT PRIMARY KEY, city TEXT, region TEXT, country TEXT, device TEXT, looked_up_at TEXT
+);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id TEXT PRIMARY KEY, user TEXT, endpoint TEXT UNIQUE, keys_json TEXT, ua TEXT,
   created_at TEXT DEFAULT (datetime('now'))
@@ -393,6 +403,29 @@ addColumn('quotes','signed_terms','TEXT');
 // it simply stops counting as a live job (Projects, Selections, revenue).
 addColumn('quotes','superseded_at','TEXT');
 addColumn('quotes','superseded_by','TEXT');
+// ---- v21: pipeline board, manual won, client-link behaviour ----
+// A lead dragged to a step by hand. Holds until NEW evidence arrives (a quote built, drawings
+// in, a discovery call recorded) — the snapshot taken at drag time is what "new" is measured
+// against. Parked leads leave the board and the follow-up list until unparked.
+addColumn('leads','stage_override','INTEGER');
+addColumn('leads','override_snapshot','TEXT');
+addColumn('leads','parked','INTEGER DEFAULT 0');
+addColumn('leads','parked_at','TEXT');
+// A job won outside the client link (client PO, returned contract, email approval). The
+// evidence file is stored and fingerprinted exactly like an e-signed contract.
+addColumn('quotes','won_method','TEXT');           // 'esign' | 'manual'
+addColumn('quotes','won_how','TEXT');              // po | contract | email
+addColumn('quotes','won_ref','TEXT');
+addColumn('quotes','won_approved_by','TEXT');
+addColumn('quotes','won_note','TEXT');
+addColumn('quotes','won_value','REAL');            // contract value ex GST as approved
+addColumn('quotes','won_file','BLOB');
+addColumn('quotes','won_file_name','TEXT');
+addColumn('quotes','won_file_mime','TEXT');
+addColumn('quotes','won_file_sha256','TEXT');
+addColumn('quotes','won_marked_by','TEXT');
+addColumn('quotes','won_prev_status','TEXT');
+addColumn('quotes','won_reverted_at','TEXT');
 // One-time: list totals are cached per quote and only recomputed when the quote changes.
 // The total formula changed (it now follows the client's package changes), so every cached
 // value is cleared once and recomputed lazily on the next list. Keyed so it runs once.
@@ -563,6 +596,9 @@ if (!settingGet2('seed_v7')) {
  ['age_flag','7'],['age_chase','14'],['age_dead','30'],
  ['crew_day_rate','1150'],['crew_people','3'],['extra_person_rate','420'],['hours_per_day','8'],
  ['work_days_per_month','21'],['quote_number_start','1410'],
+ ['sig_hot_opens','3'],['sig_hot_window_h','48'],['sig_hot_active_min','5'],['sig_hot_toggles','2'],
+ ['sig_warm_days','7'],['sig_warm_active_sec','60'],['sig_warm_opens','2'],['sig_hot_fade_days','3'],['sig_warm_fade_days','7'],
+ ['events_rollup_days','30'],
  ['default_crew_size','3'],['default_customer_tier','Silver'],['imap_poll_minutes','10'],['imap_folder','INBOX'],['imap_port','993'],
  ['email_signature','Smit Gajera\nEstate Landscapers\nT: +61 414 147 008\nE: info@estatelandscapers.com.au\nA: Unit 33/275 Annangrove Rd, Rouse Hill NSW 2155'],
  ['quote_email_subject','Landscape Works Fee Proposal — Quote {{number}} — Estate Landscapers'],

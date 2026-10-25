@@ -1,5 +1,6 @@
 // Estate Landscapers — admin SPA (v7: logins, vendors, recipes, costing, jobs, FY close)
 const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const api = (p, opts) => {
   // A stale click handler can fire after the view has changed and the id is gone.
   // Sending /quotes/null just produces noise and 404s, so drop it here.
@@ -107,6 +108,54 @@ async function boot() {
   if (!USER || !USER.role) return; // redirected
   shell();
 }
+// ---- v21: side drawer, link signal, behaviour record ---------------------------------
+function ensureDrawer() {
+  if ($('#drawer')) return;
+  const s = document.createElement('div'); s.className = 'scrim'; s.id = 'scrim'; document.body.appendChild(s);
+  const d = document.createElement('aside'); d.className = 'drawer'; d.id = 'drawer'; d.innerHTML = '<button class="x" id="drawerX" aria-label="Close">×</button><div id="drawerBody"></div>'; document.body.appendChild(d);
+  const close = () => { d.classList.remove('on'); s.classList.remove('on'); };
+  s.addEventListener('click', close); $('#drawerX').addEventListener('click', close);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+}
+function openDrawer(html) { ensureDrawer(); $('#drawerBody').innerHTML = html; $('#drawer').classList.add('on'); $('#scrim').classList.add('on'); $('#drawer').scrollTop = 0; }
+function closeDrawer() { const d = $('#drawer'); if (d) { d.classList.remove('on'); $('#scrim').classList.remove('on'); } }
+const SIG_LABEL = { hot: 'hot', warm: 'warm', cold: 'cold', unopened: 'not opened', unsent: 'not sent' };
+const sigChip = (sig, why, extra) => sig ? `<span class="chip link sig-${sig}" title="${esc(why || '')}" ${extra || ''}>link · ${SIG_LABEL[sig] || sig}${why ? ' · ' + esc(why) : ''}</span>` : '';
+const secs = s => { s = Math.round(s || 0); return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`; };
+async function openBehaviour(quoteId) {
+  openDrawer('<div class="muted">Loading…</div>');
+  const a = await api('/quotes/' + quoteId + '/analytics');
+  if (a.error) return openDrawer(`<h3>Behaviour record</h3><p class="muted">${esc(a.error)}</p>`);
+  const maxSec = Math.max(1, ...a.sections.map(s => s.seconds), ...a.lines.map(l => l.seconds));
+  const bar = (label, sec) => `<div class="r"><span>${esc(label)}</span><div class="bar"><i style="width:${Math.round(sec / maxSec * 100)}%"></i></div><span class="num">${secs(sec)}</span></div>`;
+  const pk = ['Basic', 'Standard', 'Premium'].map(k => `${k} ${a.packages[k] || 0}×`).join(' · ');
+  const accept = a.signStep >= 3 ? 'Signed' : a.signStep >= 2 ? 'Reached the signature step, did not sign' : a.reachedAccept ? 'Opened the contract review, did not sign' : 'Never tapped Accept';
+  openDrawer(`<h3>Quote ${esc(a.quoteNumber)} · behaviour record</h3>
+    <div class="muted" style="font-size:12px;">${esc(a.client || '')}${a.address ? ' · ' + esc(a.address) : ''}${a.sentAt ? ' · sent ' + esc(sydTime(a.sentAt)) + (a.sentBy ? ' by ' + esc(a.sentBy) : '') : ' · not sent yet'}</div>
+    <div class="kv"><div><div class="l">Opens</div><div class="v">${a.opens}</div></div><div><div class="l">Devices</div><div class="v">${a.devices}</div></div><div><div class="l">Reading time</div><div class="v" style="font-size:14px;">${esc(a.activeLabel)}</div></div><div><div class="l">Signal</div><div class="v"><span class="signal sig-${a.signal}">${SIG_LABEL[a.signal] || a.signal}</span></div></div></div>
+    <div class="read"><b>What this looks like:</b> ${esc(a.read)}<div class="muted" style="font-size:10.5px;margin-top:6px;">Rule-based reading of the pattern — a prompt for the call, not a verdict. Signal: ${esc(a.signalWhy || '')}.</div></div>
+    ${a.sections.length ? `<div class="dsec"><h4>Where their time went</h4><div class="heat">${a.sections.map(s => bar(s.name, s.seconds)).join('')}</div></div>` : ''}
+    ${a.lines.length ? `<div class="dsec"><h4>Deliverable lines they lingered on</h4><div class="heat">${a.lines.map(l => bar(l.code + (l.name ? ' · ' + l.name : ''), l.seconds)).join('')}</div></div>` : ''}
+    <div class="dsec"><h4>Packages compared · Accept</h4><div class="muted" style="font-size:12.5px;">${pk} &nbsp;·&nbsp; ${accept}${a.printAttempts ? ` &nbsp;·&nbsp; tried to print ${a.printAttempts}×` : ''}${a.copyAttempts ? ` &nbsp;·&nbsp; tried to copy ${a.copyAttempts}×` : ''}</div></div>
+    <div class="dsec"><h4>Every open, newest first</h4>${a.sessions.length ? a.sessions.map(s => `<div class="sess"><div class="t"><span style="color:var(--ink)">${esc(sydTime(s.startedAt))}</span><span>${esc(s.device)}${s.city ? ' · ' + esc(s.city) : ''} · ${esc(s.activeLabel)}${s.maxScroll ? ' · read to ' + s.maxScroll + '%' : ''}</span></div><div class="p">${esc(s.summary)}</div></div>`).join('') : '<p class="muted">Not opened yet.</p>'}</div>
+    <div class="dsec" style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-blue btn-sm" id="bhQuote">Open quote ${esc(a.quoteNumber)}</button><button class="btn btn-ghost btn-sm" id="bhClose">Close</button></div>`);
+  $('#bhQuote').addEventListener('click', () => { closeDrawer(); state.tab = 'quotes'; state.quoteId = a.quoteId; state.leadId = null; state.scrollY = 0; shell(); });
+  $('#bhClose').addEventListener('click', closeDrawer);
+}
+async function openFigure(key) {
+  openDrawer('<div class="muted">Loading…</div>');
+  const f = await api('/dashboard/figure/' + key);
+  if (f.error) return openDrawer(`<h3>Figure</h3><p class="muted">${esc(f.error)}</p>`);
+  openDrawer(`<h3>${esc(f.title)}${f.total != null ? ' · ' + money(f.total) : ''}</h3><div class="muted" style="font-size:12px;margin:4px 0 10px;">${esc(f.note || '')} ${f.rows.length} row${f.rows.length === 1 ? '' : 's'}.</div>
+    <div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>Quote</th><th>Client</th><th>Package / note</th><th class="right">Ex GST</th></tr></thead><tbody>
+    ${f.rows.map(r => `<tr class="row" data-q="${esc(r.quoteId || '')}" data-l="${esc(r.leadId || '')}"><td><b>${esc(r.quoteNumber || '—')}</b>${r.wonMethod === 'manual' ? ' <span class="chip won">PO</span>' : ''}</td><td>${esc(r.client || '')}</td><td class="muted">${esc(r.package || '')}${r.note ? ' · ' + esc(r.note) : ''}</td><td class="right">${r.value != null ? money(r.value) : '—'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Nothing in this figure.</td></tr>'}</tbody></table></div>`);
+  $$('#drawerBody tr.row').forEach(r => r.addEventListener('click', () => {
+    closeDrawer();
+    if (r.dataset.q) { state.tab = 'quotes'; state.quoteId = r.dataset.q; state.leadId = null; state.scrollY = 0; shell(); }
+    else if (r.dataset.l) { state.tab = 'leads'; state.leadsSub = 'summary'; state.leadId = r.dataset.l; shell(); }
+  }));
+}
+
 function shell() {
   // Order: Leads | Quotes Pricing Recipes Vendors Editor | Projects Purchase Orders
   const pc = state.pendingCounts || {};
@@ -127,12 +176,20 @@ function shell() {
       <div class="nav">${tabs.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}" style="position:relative;">${t[1]}${badge(t[0])}</button>`).join('')}</div>
       <div class="spacer"></div>
       <span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}</span>
+      <button class="theme" id="themeBtn" title="Night mode — your choice on this device, separate from the phone's setting"><span id="themeLbl">Night</span> <span class="dot"></span></button>
       <button class="btn btn-ghost btn-sm" id="bell" title="Lead notifications on this device">🔔</button>
       <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
     </div>
     <div class="wrap" id="view"></div>`;
   document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; state.selQuoteId = null; route(); }));
   $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
+  // Night mode: explicit per-device choice (never the phone's system setting).
+  const themeBtn = $('#themeBtn');
+  const applyTheme = m => { if (m === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme'); $('#themeLbl').textContent = m === 'dark' ? 'Day' : 'Night'; };
+  let savedTheme = null; try { savedTheme = localStorage.getItem('estate-theme'); } catch (e) {}
+  applyTheme(savedTheme);
+  themeBtn.addEventListener('click', () => { const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'; applyTheme(next); try { localStorage.setItem('estate-theme', next); } catch (e) {} });
+  ensureDrawer();
   // Notification bell: enable push on this device, or send a test once enabled.
   const bell = $('#bell');
   const paintBell = async () => {
@@ -225,49 +282,115 @@ async function leadsTab(v) {
 
 // ---------- TAB 1 · SUMMARY: figures on top, then the pipeline ----------
 async function leadsSummary(v) {
-  const [board, d, stageData] = await Promise.all([api('/leads/board'), api('/dashboard'), api('/leads/stages')]);
+  const [board, d, stageData, act] = await Promise.all([api('/leads/board' + (state.showParked ? '?parked=1' : '')), api('/dashboard'), api('/leads/stages'), api('/leads/link-activity?limit=40')]);
   if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
+  const today = localYmd();
+  const tile = (key, label, value, note, hero) => `<div class="stat ${hero ? 'hero' : ''} tap" data-fig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
+  const open = board.cards.length;
+  const byPhase = {}; board.cards.forEach(c => byPhase[c.phase] = (byPhase[c.phase] || 0) + 1);
   $('#leadBody').innerHTML = `
-    <div class="card"><h2>Figures</h2><div class="sub">All values exclude GST. Superseded revisions are not counted.</div><div class="rule"></div>
+    <div class="card"><h2>Figures</h2><div class="sub">All values exclude GST. Only the current revision of each quote is counted. Tap a tile to see exactly which quotes are in it.</div><div class="rule"></div>
       <div class="grid4">
-        <div class="stat hero"><div class="k">Secured — week</div><div class="v">${money(d.securedWeek)}</div></div>
-        <div class="stat hero"><div class="k">Secured — month</div><div class="v">${money(d.securedMonth)}</div></div>
-        <div class="stat hero"><div class="k">Secured — FY</div><div class="v">${money(d.securedFY)}</div></div>
-        <div class="stat"><div class="k">Open enquiries</div><div class="v">${(board.overdue.length + board.dueToday.length + board.thisWeek.length + board.undated.length)}</div></div>
+        ${tile('wk', 'Secured — week', money(d.securedWeek), `${d.securedWeekCount || 0} job${d.securedWeekCount === 1 ? '' : 's'}`, true)}
+        ${tile('mo', 'Secured — month', money(d.securedMonth), `${d.securedMonthCount || 0} job${d.securedMonthCount === 1 ? '' : 's'}`, true)}
+        ${tile('fy', 'Secured — FY', money(d.securedFY), `${d.securedCountFY || 0} job${d.securedCountFY === 1 ? '' : 's'}${d.securedManualFY ? ` · ${d.securedManualFY} by PO/contract` : ''}`, true)}
+        ${tile('open', 'Open enquiries', open, [1, 2, 3, 4].filter(p => byPhase[p]).map(p => `${byPhase[p]} step ${p}`).join(' · ') || 'none')}
       </div>
       <div class="grid4" style="margin-top:10px;">
-        <div class="stat"><div class="k">Quotes built (30d)</div><div class="v">${d.builtMonth || 0}</div></div>
-        <div class="stat"><div class="k">Value quoted (30d)</div><div class="v">${money(d.quotedValueMonth)}</div><div style="font-size:9.5px;color:var(--grey);">excl. GST</div></div>
-        <div class="stat"><div class="k">Win rate (value, FY)</div><div class="v">${d.winRateValue || 0}%</div></div>
-        <div class="stat"><div class="k">Lost this FY</div><div class="v">${money(d.lostValueFY || 0)}</div><div style="font-size:9.5px;color:var(--grey);">${d.lostFY || 0} quote(s)</div></div>
+        ${tile('built', 'Quotes built (30d)', d.builtMonth || 0, d.revisionsMonth > d.builtMonth ? `${d.revisionsMonth} revisions → ${d.builtMonth} jobs` : 'current revisions')}
+        ${tile('quoted', 'Value quoted (30d)', money(d.quotedValueMonth), 'excl. GST · current revisions')}
+        ${tile('win', 'Win rate (value, FY)', (d.winRateValue || 0) + '%', `${money(d.fySecured || 0)} of ${money(d.fyQuoted || 0)}`)}
+        ${tile('lost', 'Lost this FY', money(d.lostValueFY || 0), `${d.lostFY || 0} job${d.lostFY === 1 ? '' : 's'} · counted once each`)}
       </div></div>
 
-    <div class="card"><h2>Lead Pipeline</h2><div class="sub">Click a step to see the enquiries sitting there.</div><div class="rule"></div>
-      <div class="pipe">${board.phases.map(p => `<div class="ph ${state.leadPhase === p.id ? 'on' : ''}" data-phase="${p.id}">
-        <div class="n">STEP ${p.id}</div><div class="t">${esc(p.label)}</div>
-        <div class="c">${board.phaseCounts[p.id] || 0}</div><div class="w">${esc(p.blurb)}</div></div>`).join('')}</div>
-      <div id="phaseList"></div></div>`;
-  v.querySelectorAll('[data-phase]').forEach(b => b.addEventListener('click', () => {
-    state.leadPhase = state.leadPhase === +b.dataset.phase ? null : +b.dataset.phase;
-    leadsSummary(v);
-  }));
-  if (state.leadPhase) {
-    const all = [...board.overdue, ...board.dueToday, ...board.thisWeek, ...board.undated];
-    const inPhase = all.filter(l => l.phase === state.leadPhase);
-    const label = (board.phases.find(p => p.id === state.leadPhase) || {}).label || '';
-    $('#phaseList').innerHTML = `<div class="phasebox">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
-        <b style="font-size:11.5px;">Step ${state.leadPhase} · ${esc(label)} — ${inPhase.length} enquir${inPhase.length === 1 ? 'y' : 'ies'}</b>
-        <button class="btn btn-ghost btn-sm" id="hidePhase">✕ Hide</button></div>
-      ${inPhase.length ? `<table><tbody>${inPhase.map(l => `<tr>
-        <td><b>${esc(l.name || '—')}</b>${l.suburb ? ' — ' + esc(l.suburb) : ''}</td>
-        <td class="muted">${esc(l.nextAction || '')}</td>
-        <td class="${l.due && l.due < localYmd() ? '' : 'muted'}" style="${l.due && l.due < localYmd() ? 'color:var(--red);' : ''}">${esc(l.due || 'no date')}</td>
-        <td class="right"><button class="btn btn-ghost btn-sm" data-po="${l.id}">Open</button></td></tr>`).join('')}</tbody></table>`
-        : '<p class="muted">Nothing at this step.</p>'}</div>`;
-    $('#hidePhase').addEventListener('click', () => { state.leadPhase = null; leadsSummary(v); });
-    v.querySelectorAll('[data-po]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.po; leadConsole(v); }));
-  }
+    <div class="card"><h2>Lead pipeline</h2><div class="sub">Drag a card to move it a step — it holds there until new evidence (a quote, drawings, a discovery call) moves it on. Each column scrolls, searches and sorts on its own. Won needs a signed quote or a PO, from the quote page.</div><div class="rule"></div>
+      <div class="today" id="todayStrip"></div>
+      <div class="boardtools">
+        <input type="search" id="boardSearch" placeholder="Search all columns — name, suburb, quote number" value="${esc(state.boardSearch || '')}">
+        <label class="chk"><input type="checkbox" id="smallOnly" ${state.smallOnly ? 'checked' : ''}> Small projects only</label>
+        <label class="chk"><input type="checkbox" id="showParked" ${state.showParked ? 'checked' : ''}> Show parked${board.parkedCount ? ` (${board.parkedCount})` : ''}</label>
+        <span class="muted" style="font-size:11px;margin-left:auto;">Drag onto the bar at the bottom for Lost · Not a fit · Parked</span>
+      </div>
+      <div class="board" id="board">${[1, 2, 3, 4, 5].map(p => `<div class="col" style="--sc:var(--s${p})" data-stage="${p}">
+        <div class="h"><span class="t">${p} · ${esc((board.phases.find(x => x.id === p) || {}).label || '')}</span><span class="c"></span><span class="sum"></span>
+          <button class="ic" data-csearch="${p}" title="Search this column">⌕</button><button class="ic" data-csort="${p}" title="Sort: next action · newest · oldest · value · A–Z">≡</button></div>
+        <div class="csearch" hidden><input type="search" placeholder="Search step ${p}" data-cq="${p}"></div><div class="list"></div></div>`).join('')}</div>
+      ${state.showParked ? `<div class="phasebox" style="margin-top:10px;"><b style="font-size:11.5px;">Parked (${board.parked.length})</b> ${board.parked.map(l => `<span class="chip" style="margin-left:6px;">${esc(l.name)}${l.suburb ? ' · ' + esc(l.suburb) : ''} <a href="#" data-unpark="${l.id}" style="margin-left:4px;">unpark</a></span>`).join('') || '<span class="muted">none</span>'}</div>` : ''}
+    </div>
+
+    <div class="card"><h2>Client link activity</h2><div class="sub">Every time a client opens their quote link, newest first. Reading time is time with the page in front of them. Tap a row for the full behaviour record.</div><div class="rule"></div>
+      <div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>When (Sydney)</th><th>Quote</th><th>Client</th><th>Device · place</th><th class="right">Reading</th><th>What they did</th><th>Signal</th></tr></thead><tbody>
+      ${(act.rows || []).map(r => `<tr class="row" data-q="${esc(r.quoteId)}"><td class="muted" style="white-space:nowrap;">${esc(sydTime(r.when))}</td><td><b>${esc(r.quoteNumber)}</b></td><td>${esc(r.client || '')}</td><td class="muted">${esc(r.device)}${r.city ? ' · ' + esc(r.city) : ''}</td><td class="right" style="white-space:nowrap;">${esc(r.activeLabel)}</td><td style="font-size:11.5px;">${esc(r.summary)}</td><td><span class="signal sig-${r.signal}">${SIG_LABEL[r.signal] || r.signal}</span></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No client opens recorded yet.</td></tr>'}
+      </tbody></table></div></div>
+    <div class="dropbar" id="dropbar"><div data-drop="lost">Not proceeding — lost</div><div data-drop="nofit">Not a fit</div><div data-drop="park">Parked</div></div>`;
+
+  // ---- figures ----
+  $$('[data-fig]').forEach(el => { const go = () => openFigure(el.dataset.fig); el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
+  $$('#leadBody .feedtbl tr.row').forEach(r => r.addEventListener('click', () => openBehaviour(r.dataset.q)));
+  $$('[data-unpark]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); await api('/leads/' + a.dataset.unpark + '/unpark', { method: 'POST' }); toast('Back on the board'); leadsSummary(v); }));
+
+  // ---- Today strip: overdue first, then due today ----
+  const dueList = [...board.overdue, ...board.dueToday];
+  $('#todayStrip').innerHTML = `<span class="lbl">Today</span>${dueList.slice(0, 6).map(l => `<div class="item ${l.due && l.due < today ? 'over' : ''}"><span class="who" data-open="${l.id}">${esc(l.name)}${l.suburb ? ' · ' + esc(l.suburb) : ''}</span><span class="act">${esc(l.nextAction)}${l.due && l.due < today ? ` · ${Math.round((new Date(today) - new Date(l.due)) / 864e5)}d overdue` : ''}</span><button data-done="${l.id}" title="Mark this action done and move to the next">✓ Done</button><button data-snooze="${l.id}">+1 day</button></div>`).join('')}${dueList.length > 6 ? `<span class="muted" style="font-size:11.5px;">+${dueList.length - 6} more — see Enquiries</span>` : ''}${dueList.length ? '' : '<span class="muted" style="font-size:11.5px;">Nothing due today.</span>'}${board.thisWeek.length ? `<span class="muted" style="font-size:11.5px;margin-left:auto;">${board.thisWeek.length} due later this week</span>` : ''}`;
+  $$('[data-done]').forEach(b => b.addEventListener('click', async () => { const r = await api('/leads/' + b.dataset.done + '/done', { method: 'POST' }); toast(r.error || ('Done — next: ' + (r.nextAction || 'review'))); leadsSummary(v); }));
+  $$('[data-snooze]').forEach(b => b.addEventListener('click', async () => { await api('/leads/' + b.dataset.snooze + '/snooze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 1 }) }); toast('Moved to tomorrow'); leadsSummary(v); }));
+  $$('#todayStrip [data-open]').forEach(s => s.addEventListener('click', () => { state.leadId = s.dataset.open; leadConsole(v); }));
+
+  // ---- the board ----
+  const SORTS = ['next', 'newest', 'oldest', 'value', 'az'];
+  state.colSort = state.colSort || {}; state.colQ = state.colQ || {};
+  const cards = board.cards.map(c => ({ ...c, kind: 'lead' })).concat(board.won.map(w => ({ ...w, kind: 'won' })));
+  const dueLabel = c => { if (c.phase === 5) return ''; if (!c.due) return '<span class="d">no date</span>'; const diff = Math.round((new Date(c.due) - new Date(today)) / 864e5);
+    return diff < 0 ? `<span class="d over">${-diff}d overdue</span>` : diff === 0 ? '<span class="d today">today</span>' : `<span class="d">in ${diff}d</span>`; };
+  const cardHtml = c => `<div class="lead" draggable="${c.kind === 'lead' ? 'true' : 'false'}" data-id="${esc(c.id || '')}" data-q="${esc(c.quoteId || '')}" data-kind="${c.kind}">
+      <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:#FFF4E5;color:#8a5a00;">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : ''}</div>
+      <div class="where">${esc(c.suburb || '')}${c.quoteNumber ? ' · quote ' + esc(c.quoteNumber) : ''}</div>
+      <div class="next">${dueLabel(c)}<span>${esc(c.nextAction || '')}</span></div>
+      <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
+  const paint = () => {
+    const term = (state.boardSearch || '').toLowerCase(), small = !!state.smallOnly;
+    [1, 2, 3, 4, 5].forEach(p => {
+      const col = $(`.col[data-stage="${p}"]`); const cq = (state.colQ[p] || '').toLowerCase();
+      let rows = cards.filter(c => c.phase === p && (!small || c.small || c.kind === 'won') && (!term || `${c.name} ${c.suburb} ${c.quoteNumber || ''}`.toLowerCase().includes(term)) && (!cq || `${c.name} ${c.suburb} ${c.quoteNumber || ''}`.toLowerCase().includes(cq)));
+      const srt = state.colSort[p] || 'next';
+      rows.sort((a, b) => srt === 'newest' ? String(b.createdAt || b.acceptedAt || '').localeCompare(String(a.createdAt || a.acceptedAt || '')) : srt === 'oldest' ? String(a.createdAt || a.acceptedAt || '').localeCompare(String(b.createdAt || b.acceptedAt || ''))
+        : srt === 'value' ? (b.value || 0) - (a.value || 0) : srt === 'az' ? String(a.name || '').localeCompare(String(b.name || '')) : String(a.due || '9999').localeCompare(String(b.due || '9999')));
+      $('.list', col).innerHTML = rows.map(cardHtml).join('') || '<div class="muted" style="font-size:11.5px;padding:8px;">Nothing here</div>';
+      const total = cards.filter(c => c.phase === p).length;
+      $('.c', col).textContent = rows.length === total ? total : `${rows.length}/${total}`;
+      const sum = rows.reduce((a, c) => a + (c.value || 0), 0); $('.sum', col).textContent = sum ? money(sum) : '';
+      $(`[data-csort="${p}"]`).classList.toggle('on', srt !== 'next'); $(`[data-csort="${p}"]`).title = 'Sort: ' + { next: 'next action soonest', newest: 'newest first', oldest: 'oldest first', value: 'highest value', az: 'A–Z' }[srt];
+    });
+    $$('#board .lead').forEach(el => {
+      el.addEventListener('click', e => { if (e.target.closest('[data-bh]')) return; if (el.dataset.kind === 'won') { state.tab = 'quotes'; state.quoteId = el.dataset.q; state.leadId = null; state.scrollY = 0; shell(); } else { state.leadId = el.dataset.id; leadConsole(v); } });
+      if (el.dataset.kind !== 'lead') return;
+      el.addEventListener('dragstart', e => { dragId = el.dataset.id; el.classList.add('drag'); $('#dropbar').classList.add('on'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', dragId); } catch (x) {} });
+      el.addEventListener('dragend', () => { el.classList.remove('drag'); $('#dropbar').classList.remove('on'); $$('.col.over, .dropbar div.over').forEach(x => x.classList.remove('over')); });
+    });
+    $$('#board [data-bh]').forEach(ch => ch.addEventListener('click', e => { e.stopPropagation(); openBehaviour(ch.dataset.bh); }));
+  };
+  let dragId = null;
+  $$('.col').forEach(col => {
+    col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('over'); });
+    col.addEventListener('dragleave', () => col.classList.remove('over'));
+    col.addEventListener('drop', async e => { e.preventDefault(); col.classList.remove('over'); const to = +col.dataset.stage; const c = cards.find(x => x.id === dragId && x.kind === 'lead'); if (!c || c.phase === to) return;
+      const r = await api('/leads/' + c.id + '/step', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ step: to }) });
+      toast(r.error || `${c.name} moved to step ${to}`); if (!r.error) leadsSummary(v); });
+  });
+  $$('.dropbar div').forEach(z => {
+    z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('over'); }); z.addEventListener('dragleave', () => z.classList.remove('over'));
+    z.addEventListener('drop', async e => { e.preventDefault(); const c = cards.find(x => x.id === dragId && x.kind === 'lead'); if (!c) return;
+      const o = z.dataset.drop;
+      const r = o === 'park' ? await api('/leads/' + c.id + '/park', { method: 'POST' }) : await api('/leads/' + c.id + '/outcome', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ outcome: o }) });
+      toast(r.error || (o === 'park' ? `${c.name} parked` : o === 'nofit' ? `${c.name} marked not a fit — open the lead to send the email` : `${c.name} marked lost`)); leadsSummary(v); });
+  });
+  $('#boardSearch').addEventListener('input', e => { state.boardSearch = e.target.value; paint(); });
+  $('#smallOnly').addEventListener('change', e => { state.smallOnly = e.target.checked; paint(); });
+  $('#showParked').addEventListener('change', e => { state.showParked = e.target.checked; leadsSummary(v); });
+  $$('[data-csearch]').forEach(b => b.addEventListener('click', () => { const box = $(`.col[data-stage="${b.dataset.csearch}"] .csearch`); box.hidden = !box.hidden; if (!box.hidden) $('input', box).focus(); }));
+  $$('[data-cq]').forEach(i => i.addEventListener('input', () => { state.colQ[i.dataset.cq] = i.value; paint(); }));
+  $$('[data-csort]').forEach(b => b.addEventListener('click', () => { const p = b.dataset.csort; const cur = state.colSort[p] || 'next'; state.colSort[p] = SORTS[(SORTS.indexOf(cur) + 1) % SORTS.length]; paint(); toast('Sorted by ' + { next: 'next action', newest: 'newest', oldest: 'oldest', value: 'value', az: 'name' }[state.colSort[p]]); }));
+  paint();
 }
 
 // ---------- TAB 2 · ENQUIRIES: what needs doing, then everything ----------
@@ -1107,7 +1230,7 @@ async function leadConsole(v) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
         ${l.phone ? `<a class="btn btn-blue btn-sm" href="${telHref(l.phone)}" style="text-decoration:none;">📞 Call ${esc(l.phone)}</a>` : ''}
-        ${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" id="goQuote">Quote ${esc(l.quoteNumber)}</button>`
+        ${l.quoteNumber ? `<button class="btn btn-ghost btn-sm" id="goQuote">Quote ${esc(l.quoteNumber)}</button><button class="btn btn-ghost btn-sm" id="leadBehaviour" title="How the client has used their quote link">Link behaviour</button>`
           : '<button class="btn btn-blue btn-sm" id="toQuote">→ Convert to quote</button>'}
       </div></div>
     <div class="rule"></div>
@@ -1212,6 +1335,7 @@ async function leadConsole(v) {
     body.querySelector('.tlShort').style.display = more ? 'none' : '';
     body.querySelector('.tlFull').style.display = more ? '' : 'none';
   });
+  const lb = $('#leadBehaviour'); if (lb) lb.addEventListener('click', () => openBehaviour(l.quoteId));
   const gq = $('#goQuote'); if (gq) gq.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = l.quoteId; state.leadId = null; shell(); });
   const tq = $('#toQuote'); if (tq) tq.addEventListener('click', async () => {
     const r = await api('/leads/' + l.id + '/convert', { method: 'POST' });
@@ -1508,6 +1632,7 @@ async function quoteEditor(v) {
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
         : `<button class="btn btn-ghost" id="lostQuote">Mark lost</button>`) : ''}
+      ${isAdmin() && q.status !== 'accepted' && !q.isSample && !q.lostAt ? `<button class="btn btn-ghost" id="markWon" style="border-color:var(--green);color:var(--green);">✓ Mark won — PO / contract</button>` : ''}
       ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete || q.lostAt ? 'disabled title="' + (q.lostAt ? 'This quote is marked lost' : 'Finish the surcharge settings first') + '" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
       <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
     </div>
@@ -1524,6 +1649,25 @@ async function quoteEditor(v) {
       ${q.internalViews ? `<span class="muted" title="Your own views and previews — never counted as client views">${q.internalViews} internal (not counted)</span>` : ''}
       ${q.legacyViews ? `<span class="muted" title="Recorded before views were attributed">${q.legacyViews} older views (unattributed)</span>` : ''}
       ${q.sentAt ? `<span class="muted">sent ${esc(sydTime(q.sentAt))} to ${esc(q.sentTo || '')}${q.sentBy ? ' by ' + esc(q.sentBy) : ''}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
+      ${q.link ? `<span class="muted">reading ${esc(q.link.activeLabel)}${q.link.lastOpened ? ' · last ' + esc(sydTime(q.link.lastOpened)) : ''}</span><span class="signal sig-${q.link.signal}" title="${esc(q.link.signalWhy || '')}">${SIG_LABEL[q.link.signal] || q.link.signal}</span><a href="#" id="openBehaviour" style="font-weight:700;">Behaviour record →</a>` : ''}
+    </div>
+    ${q.won ? `<div class="emailbar" style="background:#F2F8F4;border-color:#DEEBE2;color:#1F6B37;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <span class="wonbadge">✓ Won · ${q.won.method === 'manual' ? (q.won.how === 'po' ? 'client PO' : q.won.how === 'contract' ? 'contract returned' : 'email approval') : 'e-signed'}</span>
+      ${q.won.method === 'manual' ? `<span style="font-size:12px;">${esc(q.won.ref || '')}${q.won.approvedBy ? ' · ' + esc(q.won.approvedBy) : ''} · ${q.won.value != null ? money(q.won.value) + ' ex GST' : ''} · ${esc(sydTime(q.won.at))} · marked by ${esc(q.won.markedBy || '')}${q.won.hasFile ? ` · <a href="/api/quotes/${q.id}/won-file" target="_blank">${esc(q.won.fileName || 'approval document')}</a>` : ''}</span>
+      ${isAdmin() ? '<button class="btn btn-ghost btn-sm" id="unwinQ" title="Wrong PO or wrong quote — revert to quoted. The document and audit line are kept.">Undo won</button>' : ''}` : ''}</div>` : ''}
+    <div id="wonForm" class="card" hidden style="border-color:var(--green);">
+      <h2>Mark won — PO / contract received</h2><div class="sub">For jobs approved outside the client link. The quote becomes a job exactly as if it were signed online; the approval document is stored and fingerprinted like a signed contract. Nothing is emailed to the client.</div><div class="rule"></div>
+      <div class="grid3">
+        <div class="field"><label>How was it approved</label><select id="wonHow"><option value="po">Client purchase order (PO)</option><option value="contract">Signed contract returned (paper / email)</option><option value="email">Written approval by email</option></select></div>
+        <div class="field"><label>Their reference *</label><input id="wonRef" placeholder="PO number, contract or email reference"></div>
+        <div class="field"><label>Package approved</label><select id="wonPkg">${['Basic', 'Standard', 'Premium'].map(tq => `<option ${tq === (q.defaultPackage || 'Standard') ? 'selected' : ''}>${tq}</option>`).join('')}</select></div>
+        <div class="field"><label>Date approved</label><input id="wonDate" type="date" value="${localYmd()}"></div>
+        <div class="field"><label>Contract value ex GST</label><input id="wonValue" placeholder="leave blank to use the quote total"><span class="muted" style="font-size:10.5px;">Blank = the quote's total for that package. Enter the PO figure if it differs — the difference is recorded.</span></div>
+        <div class="field"><label>Approved by (client side)</label><input id="wonBy" placeholder="Name on the PO / email"></div>
+      </div>
+      <div class="field"><label>Attach the PO or signed contract (PDF or photo, up to 12 MB)</label><div class="dropzone" id="wonDrop">Tap to choose a file, or drop it here<input type="file" id="wonFile" accept="application/pdf,image/*" hidden></div></div>
+      <div class="field"><label>Note</label><textarea id="wonNote" rows="2" placeholder="e.g. PO issued by Fide Constructions, invoicing to their accounts email"></textarea></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="wonCancel">Cancel</button><button class="btn btn-blue" id="wonSave" style="background:var(--green);border-color:var(--green);">Mark as won</button></div>
     </div>
     <div class="linkbar"><span>🔗 Live link:</span><input id="linkInput" readonly value="${esc(link)}"><button class="btn btn-blue btn-sm" id="copyLink">Copy</button><a class="btn btn-ghost btn-sm" href="${esc(link)}" target="_blank">Preview</a></div>
   </div>
@@ -1704,6 +1848,28 @@ async function quoteEditor(v) {
   const sq = $('#sendQuote'); if (sq) sq.addEventListener('click', () => openSendDialog(q));
   $('#backList').addEventListener('click', () => { state.quoteId = null; route(); });
   $('#copyLink').addEventListener('click', () => { $('#linkInput').select(); navigator.clipboard?.writeText(link); toast('Link copied'); });
+  const ob = $('#openBehaviour'); if (ob) ob.addEventListener('click', e => { e.preventDefault(); openBehaviour(q.id); });
+  const mw = $('#markWon'); if (mw) mw.addEventListener('click', () => { const f = $('#wonForm'); f.hidden = !f.hidden; if (!f.hidden) { f.scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#wonRef').focus(); } });
+  const wc = $('#wonCancel'); if (wc) wc.addEventListener('click', () => { $('#wonForm').hidden = true; });
+  let wonFileData = null;
+  const wd = $('#wonDrop'); if (wd) {
+    const pick = f => { if (!f) return; if (f.size > 12 * 1024 * 1024) return toast('File is over 12 MB'); const rd = new FileReader(); rd.onload = () => { wonFileData = { name: f.name, mime: f.type, data: rd.result }; wd.classList.add('has'); wd.firstChild.textContent = '✓ ' + f.name; }; rd.readAsDataURL(f); };
+    wd.addEventListener('click', () => $('#wonFile').click());
+    $('#wonFile').addEventListener('change', e => pick(e.target.files[0]));
+    wd.addEventListener('dragover', e => { e.preventDefault(); }); wd.addEventListener('drop', e => { e.preventDefault(); pick(e.dataTransfer.files[0]); });
+  }
+  const ws = $('#wonSave'); if (ws) ws.addEventListener('click', async () => {
+    if (!$('#wonRef').value.trim()) { toast('Their reference is required'); $('#wonRef').focus(); return; }
+    ws.disabled = true; ws.textContent = 'Saving…';
+    const r = await api('/quotes/' + q.id + '/mark-won', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      how: $('#wonHow').value, ref: $('#wonRef').value.trim(), package: $('#wonPkg').value, date: $('#wonDate').value, value: $('#wonValue').value, approvedBy: $('#wonBy').value.trim(), note: $('#wonNote').value.trim(), file: wonFileData }) });
+    if (r.error) { toast(r.error); ws.disabled = false; ws.textContent = 'Mark as won'; return; }
+    toast(`Won — ${money(r.value)} ex GST${r.differs ? ` (quote total was ${money(r.quotedTotal)})` : ''}. Now in Projects and Selections.`); reload();
+  });
+  const uw = $('#unwinQ'); if (uw) uw.addEventListener('click', async () => {
+    if (!confirm('Revert this job to quoted? The approval document and the audit line are kept.')) return;
+    const r = await api('/quotes/' + q.id + '/unwin', { method: 'POST' }); toast(r.error || 'Reverted to quoted'); reload();
+  });
   const sp = $('#supersedeQ'); if (sp) sp.addEventListener('click', async () => {
     if (!confirm('Close this accepted quote as superseded? It stops counting as a live job; the signed record is kept.')) return;
     const r = await api('/quotes/' + q.id + '/supersede', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
@@ -2931,6 +3097,11 @@ async function settingsTab(v) {
     <div class="grid3">${[['tier_bronze', 'Bronze %'], ['tier_silver', 'Silver %'], ['tier_gold', 'Gold %']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveTiers">Save tiers</button></div>
   
+  <div class="card"><h2>Client-link signal</h2><div class="sub">When a quote link counts as hot, warm or cold on the pipeline and the activity feed. Hot fades to warm, then cold, when opens stop.</div><div class="rule"></div>
+    <div class="grid4">${[['sig_hot_opens', 'Hot: opens within window'], ['sig_hot_window_h', 'Hot window (hours)'], ['sig_hot_active_min', 'Hot: reading minutes'], ['sig_hot_toggles', 'Hot: package comparisons'],
+      ['sig_warm_days', 'Warm window (days)'], ['sig_warm_active_sec', 'Warm: reading seconds'], ['sig_warm_opens', 'Warm: opens in window'], ['sig_hot_fade_days', 'Hot fades after (days)'], ['sig_warm_fade_days', 'Warm fades after (days)'], ['events_rollup_days', 'Fold raw events after (days)']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <div class="muted" style="font-size:11px;margin:6px 0 10px;">Hot = opens ≥ the count inside the window, <i>or</i> reached the Accept step, <i>or</i> reading minutes <i>and</i> comparisons both met within the warm window. Warm = opened inside the warm window with the reading seconds, or the opens count. Otherwise cold.</div>
+    <button class="btn btn-blue" id="saveSig">Save signal rules</button></div>
   <div class="card"><h2>Quote ageing (days)</h2><div class="rule"></div>
     <div class="grid3">${[['age_flag', 'Follow up from'], ['age_chase', 'Chase from'], ['age_dead', 'Dead from']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveAge">Save ageing</button></div>
@@ -2974,6 +3145,7 @@ async function settingsTab(v) {
   $('#saveSig').addEventListener('click', save(['email_signature', 'quote_email_subject', 'quote_email_body'], 'Email settings saved'));
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
+  $('#saveSig').addEventListener('click', save(['sig_hot_opens', 'sig_hot_window_h', 'sig_hot_active_min', 'sig_hot_toggles', 'sig_warm_days', 'sig_warm_active_sec', 'sig_warm_opens', 'sig_hot_fade_days', 'sig_warm_fade_days', 'events_rollup_days'], 'Signal rules saved'));
   ['set_crew_day_rate', 'set_crew_people', 'set_hours_per_day'].forEach(id => {
     const el = $('#' + id); if (!el) return;
     el.addEventListener('input', () => {

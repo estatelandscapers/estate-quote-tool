@@ -181,11 +181,18 @@ router.post('/:token/event', (req, res) => {
   const q = getQ(req.params.token);
   if (!q) return res.status(404).json({ error: 'Not found' });
   const { type, payload } = req.body || {};
-  if (!['view', 'section_view', 'package_select', 'heartbeat', 'print_click'].includes(type)) return res.status(400).json({ error: 'Bad type' });
+  if (!['view', 'section_view', 'package_select', 'heartbeat', 'print_click', 'accept_open', 'sign_step', 'copy_attempt', 'print_attempt'].includes(type)) return res.status(400).json({ error: 'Bad type' });
   const viewer = viewerOf(req);
   const vkey = visitorKey(req);
+  // Payloads are small by design; cap anyway so a hostile client can't bloat the table.
+  const body = JSON.stringify(payload || {}).slice(0, 4000);
   db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload,viewer,visitor_key) VALUES (?,?,?,?,?,?)')
-    .run(newId(), q.id, type, JSON.stringify(payload || {}), viewer, vkey);
+    .run(newId(), q.id, type, body, viewer, vkey);
+  // First sight of a device: remember what it is and roughly where (city), keyed by the
+  // visitor hash. The raw IP is used for the lookup and never stored.
+  if (type === 'view' && viewer === 'client') {
+    try { require('../utils/linkAnalytics').noteVisitor(vkey, payload || {}, (req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim()); } catch (e) {}
+  }
   // Only a genuine client view moves the quote to "viewed".
   if (type === 'view' && viewer === 'client' && (q.status === 'draft' || q.status === 'sent'))
     db.prepare("UPDATE quotes SET status='viewed' WHERE id=?").run(q.id);

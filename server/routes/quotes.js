@@ -135,6 +135,8 @@ function fullQuote(q) {
     // this one is still a signed, live job. The real record status is needed to offer the
     // close-as-superseded action on exactly those quotes.
     signedLive: q.status === 'accepted',
+    won: q.status === 'accepted' ? { method: q.won_method || 'esign', how: q.won_how, ref: q.won_ref, approvedBy: q.won_approved_by, note: q.won_note, value: q.won_value,
+      fileName: q.won_file_name, hasFile: !!q.won_file_sha256, sha: q.won_file_sha256, markedBy: q.won_marked_by, at: q.accepted_at } : null,
     acceptedPackage: q.accepted_package, acceptedAt: q.accepted_at, signedName: q.signed_name,
     updatedAt: q.updated_at, createdAt: q.created_at,
     customerTier: q.customer_tier || 'Silver', crewSize: q.crew_size || 2,
@@ -142,6 +144,7 @@ function fullQuote(q) {
     rev: q.rev_no || 0, linkOff: !!q.link_off,
     emailStatus: q.email_status || null, emailDetail: q.email_detail || null,
     ...viewStats(q.id),
+    link: (() => { try { return require('../utils/linkAnalytics').quick(q); } catch (e) { return null; } })(),
     sentAt: q.sent_at || null, sentTo: q.sent_to || null, sentBy: q.sent_by || null, sendCount: q.send_count || 0,
     sentSubject: q.sent_subject || null, sentMessage: q.sent_message || null, ...c,
   };
@@ -477,6 +480,90 @@ router.post('/:id/supersede', (req, res) => {
   res.json(r);
 });
 
+// ---- Won outside the client link: client PO, returned contract, or email approval ----
+// Admin only. The quote becomes a job exactly as a signed one does — same status, same
+// snapshots, same supersede of earlier accepted revisions, same lead update — and the
+// approval document is stored and fingerprinted like a signed PDF. Nothing is emailed to
+// the client; they issued the approval.
+router.post('/:id/mark-won', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  if (q.is_sample) return res.status(400).json({ error: 'A sample quote cannot be won.' });
+  if (q.status === 'accepted') return res.status(409).json({ error: 'This quote is already accepted.' });
+  const b = req.body || {};
+  const how = ['po', 'contract', 'email'].includes(b.how) ? b.how : 'po';
+  const tier = ['Basic', 'Standard', 'Premium'].includes(b.package) ? b.package : (q.default_package || 'Standard');
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : new Date().toISOString().slice(0, 10);
+  if (!b.ref || !String(b.ref).trim()) return res.status(400).json({ error: 'Their reference (PO number, contract or email reference) is required.' });
+  // Contract value: what the PO says, else the quote's own total for that package.
+  let value = Number(String(b.value || '').replace(/[^0-9.]/g, ''));
+  let quotedTotal = null;
+  try { const fq = fullQuote({ ...q, default_package: tier }); quotedTotal = Math.round(fq.grandExGst); } catch (e) {}
+  if (!value || isNaN(value)) value = quotedTotal || 0;
+  // The approval document, if attached: base64 in, bytes + SHA-256 stored.
+  let file = null, fileName = null, fileMime = null, sha = null;
+  if (b.file && b.file.data) {
+    try {
+      const raw = String(b.file.data).replace(/^data:[^;]+;base64,/, '');
+      file = Buffer.from(raw, 'base64');
+      if (file.length > 12 * 1024 * 1024) return res.status(400).json({ error: 'File is over 12 MB — compress or photograph it smaller.' });
+      fileName = String(b.file.name || 'approval').slice(0, 120); fileMime = String(b.file.mime || 'application/octet-stream').slice(0, 80);
+      sha = require('crypto').createHash('sha256').update(file).digest('hex');
+    } catch (e) { return res.status(400).json({ error: 'Could not read the attached file.' }); }
+  }
+  const who = req.user.name || req.user.username;
+  db.prepare(`UPDATE quotes SET status='accepted', accepted_package=?, accepted_at=?, won_method='manual', won_how=?, won_ref=?, won_approved_by=?, won_note=?,
+      won_value=?, won_file=?, won_file_name=?, won_file_mime=?, won_file_sha256=?, won_marked_by=?, won_prev_status=?, won_reverted_at=NULL,
+      lost_at=NULL, lost_reason=NULL, link_off=1, updated_at=datetime('now') WHERE id=?`)
+    .run(tier, date + ' ' + new Date().toISOString().slice(11, 19), how, String(b.ref).trim().slice(0, 80), String(b.approvedBy || '').slice(0, 120), String(b.note || '').slice(0, 2000),
+      Math.round(value * 100) / 100, file, fileName, fileMime, sha, who, q.status, q.id);
+  // Same margin snapshot a signature takes, so Projects compares actuals against the right baseline.
+  try {
+    const qq = db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id);
+    const cc = costQuote(qq);
+    const sellSel = cc.mixed ? cc.selected.sell : Object.values(cc.perLine).reduce((a, l) => a + l.tiers[tier].sell, 0);
+    const costSel = cc.mixed ? cc.selected.cost : Object.values(cc.perLine).reduce((a, l) => a + l.tiers[tier].cost, 0);
+    db.prepare('UPDATE quotes SET quoted_sell=?, quoted_cost=?, accepted_mixed=? WHERE id=?').run(Math.round(sellSel * 100) / 100, Math.round(costSel * 100) / 100, JSON.stringify(cc.changes || []), q.id);
+  } catch (e) { console.error('quoted snapshot failed', e.message); }
+  // Earlier accepted revisions of the same job are superseded, as on signing.
+  try {
+    db.prepare("SELECT id FROM quotes WHERE parent_number=? AND id<>? AND status='accepted' AND created_at < ?").all(q.parent_number, q.id, q.created_at)
+      .forEach(e => supersedeQuote(e.id, q.id, 'auto: later revision won by ' + how));
+  } catch (e) {}
+  if (q.lead_id) db.prepare("UPDATE leads SET stage='won', status='Won', next_followup=NULL, stage_override=NULL, override_snapshot=NULL, parked=0, updated_at=datetime('now') WHERE id=?").run(q.lead_id);
+  db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload,viewer) VALUES (?,?,?,?,?)').run(newId(), q.id, 'package_select', JSON.stringify({ tier, accepted: true, manual: true, how, ref: b.ref }), 'internal');
+  db.prepare('INSERT INTO audit_log (id,entity_type,entity_id,actor,action,detail) VALUES (?,?,?,?,?,?)')
+    .run(newId(), 'quote', q.id, who, 'mark-won', `${q.quote_number} won by ${how} ${b.ref} · $${Math.round(value).toLocaleString('en-AU')} ex GST${quotedTotal != null && Math.round(value) !== quotedTotal ? ` (quoted ${'$' + quotedTotal.toLocaleString('en-AU')})` : ''}`);
+  console.log(`[quote] ${q.quote_number} marked won by ${how} (${who})`);
+  res.json({ ok: true, value: Math.round(value), quotedTotal, differs: quotedTotal != null && Math.round(value) !== quotedTotal });
+});
+
+// Reverse a manual won (wrong PO, wrong quote). Admin only; the approval file and the
+// audit line are kept, the job simply stops being a job.
+router.post('/:id/unwin', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  if (q.status !== 'accepted' || q.won_method !== 'manual') return res.status(400).json({ error: 'Only a job marked won by PO/contract can be reverted. An e-signed contract stands.' });
+  const back = ['draft', 'sent', 'viewed'].includes(q.won_prev_status) ? q.won_prev_status : 'sent';
+  db.prepare(`UPDATE quotes SET status=?, accepted_package=NULL, accepted_at=NULL, quoted_sell=NULL, quoted_cost=NULL, accepted_mixed=NULL, selections_locked=0,
+      won_reverted_at=datetime('now'), link_off=0, updated_at=datetime('now') WHERE id=?`).run(back, q.id);
+  if (q.lead_id) db.prepare("UPDATE leads SET stage='quotesent', status='Quoted', next_followup=date('now'), updated_at=datetime('now') WHERE id=?").run(q.lead_id);
+  db.prepare('INSERT INTO audit_log (id,entity_type,entity_id,actor,action,detail) VALUES (?,?,?,?,?,?)')
+    .run(newId(), 'quote', q.id, req.user.name || req.user.username, 'unwin', `${q.quote_number} reverted from won (${q.won_how} ${q.won_ref})`);
+  res.json({ ok: true, status: back });
+});
+
+// The approval document as stored.
+router.get('/:id/won-file', (req, res) => {
+  const q = db.prepare('SELECT won_file, won_file_name, won_file_mime FROM quotes WHERE id=?').get(req.params.id);
+  if (!q || !q.won_file) return res.status(404).json({ error: 'No approval document on this quote' });
+  res.setHeader('Content-Type', q.won_file_mime || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `inline; filename="${(q.won_file_name || 'approval').replace(/"/g, '')}"`);
+  res.end(Buffer.from(q.won_file));
+});
+
 router.post('/:id/make-sample', (req, res) => {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
   const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
@@ -765,11 +852,12 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   res.status(201).json({ id, instanceNo: row.instance_no });
 });
 
+// The quote's behaviour record: every client session, where their time went, package
+// comparisons, how far into Accept they got, and the hot/warm/cold signal with its reason.
 router.get('/:id/analytics', (req, res) => {
-  const ev = db.prepare('SELECT * FROM quote_events WHERE quote_id=? ORDER BY created_at DESC LIMIT 300').all(req.params.id);
-  const secs = ev.filter(e => e.event_type === 'heartbeat').reduce((s, e) => { try { return s + (JSON.parse(e.payload).seconds || 0); } catch { return s; } }, 0);
-  const pkg = {}; ev.filter(e => e.event_type === 'package_select').forEach(e => { try { const t = JSON.parse(e.payload).tier; pkg[t] = (pkg[t] || 0) + 1; } catch {} });
-  res.json({ views: ev.filter(e => e.event_type === 'view').length, activeSeconds: Math.round(secs), packageClicks: pkg });
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  res.json(require('../utils/linkAnalytics').record(q));
 });
 
 // Full tier costing for a quote (recipes). Estimators get cost totals + site time but no margin.
@@ -815,10 +903,12 @@ router.get('/:id/signed-preview', async (req, res) => {
   const { buildSignedPdf } = require('../utils/signedPdf');
   const { pdfPayload } = require('./publicQuote');
   const fq = fullQuote(q);
-  const totals = { grandExGst: Math.round(fq.grandExGst), grandIncGst: Math.round(fq.grandIncGst) };
+  const totals = (q.status === 'accepted' && q.won_method === 'manual' && q.won_value != null)
+    ? { grandExGst: Math.round(q.won_value), grandIncGst: Math.round(q.won_value * 1.1) }
+    : { grandExGst: Math.round(fq.grandExGst), grandIncGst: Math.round(fq.grandIncGst) };
   const settings = {};
   ['company_abn','company_lic','company_address','tagline','warranty_text','standard_conditions','default_special_clauses'].forEach(k => settings[k] = settingGet(k));
-  const signed = !!q.signed_name;
+  const signed = !!q.signed_name || (q.status === 'accepted' && q.won_method === 'manual');
   // An unsigned quote goes to the PDF exactly as it is. The old version filled
   // signed_name, signed_sig and accepted_at with the client's name and the current time —
   // fabricating a signature record on a document nobody had signed. One amber "preview"

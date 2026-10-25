@@ -28,9 +28,78 @@
     if (d.superseded) { root.innerHTML = smsg('This quote has been updated', 'A newer version of this proposal has been issued. Please use the most recent link we sent you, or contact us.', true); return; }
     if (d.expired) { root.innerHTML = smsg('This quote has expired', `This proposal was valid for ${d.validityDays} days. Contact us and we'll be happy to refresh it for you.`, true); return; }
     render();
-    track('view', {});
-    setInterval(() => { if (!document.hidden) track('heartbeat', { seconds: 15 }); }, 15000);
+    startTracking();
   });
+
+  // ---- behaviour tracking -------------------------------------------------------------
+  // What the office sees on the quote's behaviour record: which sections and which deliverable
+  // lines the client actually spent time on, which packages they compared, how far into Accept
+  // they got, and on what device. Only time with the page in front of them counts — a tab left
+  // open in the background accumulates nothing. Dwell is sent in 15-second heartbeats so a
+  // 10-minute visit is a few dozen small events, not a stream.
+  const dwell = { sections: {}, lines: {} };
+  let maxScroll = 0, trackingOn = false;
+  function deviceInfo() {
+    const ua = navigator.userAgent || '';
+    return { ua: ua.slice(0, 200), platform: navigator.platform || '', lang: navigator.language || '',
+      screen: (screen && screen.width ? screen.width + 'x' + screen.height : ''), touch: 'ontouchstart' in window,
+      tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || ''), ref: (document.referrer || '').slice(0, 120) };
+  }
+  function watchSections() {
+    // Every tracked region carries data-track; deliverable lines also carry data-line.
+    document.querySelectorAll('.hero').forEach(e => e.dataset.track = 'hero');
+    document.querySelectorAll('.siteplan-wrap').forEach(e => e.dataset.track = 'siteplan');
+    document.querySelectorAll('.howto').forEach(e => e.dataset.track = 'howto');
+    document.querySelectorAll('.pkg-row, .mixed-box').forEach(e => e.dataset.track = 'packages');
+    document.querySelectorAll('.deliv-box').forEach(e => e.dataset.track = 'scope1');
+    document.querySelectorAll('.box.s2').forEach(e => e.dataset.track = 'scope2');
+    document.querySelectorAll('.notes-box').forEach(e => e.dataset.track = 'notes');
+    document.querySelectorAll('.estd').forEach(e => e.dataset.track = 'estate_standard');
+    document.querySelectorAll('#totalCard').forEach(e => e.dataset.track = 'totals');
+    document.querySelectorAll('.pay').forEach(e => e.dataset.track = 'payment');
+    document.querySelectorAll('.cta-wrap').forEach(e => e.dataset.track = 'accept');
+    const visible = new Set();
+    if (!('IntersectionObserver' in window)) return;
+    const io = new IntersectionObserver(entries => entries.forEach(en => {
+      const key = en.target.dataset.line ? 'L:' + en.target.dataset.line : en.target.dataset.track;
+      if (!key) return;
+      if (en.isIntersecting && en.intersectionRatio >= 0.4) visible.add(key); else visible.delete(key);
+    }), { threshold: [0, 0.4, 1] });
+    document.querySelectorAll('[data-track], [data-line]').forEach(el => io.observe(el));
+    // One tick a second: credit each visible region. Lines sit inside scope1, so a client
+    // reading the retaining-wall line is credited to both — the record shows both views.
+    setInterval(() => {
+      if (document.hidden) return;
+      visible.forEach(k => { if (k.startsWith('L:')) dwell.lines[k.slice(2)] = (dwell.lines[k.slice(2)] || 0) + 1; else dwell.sections[k] = (dwell.sections[k] || 0) + 1; });
+      const sc = document.documentElement; const pct = Math.round((window.scrollY + window.innerHeight) / Math.max(1, sc.scrollHeight) * 100);
+      if (pct > maxScroll) maxScroll = Math.min(100, pct);
+    }, 1000);
+  }
+  function flush(seconds) {
+    const payload = { seconds, sections: dwell.sections, lines: dwell.lines, maxScroll };
+    dwell.sections = {}; dwell.lines = {};
+    track('heartbeat', payload);
+  }
+  function startTracking() {
+    if (trackingOn) return; trackingOn = true;
+    track('view', deviceInfo());
+    watchSections();
+    setInterval(() => { if (!document.hidden) flush(15); }, 15000);
+    // Send what's accumulated when they leave, so a short last look isn't lost.
+    document.addEventListener('visibilitychange', () => { if (document.hidden && (Object.keys(dwell.sections).length || Object.keys(dwell.lines).length)) flush(0); });
+    // Attempts to take the quote elsewhere are recorded, and the content is protected: the
+    // print view is blank (CSS), text can't be selected or copied, and the context menu is off.
+    window.addEventListener('beforeprint', () => track('print_attempt', {}));
+    document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) { e.preventDefault(); track('print_attempt', { via: 'shortcut' }); printNotice(); } });
+    document.addEventListener('copy', e => { if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return; e.preventDefault(); track('copy_attempt', {}); });
+    document.addEventListener('contextmenu', e => { if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return; e.preventDefault(); });
+  }
+  function printNotice() {
+    let n = document.getElementById('printNotice'); if (n) return;
+    n = document.createElement('div'); n.id = 'printNotice'; n.className = 'print-notice';
+    n.textContent = 'This quote is view-only on this link. For a printed copy, please call us and we will send one.';
+    document.body.appendChild(n); setTimeout(() => n.remove(), 4000);
+  }
 
   function smsg(h, p, warn) { return `<div class="state-msg ${warn ? 'warn' : ''}"><h2>${esc(h)}</h2><p class="muted">${esc(p)}</p></div>`; }
 
@@ -150,6 +219,8 @@
         : `<div class="cta-wrap"><button class="btn btn-blue" id="acceptBtn">Accept <span id="acceptTier">${tier}</span> package &amp; review contract &rarr;</button>
         <div class="cta-sub">You'll review the full contract, warranty and your protections before signing.</div></div>`}
       <footer>${esc(c.tagline || 'Integrity. Precision. Value.')}</footer>
+      <div class="wm" aria-hidden="true">${Array.from({ length: 24 }).map(() => `<span>Prepared for ${esc(D.client || 'our client')} &middot; Quote ${esc(D.quoteNumber || '')} &middot; not for distribution</span>`).join('')}</div>
+      <div class="view-only">This proposal is personal to you. Your use of this link is recorded to help us serve you better.</div>
     </div>`;
 
     if (D.mixed) tier = D.mixed.base; // price shown = base package with per-line overrides already applied server-side
@@ -160,7 +231,7 @@
     });
     protectDrawing();
     const ab = document.getElementById('acceptBtn');
-    if (ab) ab.addEventListener('click', openEsign);
+    if (ab) ab.addEventListener('click', () => { track('accept_open', { tier }); openEsign(); });
     renderDynamic();
   }
 
@@ -192,7 +263,7 @@
       const shared = d.sharedEnabled ? ` &middot; shared ${d.sharedPct}% with neighbour` : '';
       const alts = d.changes ? TIERS.filter(t => t !== lineTier && d.alternates[t] && d.alternates[t] !== pt.spec)
         .map(t => `${t}: ${d.alternates[t]}`).join(' \u00B7 ') : '';
-      return `<div class="deliv${d.changes ? ' varies' : ''}">
+      return `<div class="deliv${d.changes ? ' varies' : ''}" data-line="${esc(d.code)}">
         <div class="t"><span class="code">${esc(d.code)}</span>${esc(d.name)}${d.changes ? '<span class="chg-badge">changes with package</span>' : ''}</div>
         <div class="spec-line"><div class="n">${esc(pt.spec || d.name)}</div><div class="p">${money(pt.price)}</div></div>
         ${alts ? `<div class="alt-line">Other packages &mdash; ${esc(alts)}</div>` : ''}
@@ -227,6 +298,7 @@
       return `<div class="steps">${s.map((x, i) => { const n = i + 1; const cls = n < step ? 'done' : (n === step ? 'on' : ''); return `<div class="step ${cls}"><div class="dot">${n < step ? '&#10003;' : x[0]}</div> ${x[1]}</div>`; }).join('')}</div>`;
     }
     function draw(res) {
+      track('sign_step', { step });
       if (step === 1) {
         overlay.querySelector('.modal').innerHTML = stepsBar() + `
           <h2 style="margin:0 0 4px;font-size:16px;text-transform:uppercase;letter-spacing:.5px;">Review before signing</h2>
