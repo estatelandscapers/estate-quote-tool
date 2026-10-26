@@ -120,6 +120,7 @@ function ensureDrawer() {
 function openDrawer(html) { ensureDrawer(); $('#drawerBody').innerHTML = html; $('#drawer').classList.add('on'); $('#scrim').classList.add('on'); $('#drawer').scrollTop = 0; }
 function closeDrawer() { const d = $('#drawer'); if (d) { d.classList.remove('on'); $('#scrim').classList.remove('on'); } }
 const SIG_LABEL = { hot: 'hot', warm: 'warm', cold: 'cold', unopened: 'not opened', unsent: 'not sent' };
+const estChip = (e) => e ? `<span class="chip link sig-${e.signal}" title="${esc(e.why || '')}">estimate · ${SIG_LABEL[e.signal] || e.signal}${e.why ? ' · ' + esc(e.why) : ''}</span>` : '';
 const sigChip = (sig, why, extra) => sig ? `<span class="chip link sig-${sig}" title="${esc(why || '')}" ${extra || ''}>link · ${SIG_LABEL[sig] || sig}${why ? ' · ' + esc(why) : ''}</span>` : '';
 const secs = s => { s = Math.round(s || 0); return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`; };
 async function openBehaviour(quoteId) {
@@ -355,7 +356,7 @@ async function leadsSummary(v) {
       <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:#FFF4E5;color:#8a5a00;">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : ''}</div>
       <div class="where">${esc(c.suburb || '')}${c.quoteNumber ? ' · quote ' + esc(c.quoteNumber) : ''}</div>
       <div class="next">${dueLabel(c)}<span>${esc(c.nextAction || '')}</span></div>
-      <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
+      <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.est ? estChip(c.est) : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
   const paint = () => {
     const term = (state.boardSearch || '').toLowerCase(), small = !!state.smallOnly;
     [1, 2, 3, 4, 5].forEach(p => {
@@ -1287,6 +1288,7 @@ async function leadConsole(v) {
           ${stages.filter(s => s.group === g).map(s => `<span class="step ${s.id === stage ? 'on' : ''}" data-stage="${s.id}" title="${esc(s.when)}">${esc(s.label)}</span>`).join('')}</div>`).join('')}
       </div>
     </div>
+    <div id="estPanel"></div>
     <div id="answersPanel"></div>
     <div id="docsPanel"></div>
     <div class="rule" style="margin-top:14px;"></div>
@@ -1381,6 +1383,51 @@ async function leadConsole(v) {
   v.querySelectorAll('[data-stage]').forEach(b => b.addEventListener('click', () => { state.leadStage = b.dataset.stage; loadMsg(); paintStage(b.dataset.stage); }));
   function paintStage(id) { v.querySelectorAll('[data-stage]').forEach(x => x.classList.toggle('on', x.dataset.stage === id)); }
 
+  // The online estimator: code, what the client did with it, and the signal.
+  api(`/leads/${l.id}/estimate`).then(E => {
+    const box = document.getElementById('estPanel'); if (!box) return;
+    const when = t => t ? sydTime(t) : '';
+    const codeLine = E.code
+      ? `<b style="font-size:20px;letter-spacing:6px;">${esc(E.code)}</b> <span class="muted">${E.live ? 'valid to ' + esc(String(E.expires).slice(0, 10)) : 'expired ' + esc(String(E.expires).slice(0, 10))}</span>`
+      : `<span class="muted">${E.canInvite ? 'No code sent yet.' : 'No email on the lead, so no code could be sent.'}</span>`;
+    const bp = E.ballpark ? (E.ballpark.decline ? 'declined on access' : E.ballpark.tooUnknown ? 'too little known for a number' : `$${(E.ballpark.lo || 0).toLocaleString()} – $${(E.ballpark.hi || 0).toLocaleString()} inc GST`) : '';
+    box.innerHTML = `<div class="card" style="margin:12px 0 0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div><h2>Online estimator <span class="signal sig-${E.signal}" title="${esc(E.why || '')}">${SIG_LABEL[E.signal] || E.signal}</span></h2>
+          <div class="sub">${esc(E.why || '')}${E.invited ? ' · invited ' + esc(when(E.invitedAt)) : ''}</div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${E.enabled === false ? '<span class="tag tag-superseded" title="Turn it on in Editor → Settings → Online estimator">ESTIMATOR OFF</span>' : ''}
+          <button class="btn ${E.invited ? 'btn-ghost' : 'btn-blue'} btn-sm" id="estInvite" ${E.enabled === false ? 'disabled' : ''}>${E.invited ? '↻ Resend the code' : '✉ Send the estimator code'}</button>
+        </div></div>
+      <div class="rule"></div>
+      <div class="grid2">
+        <div>
+          <div class="alab">Access code</div><div style="margin-bottom:10px;">${codeLine}</div>
+          <table class="kv">
+            <tr><td class="muted" style="width:42%;">Status</td><td>${esc(E.status || 'not started')}</td></tr>
+            <tr><td class="muted">Answered</td><td>${E.answered} of ${E.total} questions${E.versions ? ` · completed ${E.versions}×` : ''}</td></tr>
+            ${bp ? `<tr><td class="muted">Ballpark shown</td><td>${esc(bp)}${E.history.length && E.history[E.history.length - 1].emailed ? ' · emailed' : ''}</td></tr>` : ''}
+            ${E.reaction ? `<tr><td class="muted">Reaction</td><td>${esc(E.reaction)}</td></tr>` : ''}
+            ${E.changed && E.changed.length ? `<tr><td class="muted">Changed since last time</td><td style="color:var(--amber);font-weight:700;">${E.changed.map(esc).join(', ')}</td></tr>` : ''}
+            ${E.notes ? `<tr><td class="muted">Their notes</td><td style="white-space:pre-wrap;">${esc(E.notes)}</td></tr>` : ''}
+          </table>
+          ${E.history.length > 1 ? `<div class="legend">Versions: ${E.history.map(h => `v${h.n} ${esc(when(h.at))}${h.changed.length ? ' (' + h.changed.map(esc).join(', ') + ')' : ''}`).join(' · ')}</div>` : ''}
+        </div>
+        <div>
+          <div class="alab">Sessions · ${E.opens} · ${esc(E.activeLabel)} in total</div>
+          ${E.sessions.length ? `<table class="kv">${E.sessions.slice(0, 8).map(x => `<tr><td class="muted" style="white-space:nowrap;width:38%;">${esc(when(x.startedAt))}<br><span style="font-size:10px;">${esc(x.device)}${x.city ? ' · ' + esc(x.city) : ''} · ${esc(x.activeLabel)}</span></td><td style="font-size:11.5px;">${esc(x.summary)}</td></tr>`).join('')}</table>`
+            : '<p class="muted" style="font-size:11.5px;">Not opened yet.</p>'}
+        </div>
+      </div></div>`;
+    document.getElementById('estInvite').addEventListener('click', async () => {
+      let email = l.email;
+      if (!E.canInvite) { email = prompt('Email address to send the code to:'); if (!email) return; }
+      const r = await api(`/leads/${l.id}/estimate/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
+      if (r.error) return toast(r.error);
+      toast('Code ' + r.code + ' sent'); leadConsole(v);
+    });
+  }).catch(() => {});
+
   // What the client told us — and how the quote compares.
   api(`/leads/${l.id}/answers`).then(A => {
     const box = document.getElementById('answersPanel'); if (!box || !A.hasCall) return;
@@ -1388,7 +1435,7 @@ async function leadConsole(v) {
     const flagged = cmp ? cmp.onQuote.filter(x => x.status !== 'ok').length + cmp.missing.length : 0;
     box.innerHTML = `<div class="card" style="margin:12px 0 0;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div><h2>What they told us on the call</h2>
+        <div><h2>What they told us${(A.rows.find(r => r.k === 'Answered') ? ' (online estimate)' : ' on the call')}</h2>
           <div class="sub">Captured ${A.rows.length} answers${cmp ? ' · checked against quote ' + esc(cmp.quoteNumber) : ''}</div></div>
         ${cmp ? `<a class="btn btn-ghost btn-sm" href="/admin#quote-${cmp.quoteId}" target="_blank" id="openQuoteTab">Open the quote in a new tab ↗</a>` : ''}
       </div><div class="rule"></div>
@@ -3101,7 +3148,7 @@ async function settingsTab(v) {
         <label style="margin-top:10px;">Default quote email — message</label><textarea id="set_quote_email_body" rows="6">${esc(s.quote_email_body || '')}</textarea>
         <span class="muted" style="font-size:10px;">{{firstname}}, {{client}}, {{number}} and {{address}} are filled in automatically. You can still edit every message before it sends.</span></div>
     </div>
-    <button class="btn btn-blue" id="saveSig">Save email settings</button></div>
+    <button class="btn btn-blue" id="saveEmailSet">Save email settings</button></div>
   <div class="card"><h2>Customer tiers — target gross margin</h2><div class="sub">Warns on quotes below target, and drives the cost-plus guide price.</div><div class="rule"></div>
     <div class="grid3">${[['tier_bronze', 'Bronze %'], ['tier_silver', 'Silver %'], ['tier_gold', 'Gold %']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveTiers">Save tiers</button></div>
@@ -3111,6 +3158,21 @@ async function settingsTab(v) {
       ['sig_warm_days', 'Warm window (days)'], ['sig_warm_active_sec', 'Warm: reading seconds'], ['sig_warm_opens', 'Warm: opens in window'], ['sig_hot_fade_days', 'Hot fades after (days)'], ['sig_warm_fade_days', 'Warm fades after (days)'], ['events_rollup_days', 'Fold raw events after (days)']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <div class="muted" style="font-size:11px;margin:6px 0 10px;">Hot = opens ≥ the count inside the window, <i>or</i> reached the Accept step, <i>or</i> reading minutes <i>and</i> comparisons both met within the warm window. Warm = opened inside the warm window with the reading seconds, or the opens count. Otherwise cold.</div>
     <button class="btn btn-blue" id="saveSig">Save signal rules</button></div>
+  <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;"><h2>Online estimator</h2>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;cursor:pointer;"><input type="checkbox" id="set_est_enabled_cb" ${s.est_enabled !== '0' ? 'checked' : ''} style="width:auto;"> Auto lead processing <span class="tag ${s.est_enabled !== '0' ? 'tag-accepted' : 'tag-superseded'}" id="estOnTag">${s.est_enabled !== '0' ? 'ON' : 'OFF'}</span></label></div>
+    <div class="muted" style="font-size:11px;margin:4px 0 8px;">Off = no automatic code emails to new leads, the website estimator shows "paused", and the Send code button is disabled. Leads keep arriving exactly as before. Nothing is lost when it comes back on.</div>
+    <input type="hidden" id="set_est_enabled" value="${s.est_enabled !== '0' ? '1' : '0'}">
+    <div class="sub">The website's free estimate. Every residential lead with an email gets a 4-digit code (website, hipages and typed-in leads alike). The code works with that email address for the days below.</div><div class="rule"></div>
+    <div class="grid2">
+      <div class="field"><label>Estimator page URL</label><input id="set_est_url" value="${esc(s.est_url || '')}"></div>
+      <div class="field"><label>This tool's public URL (for sample-quote links in emails)</label><input id="set_tool_url" value="${esc(s.tool_url || '')}" placeholder="https://quotes.estatelandscapers.com.au"></div>
+    </div>
+    <div class="field"><label>Intro email subject</label><input id="set_est_intro_subject" value="${esc(s.est_intro_subject || '')}"><span class="muted" style="font-size:10px;">{{first}} is the client's first name.</span></div>
+    <div class="grid4">${[['est_code_days', 'Code valid (days)'], ['est_lockout_tries', 'Wrong attempts before lockout'], ['est_lockout_min', 'Lockout (minutes)'], ['est_slots_per_half', 'Friday bookings per AM / PM']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <div class="alab" style="margin-top:6px;">Signal rules</div>
+    <div class="grid4">${[['est_hot_sessions', 'Hot: sessions in window'], ['est_hot_window_h', 'Hot window (hours)'], ['est_hot_toggles', 'Hot: tier comparisons after ballpark'], ['est_warm_answer_pct', 'Warm: % of questions answered'], ['est_warm_active_sec', 'Warm: seconds in a session'], ['est_hot_fade_days', 'Hot fades after (days)'], ['est_warm_fade_days', 'Warm fades after (days)']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <div class="muted" style="font-size:11px;margin:6px 0 10px;">Hot = booked a Friday, <i>or</i> reached the ballpark and compared tiers, <i>or</i> the session count inside the window. Warm = reached the ballpark without booking, or answered the percentage with the seconds in one session. "Out of budget" is always cold.</div>
+    <button class="btn btn-blue" id="saveEst">Save estimator settings</button></div>
   <div class="card"><h2>Quote ageing (days)</h2><div class="rule"></div>
     <div class="grid3">${[['age_flag', 'Follow up from'], ['age_chase', 'Chase from'], ['age_dead', 'Dead from']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveAge">Save ageing</button></div>
@@ -3151,7 +3213,14 @@ async function settingsTab(v) {
     <div class="field"><label>Standard conditions</label><textarea id="set_standard_conditions" rows="6">${esc(s.standard_conditions)}</textarea></div>
     <button class="btn btn-blue" id="saveContract">Save contract text</button></div>`;
   const save = (keys, msg) => async () => { const body = {}; keys.forEach(k => body[k] = $('#set_' + k).value); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast(msg); };
-  $('#saveSig').addEventListener('click', save(['email_signature', 'quote_email_subject', 'quote_email_body'], 'Email settings saved'));
+  $('#saveEmailSet').addEventListener('click', save(['email_signature', 'quote_email_subject', 'quote_email_body'], 'Email settings saved'));
+  $('#set_est_enabled_cb').addEventListener('change', async function () {
+    const on = this.checked; $('#set_est_enabled').value = on ? '1' : '0';
+    await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ est_enabled: on ? '1' : '0' }) });
+    const t = $('#estOnTag'); t.textContent = on ? 'ON' : 'OFF'; t.className = 'tag ' + (on ? 'tag-accepted' : 'tag-superseded');
+    toast(on ? 'Auto lead processing ON: new leads get a code, estimator live' : 'Auto lead processing OFF: no automatic emails, estimator paused');
+  });
+  $('#saveEst').addEventListener('click', save(['est_enabled', 'est_url', 'tool_url', 'est_intro_subject', 'est_code_days', 'est_lockout_tries', 'est_lockout_min', 'est_slots_per_half', 'est_hot_sessions', 'est_hot_window_h', 'est_hot_toggles', 'est_warm_answer_pct', 'est_warm_active_sec', 'est_hot_fade_days', 'est_warm_fade_days'], 'Estimator settings saved'));
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
   $('#saveSig').addEventListener('click', save(['sig_hot_opens', 'sig_hot_window_h', 'sig_hot_active_min', 'sig_hot_toggles', 'sig_warm_days', 'sig_warm_active_sec', 'sig_warm_opens', 'sig_hot_fade_days', 'sig_warm_fade_days', 'events_rollup_days'], 'Signal rules saved'));

@@ -411,6 +411,23 @@ addColumn('leads','stage_override','INTEGER');
 addColumn('leads','override_snapshot','TEXT');
 addColumn('leads','parked','INTEGER DEFAULT 0');
 addColumn('leads','parked_at','TEXT');
+// ---- v22: online estimator (website) ----
+// A 4-digit code (with the email it went to) opens the estimator for this lead; the token
+// secures the session after the code exchange. Answers are versioned in est_answers and
+// mirrored into call_answers when a run reaches the ballpark. est_status: invited | started |
+// completed | booked | noemail.
+addColumn('leads','est_code','TEXT');
+addColumn('leads','est_code_expires','TEXT');
+addColumn('leads','est_token','TEXT');
+addColumn('leads','est_answers','TEXT');
+addColumn('leads','est_status','TEXT');
+addColumn('leads','est_invited_at','TEXT');
+db.exec(`CREATE TABLE IF NOT EXISTS estimate_events (
+  id TEXT PRIMARY KEY, lead_id TEXT, visitor_key TEXT, event_type TEXT, payload TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_est_events_lead ON estimate_events(lead_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_leads_est_code ON leads(est_code);`);
 // A job won outside the client link (client PO, returned contract, email approval). The
 // evidence file is stored and fingerprinted exactly like an e-signed contract.
 addColumn('quotes','won_method','TEXT');           // 'esign' | 'manual'

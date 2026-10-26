@@ -208,6 +208,9 @@ function createFromEmail({ messageId, from, subject, text, html, receivedAt }) {
       url: '/admin/?lead=' + id, tag: 'lead-' + id,
     }).catch(() => {});
   } catch (e) {}
+  // Every lead that arrives with an email gets the online estimator invitation, whatever
+  // door it came through. No email: the card says so and the rep sends it once they have one.
+  try { require('./estimator').autoInvite(id, { reason: 'new' }).catch(() => {}); } catch (e) {}
   return { leadId: id, platform, parsed: p, needsReview };
 }
 

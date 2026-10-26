@@ -80,7 +80,26 @@ router.post('/', (req, res) => {
       // A new enquiry is due NOW — that's the whole point of "call within 2 hours".
       b.nextFollowup || new Date().toISOString().slice(0, 10),
       b.jobType || '', b.suburb || '');
+  // A lead typed in by hand gets the estimator invitation too, if it has an email.
+  if (b.email && b.invite !== false) require('../utils/estimator').autoInvite(id, { reason: 'new', by: req.user ? (req.user.name || req.user.username) : '' }).catch(() => {});
   res.status(201).json({ id });
+});
+
+// ---- online estimator: what the client did, and (re)sending the code ----------------------
+router.get('/:id/estimate', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  res.json(require('../utils/estimator').summary(l));
+});
+router.post('/:id/estimate/invite', async (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  if (!require('../utils/estimator').enabled()) return res.status(409).json({ error: 'The online estimator is switched off in Settings. Turn it on to send a code.' });
+  const b = req.body || {};
+  if (b.email) db.prepare('UPDATE leads SET email=? WHERE id=?').run(String(b.email).trim(), l.id);
+  const r = await require('../utils/estimator').invite(l.id, { reason: l.est_invited_at ? 'resend' : 'new', by: req.user ? (req.user.name || req.user.username) : '' });
+  if (!r.ok) return res.status(400).json({ error: r.error || 'could not send', code: r.code || null });
+  res.json({ ok: true, code: r.code, expires: r.expires });
 });
 router.put('/:id', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
@@ -173,7 +192,8 @@ router.get('/board', (req, res) => {
       quoteMissing: !!(l.quote_id && !quote),
       quoteId: quote ? quote.id : null, quoteNumber: quote ? quote.quote_number : null, quoteStatus: quote ? quote.status : null,
       value: value != null ? Math.round(value) : null,
-      link: link ? { signal: link.signal, why: link.signalWhy, opens: link.opens, lastOpened: link.lastOpened } : null };
+      link: link ? { signal: link.signal, why: link.signalWhy, opens: link.opens, lastOpened: link.lastOpened } : null,
+      est: (() => { try { return require('../utils/estimator').quick(l); } catch (e) { return null; } })() };
   };
   // Won jobs sit in the fifth column: accepted quotes (not superseded, not samples).
   const won = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0 ORDER BY accepted_at DESC LIMIT 40").all().map(q => {
@@ -377,6 +397,8 @@ router.get('/:id/answers', (req, res) => {
   push('Source', a.source);
   if (!bp.decline && !bp.tooUnknown) rows.push({ k: 'Ballpark given', v: `$${bp.incLo.toLocaleString()} – $${bp.incHi.toLocaleString()} inc GST` });
   if (a.priceReaction) rows.push({ k: 'Their reaction', v: a.priceReaction });
+  if (a.fallDir) rows.push({ k: 'Fall direction', v: a.fallDir === 'higher' ? 'back fence higher than the house' : 'back fence lower than the house' });
+  if (a._estimator) rows.push({ k: 'Answered', v: `by the client online, ${a._estimator.at} (version ${a._estimator.version})` });
   if (a.notes) rows.push({ k: 'Notes', v: a.notes });
 
   // Compare against the quote, if one exists.

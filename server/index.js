@@ -44,6 +44,7 @@ app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/checklist', require('./routes/checklist'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/public/quote', require('./routes/publicQuote'));
+app.use('/api/public/estimate', require('./routes/publicEstimate')); // website online estimator
 app.use('/api/public', require('./routes/publicEnquiry')); // website enquiry form
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
@@ -266,6 +267,7 @@ const PORT = process.env.PORT || 3000;
 // Watch the enquiry mailbox, if one is configured.
 try { require('./utils/mailIngest').startPolling(); } catch (e) { console.error('[mail] not started:', e.message); }
 
+try { require('./utils/estimator').seedDefaults(); } catch (e) { console.error('[estimator] defaults:', e.message); }
 app.listen(PORT, () => {
   console.log(`Estate Landscapers quote tool running on http://localhost:${PORT}`);
   console.log(`  Admin:  http://localhost:${PORT}/admin`);

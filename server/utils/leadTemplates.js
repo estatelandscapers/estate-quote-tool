@@ -23,6 +23,9 @@ const STAGES = [
   { id: 'callback',   phase: 1, group: 'Enquiry', label: 'Call-back arranged',       when: 'Booked', date: true, nextIn: null, nextAction: 'Call back as arranged' },
   // STEP 2 — discovery call, ballpark, then ask for the drawings
   { id: 'qualified',  phase: 2, group: 'Qualifying', label: 'Discovery call done',   when: 'Answered', date: false, nextIn: 2, nextAction: 'Request the drawings' },
+  // The client ran the discovery themselves in the online estimator. Same phase as a call,
+  // but the next action is to confirm it by phone the same day, not to chase drawings.
+  { id: 'estimatedone', phase: 2, group: 'Qualifying', label: 'Online estimate done', when: 'Self-served', date: false, nextIn: 0, nextAction: 'Call to confirm the online estimate — same day' },
   { id: 'docsasked',  phase: 2, group: 'Qualifying', label: 'Drawings requested',    when: 'Same day', date: false, nextIn: 3, nextAction: 'Chase the drawings' },
   { id: 'disqualified', phase: 5, group: 'Qualifying', label: 'Not proceeding — client declined', when: 'After ballpark', date: false, nextIn: null, nextAction: '' },
   // STEP 3 — drawings in, then the Friday visit
@@ -42,6 +45,14 @@ const STAGES = [
 
 // {{name}} {{job}} {{suburb}} {{me}} {{date}} {{time}} {{slot}} {{email}} {{phone}} {{quotelink}}
 const DEFAULTS = {
+  estimatedone: {
+    subject: 'Your online estimate — Estate Landscapers',
+    body: `Hi {{name}},
+
+{{me}} from Estate Landscapers here. Thanks for completing the online estimate for your {{job}} project.
+
+I'd like a quick word to confirm a couple of the answers before the site visit — when suits for a two-minute call?`,
+  },
   noanswer: {
     subject: 'Your {{job}} enquiry — Estate Landscapers',
     body: `Hi {{name}},

@@ -9,7 +9,11 @@ const KEYS = ['company_name','company_abn','company_lic','company_address','comp
   'pay_sched_standard','pay_sched_small','warranty_text','protections_text','default_special_clauses','standard_conditions',
   // tiers, ageing, labour — these were missing, which is why the Editor fields showed blank and "didn't save"
   'tier_bronze','tier_silver','tier_gold','age_flag','age_chase','age_dead',
-  'crew_day_rate','crew_people','extra_person_rate','hours_per_day','work_days_per_month','quote_number_start','default_crew_size','default_customer_tier','email_signature','quote_email_subject','quote_email_body','projects_delivered','rating_stars','rating_source','rating_count','link_off_message','access_min','access_difficult_to','access_narrow_to','step_rise_mm','slope_steep_mm','rw_max_height_mm','imap_host','imap_user','imap_folder','imap_port','imap_poll_minutes'];
+  'crew_day_rate','crew_people','extra_person_rate','hours_per_day','work_days_per_month','quote_number_start','default_crew_size','default_customer_tier','email_signature','quote_email_subject','quote_email_body','projects_delivered','rating_stars','rating_source','rating_count','link_off_message','access_min','access_difficult_to','access_narrow_to','step_rise_mm','slope_steep_mm','rw_max_height_mm','imap_host','imap_user','imap_folder','imap_port','imap_poll_minutes',
+  // client-link signal rules (were missing here, so the Settings page could not save them)
+  'sig_hot_opens','sig_hot_window_h','sig_hot_active_min','sig_hot_toggles','sig_warm_days','sig_warm_active_sec','sig_warm_opens','sig_hot_fade_days','sig_warm_fade_days','events_rollup_days',
+  // online estimator
+  'est_enabled','est_url','tool_url','est_code_days','est_lockout_tries','est_lockout_min','est_slots_per_half','est_hot_sessions','est_hot_window_h','est_hot_toggles','est_warm_active_sec','est_warm_answer_pct','est_hot_fade_days','est_warm_fade_days','est_intro_subject'];
 
 // Company details are needed by the client-facing pages, but margin targets and
 // labour rates are not for general viewing.

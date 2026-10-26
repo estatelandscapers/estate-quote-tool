@@ -442,11 +442,12 @@ table.kv tr:last-child td{border-bottom:none;}
 .drawer.on{transform:none;}
 .drawer h3{margin:0;font-size:15px;font-weight:800;}
 .drawer .x{position:absolute;right:14px;top:calc(12px + env(safe-area-inset-top,0px));border:0;background:var(--bg);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:16px;color:inherit;}
-.kv{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0;}
-@media(max-width:480px){.kv{grid-template-columns:repeat(2,1fr);}}
-.kv div{background:var(--bg);border-radius:8px;padding:8px 10px;}
-.kv .l{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);font-weight:700;}
-.kv .v{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums;}
+/* The stat grid is a div.kv; table.kv (answer lists) must not inherit the grid. */
+div.kv{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0;}
+@media(max-width:480px){div.kv{grid-template-columns:repeat(2,1fr);}}
+div.kv div{background:var(--bg);border-radius:8px;padding:8px 10px;}
+div.kv .l{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);font-weight:700;}
+div.kv .v{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums;}
 .dsec{margin-top:16px;}
 .dsec h4{margin:0 0 8px;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--grey);}
 .sess{border:1px solid var(--line);border-radius:9px;padding:9px 11px;margin-bottom:8px;}

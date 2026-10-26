@@ -58,22 +58,8 @@ setInterval(() => {
   for (const [k, v] of HITS) { const a = v.filter(t => now - t < 3600000); a.length ? HITS.set(k, a) : HITS.delete(k); }
 }, 10 * 60 * 1000).unref();
 
-// ---- reference numbers: ENQ-YYYY-MMNN (NN resets monthly, grows past 99) ----
-// Sydney time, not server time: Railway runs UTC, so without this the month would roll
-// over at 10 or 11 am on the 1st and the first morning's enquiries would be numbered into
-// the previous month. The old yearly counter (enquiry_seq_2026) is simply no longer read.
-function sydneyParts(d = new Date()) {
-  const p = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit' })
-    .formatToParts(d).reduce((a, x) => (a[x.type] = x.value, a), {});
-  return { year: p.year, month: p.month, day: p.day, ymd: `${p.year}-${p.month}-${p.day}` };
-}
-function nextRef() {
-  const { year, month } = sydneyParts();
-  const key = `enquiry_seq_${year}${month}`;
-  const n = (parseInt(settingGet(key) || '0', 10) || 0) + 1;
-  settingSet(key, String(n));
-  return `ENQ-${year}-${month}${String(n).padStart(2, '0')}`;
-}
+// Reference numbers live in utils/refs.js (shared with the online estimator).
+const { sydneyParts, nextRef } = require('../utils/refs');
 
 const clean = (s, max = 300) => String(s || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
 
@@ -189,8 +175,16 @@ router.post('/enquiry', async (req, res) => {
     // actually arrived. With no files there is nothing to wait for. With files, it is sent
     // by the reconciliation below — plus a fallback if the browser never reports back
     // (tab closed, connection dropped), so a client is never left without a reply.
-    if (email && !declared.length) sendAck({ email, name, ref, audience, files: [], missing: [] });
-    if (email && declared.length) scheduleFallbackAck(ref);
+    // Residential (including small projects): the intro email with the estimator code IS the
+    // acknowledgement, sent now. If files were attached, the file receipt still follows once
+    // OneDrive confirms what landed. Commercial keeps the plain acknowledgement.
+    if (email && audience === 'residential' && require('../utils/estimator').enabled()) {
+      require('../utils/estimator').autoInvite(id, { reason: 'new' }).catch(e => console.log('[enquiry] invite failed:', e.message));
+      if (declared.length) scheduleFallbackAck(ref);
+    } else {
+      if (email && !declared.length) sendAck({ email, name, ref, audience, files: [], missing: [] });
+      if (email && declared.length) scheduleFallbackAck(ref);
+    }
 
     console.log(`[enquiry] ${ref} lead ${id} (${audience}) files=${declared.length} onedrive=${filesOk}`);
     res.status(201).json({
