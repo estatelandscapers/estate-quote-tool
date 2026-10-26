@@ -3167,6 +3167,7 @@ async function settingsTab(v) {
       <div class="field"><label>Estimator page URL</label><input id="set_est_url" value="${esc(s.est_url || '')}"></div>
       <div class="field"><label>This tool's public URL (for sample-quote links in emails)</label><input id="set_tool_url" value="${esc(s.tool_url || '')}" placeholder="https://quotes.estatelandscapers.com.au"></div>
     </div>
+    <div id="estSampleStatus" class="muted" style="font-size:11px;margin:0 0 10px;">Checking the sample-quote link…</div>
     <div class="field"><label>Intro email subject</label><input id="set_est_intro_subject" value="${esc(s.est_intro_subject || '')}"><span class="muted" style="font-size:10px;">{{first}} is the client's first name.</span></div>
     <div class="grid4">${[['est_code_days', 'Code valid (days)'], ['est_lockout_tries', 'Wrong attempts before lockout'], ['est_lockout_min', 'Lockout (minutes)'], ['est_slots_per_half', 'Friday bookings per AM / PM']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <div class="alab" style="margin-top:6px;">Signal rules</div>
@@ -3214,6 +3215,11 @@ async function settingsTab(v) {
     <button class="btn btn-blue" id="saveContract">Save contract text</button></div>`;
   const save = (keys, msg) => async () => { const body = {}; keys.forEach(k => body[k] = $('#set_' + k).value); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast(msg); };
   $('#saveEmailSet').addEventListener('click', save(['email_signature', 'quote_email_subject', 'quote_email_body'], 'Email settings saved'));
+  api('/settings/estimator-status').then(st => {
+    const el = $('#estSampleStatus'); if (!el) return;
+    el.innerHTML = st.ok ? `Sample-quote link in emails: <span class="tag tag-accepted">OK</span> quote ${esc(st.sampleNumber)} · <a href="${esc(st.link)}" target="_blank" style="color:var(--blue);font-weight:700;">${esc(st.link)}</a>`
+      : `Sample-quote link in emails: <span class="tag tag-superseded">MISSING</span> ${esc(st.why || '')}`;
+  }).catch(() => {});
   $('#set_est_enabled_cb').addEventListener('change', async function () {
     const on = this.checked; $('#set_est_enabled').value = on ? '1' : '0';
     await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ est_enabled: on ? '1' : '0' }) });

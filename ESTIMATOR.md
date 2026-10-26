@@ -17,7 +17,12 @@ same lead the rep would otherwise fill in by hand.
 4. **The ballpark** comes from `callScript.ballpark()`, the same function the rep uses, worded
    in the second person. The same words are emailed to the client and logged on the lead.
    Under-800 mm access gets the script's decline wording and the visit is still offered.
-5. **One tap reaction** (works / higher / lower / cheaper / not sure / out of budget), optional.
+5. **One tap reaction**, required, with the ballpark still on screen. "Yes, that works" and
+   "Lower than I expected" go on to the Friday booking. Every other answer ends the run: the
+   client is thanked, told we are not the right fit at the moment, and offered advice by email;
+   the lead is closed as **Not proceeding, client declined** with the reaction as the reason
+   (step it back on the card to reopen). The ballpark email goes out after this step so its
+   closing matches.
 6. **Friday booking**, AM or PM, a real `site_visits` row. Capacity per half day is in Settings.
    The client is told we have a high number of enquiries and will confirm the day before with
    an ETA. The rep gets a push notification.

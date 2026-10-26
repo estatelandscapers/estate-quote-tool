@@ -155,10 +155,12 @@ router.post('/complete', withLead, (req, res) => {
   EST.logEvent(req.lead.id, req.vk, 'ballpark', { version: r.version });
   const bp = r.ballpark, a = r.answers.current || {};
   const text = EST.clientText(bp, a);
+  // The email goes out after the reaction (or straight away when there is no reaction to
+  // ask for), so its closing matches what the client was shown.
   const fresh = db.prepare('SELECT * FROM leads WHERE id=?').get(req.lead.id);
   const ver = r.answers.versions[r.version - 1];
-  if (ver && !ver.emailed) EST.sendBallparkEmail(fresh, bp, a, r.version).catch(e => console.log('[estimator] ballpark email:', e.message));
-  res.json({ ok: true, version: r.version, decline: !!bp.decline, tooUnknown: !!bp.tooUnknown,
+  if (ver && !ver.emailed && (bp.decline || bp.tooUnknown)) EST.sendBallparkEmail(fresh, bp, a, r.version).catch(e => console.log('[estimator] ballpark email:', e.message));
+  res.json({ ok: true, version: r.version, decline: !!bp.decline, tooUnknown: !!bp.tooUnknown, askReaction: !(bp.decline || bp.tooUnknown),
     lo: bp.incLo || null, hi: bp.incHi || null, headline: text.headline, body: text.body,
     included: (bp.inc || []).filter(i => !/Establishment/.test(i.name)).map(i => ({ name: i.name, qty: i.qty })),
     allowed: (bp.sur || []).map(s => s.name.replace(/ — /g, ', ')),
@@ -171,15 +173,21 @@ router.post('/reaction', withLead, (req, res) => {
   EST.saveAnswers(req.lead, { priceReaction: v });
   try { let ca = JSON.parse(req.lead.call_answers || '{}') || {}; ca.priceReaction = v; db.prepare('UPDATE leads SET call_answers=? WHERE id=?').run(JSON.stringify(ca), req.lead.id); } catch (e) {}
   EST.logEvent(req.lead.id, req.vk, 'reaction', { v });
+  const fresh = db.prepare('SELECT * FROM leads WHERE id=?').get(req.lead.id);
+  const r = EST.applyReaction(fresh, v);
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(newId(), req.lead.id, 'note', 'estimatedone', null, null, 'client', 'logged', 'Reaction to the online ballpark: ' + v);
-  res.json({ ok: true });
+    .run(newId(), req.lead.id, 'note', r.fit ? 'estimatedone' : 'disqualified', null, null, 'client', 'logged', 'Reaction to the online ballpark: ' + r.label + (r.fit ? '' : ' · closed as not a fit'));
+  // One ballpark email per completed version, worded for the fork they took.
+  const a = EST.answersOf(fresh); const ver = a.versions[a.versions.length - 1];
+  if (ver && !ver.emailed) EST.sendBallparkEmail(db.prepare('SELECT * FROM leads WHERE id=?').get(fresh.id), require('../utils/callScript').ballpark(a.current || {}), a.current || {}, a.versions.length).catch(() => {});
+  res.json({ ok: true, fit: r.fit, text: r.fit ? null : r.NOT_FIT_TEXT, help: r.fit ? null : r.NOT_FIT_HELP });
 });
 
 // ---- 5. Friday booking --------------------------------------------------------------------------
 router.get('/slots', withLead, (req, res) => res.json({ slots: EST.fridaySlots() }));
 router.post('/book', withLead, async (req, res) => {
   const b = req.body || {};
+  if (!EST.isFit(EST.answersOf(req.lead).current.priceReaction, require('../utils/callScript').ballpark(EST.answersOf(req.lead).current || {}))) return res.status(409).json({ error: 'Booking is not available for this estimate.' });
   const r = EST.book(req.lead, clean(b.date, 10), clean(b.half, 2));
   if (!r.ok) return res.status(409).json({ error: r.error });
   EST.logEvent(req.lead.id, req.vk, 'booked', { date: r.date, half: r.half });

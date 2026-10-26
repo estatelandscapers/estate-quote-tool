@@ -78,8 +78,8 @@ const SAY = {
   area:     { title: 'Which part of the block?', hint: '' },
   sizes:    { title: 'Roughly how much of each?', hint: 'Rough is fine. If you do not know, tap "Not sure" and we will measure it on the visit.' },
   access:   { title: 'How wide is the side access at its narrowest point?', hint: 'Usually the gate. If you are not sure, is it wider or narrower than a wheelie bin? A bin is about 600 mm wide.' },
-  steps:    { title: 'How many steps between the back door and the lawn?', hint: 'Count any steps along the side access too.' },
-  fall:     { title: 'Stand at the back door and look at the back fence. Where is the ground there?', hint: 'Compared with where you are standing.' },
+  steps:    { title: 'How many steps will we have to work across to reach the furthest work area?', hint: 'Count the steps on the side access or the main access, from where a vehicle can park to the far end of the job. Zero if it is all on the flat.' },
+  fall:     { title: 'Stand on the front boundary. How much higher or lower is the back boundary?', hint: 'Your best guess is fine. One step is about 0.15 m; a standard fence is about 1.8 m.' },
   vehicle:  { title: 'Can a ute and trailer get to where the work is?', hint: '' },
   services: { title: 'Anything underground or in the way we should know about?', hint: 'Tap all that apply.' },
   timing:   { title: 'When are you hoping to start?', hint: '' },
@@ -99,9 +99,11 @@ const ONLINE_SKIP = ['open', 'ballpark', 'book', 'source'];
 const OPTIONAL = ['quotes', 'decision'];
 // Body-scale answers map to a fall in mm the calculator understands. The script's slider
 // is 0 to 2500 in 100 mm steps; these are the same marks the rep uses on the phone.
+// Metres, as asked on the front boundary; stored in mm like the rep's slider. 0.8 m and
+// above is the script's steep-slope surcharge, 1.2 m and above its engineering line.
 const FALL_SCALE = [
-  { v: 0, label: 'Level' }, { v: 500, label: 'Knee' }, { v: 900, label: 'Waist' },
-  { v: 1300, label: 'Chest' }, { v: 1900, label: 'Over my head' },
+  { v: 0, label: 'Level (0 m)' }, { v: 300, label: '0.3 m' }, { v: 600, label: '0.6 m' }, { v: 900, label: '0.9 m' },
+  { v: 1200, label: '1.2 m' }, { v: 1500, label: '1.5 m' }, { v: 2000, label: '2 m' }, { v: 2500, label: '2.5 m or more' },
 ];
 function onlineSteps() {
   return CS.STEPS.filter(s => !ONLINE_SKIP.includes(s.id)).map(s => {
@@ -180,10 +182,28 @@ async function invite(leadId, { reason = 'new', by = '' } = {}) {
 }
 
 // ---- the intro email -----------------------------------------------------------------------
+// The sample quote link: needs a quote marked "sample" with its link on, and the tool's
+// public address in Settings (tool_url). A pasted address missing https:// or carrying a
+// trailing /admin is repaired rather than producing a dead link.
+function toolBase() {
+  let b = String(settingGet('tool_url') || process.env.PUBLIC_URL || '').trim();
+  if (!b) return '';
+  if (!/^https?:\/\//i.test(b)) b = 'https://' + b;
+  b = b.replace(/\/(admin|q)(\/.*)?$/i, '').replace(/\/+$/, '');
+  return b;
+}
+function sampleQuote() {
+  return db.prepare("SELECT token, quote_number FROM quotes WHERE COALESCE(is_sample,0)=1 AND COALESCE(link_off,0)=0 ORDER BY created_at DESC LIMIT 1").get() || null;
+}
 function sampleQuoteLink() {
-  const s = db.prepare("SELECT token FROM quotes WHERE COALESCE(is_sample,0)=1 AND COALESCE(link_off,0)=0 ORDER BY created_at DESC LIMIT 1").get();
-  const base = settingGet('tool_url') || process.env.PUBLIC_URL || '';
-  return s && base ? `${base.replace(/\/$/, '')}/q/${s.token}` : (s ? `/q/${s.token}` : '');
+  const s = sampleQuote(), base = toolBase();
+  return s && base ? `${base}/q/${s.token}` : '';
+}
+// For the Settings page: says plainly why the sample link would be missing.
+function sampleStatus() {
+  const s = sampleQuote(), base = toolBase();
+  return { ok: !!(s && base), sampleNumber: s ? s.quote_number : null, base, link: sampleQuoteLink(),
+    why: !s ? 'No quote is marked as the sample (open a quote → Make sample copy), or its link is switched off.' : !base ? 'Set "This tool\'s public URL" below.' : '' };
 }
 function estimatorLink(l) {
   const u = new URL(settingGet('est_url') || DEFAULTS.est_url);
@@ -343,7 +363,29 @@ function clientText(bp, a) {
     body: `That is including GST, at Basic finishes on the low side and Premium on the high side.${excl}\n\nIt is a ballpark from your answers, subject to the site visit, final measurements and which finishes you choose. Does that sound about right for you?` };
 }
 
-// The ballpark email: the same words, sent once per completed version, logged on the lead.
+// The fork after the ballpark. "Yes, that works" and "lower than I expected" go on to book a
+// Friday. Everything else is not a fit for now: the lead is closed as declined (the rep can
+// step it back), the client is thanked and offered advice by email. A decline on access or a
+// run with too little to price skips the reaction and goes straight to booking.
+const FIT_REACTIONS = ['works', 'low'];
+function isFit(reaction, bp) {
+  if (bp && (bp.decline || bp.tooUnknown)) return true;
+  return !reaction || FIT_REACTIONS.includes(reaction);
+}
+const NOT_FIT_TEXT = 'Thank you for reaching out and taking the time to fill in the estimator. From what you have told us, we are not the right fit for your project at the moment.';
+const NOT_FIT_HELP = 'We can still help if you need expert advice on your project: just drop us an email and we will take it from there.';
+function applyReaction(l, v) {
+  const a = answersOf(l); const bp = CS.ballpark(a.current || {});
+  const fit = isFit(v, bp);
+  const REACT_LABEL = { works: 'that works', high: 'higher than expected', low: 'lower than expected', cheaper: 'wants it cheaper', nocommit: 'not sure yet', 'definite-no': 'out of budget' };
+  if (!fit && !['Won'].includes(l.status)) {
+    db.prepare("UPDATE leads SET stage='disqualified', status='Lost', next_followup=NULL, declined_reason=?, updated_at=datetime('now') WHERE id=?")
+      .run('Online estimate: reaction "' + (REACT_LABEL[v] || v) + '" to the ballpark', l.id);
+  }
+  return { fit, label: REACT_LABEL[v] || v, NOT_FIT_TEXT, NOT_FIT_HELP };
+}
+
+// The ballpark email: the same words, sent once per reaction, logged on the lead.
 async function sendBallparkEmail(l, bp, a, version) {
   if (!canInvite(l)) return { ok: false };
   const f = first(l), t = clientText(bp, a), sample = sampleQuoteLink(), link = estimatorLink(l);
@@ -354,6 +396,13 @@ async function sendBallparkEmail(l, bp, a, version) {
   const range = (!bp.decline && !bp.tooUnknown)
     ? `<div style="background:#0B1220;color:#fff;border-radius:12px;padding:18px 20px;margin:0 0 16px;"><div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#9fb3e8;font-weight:800;">Your ballpark</div>
        <div style="font-size:28px;font-weight:800;margin:4px 0 2px;">$${bp.incLo.toLocaleString()} <span style="color:#7FA3FF;">to</span> $${bp.incHi.toLocaleString()}</div><div style="font-size:12px;color:#c9d3ee;">Including GST. Basic finishes to Premium finishes.</div></div>` : '';
+  const fit = isFit(a.priceReaction, bp);
+  const next = fit
+    ? `<p style="margin:0 0 14px;"><b>What happens next.</b> A site visit on a Friday, then an itemised quote within 48 hours of it. ${sample ? `<a href="${esc(sample)}" style="color:#1E5BFF;font-weight:700;">Here is a sample quote</a> from another job so you know what to expect.` : ''}</p>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 18px;"><tr><td style="border-radius:999px;background:#1E5BFF;">
+      <a href="${esc(link)}" style="display:inline-block;padding:13px 26px;color:#fff;text-decoration:none;font-weight:800;font-size:12px;letter-spacing:1px;text-transform:uppercase;">Back to your estimate</a></td></tr></table>`
+    : `<p style="margin:0 0 14px;">${esc(NOT_FIT_TEXT)}</p>
+    <p style="margin:0 0 14px;">${esc(NOT_FIT_HELP)} <a href="mailto:enquiry@estatelandscapers.com.au" style="color:#1E5BFF;font-weight:700;">enquiry@estatelandscapers.com.au</a></p>`;
   const html = shell(`
     <p style="margin:0 0 14px;">Hi ${esc(f)},</p>
     <p style="margin:0 0 14px;">Thanks for completing your online estimate. Here is a copy of what you saw, so you have it in writing.</p>
@@ -361,13 +410,11 @@ async function sendBallparkEmail(l, bp, a, version) {
     <p style="margin:0 0 14px;font-weight:700;">${esc(t.headline)}</p>
     ${t.body.split('\n\n').map(p => `<p style="margin:0 0 12px;">${esc(p)}</p>`).join('')}
     ${incRows || excRows ? `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;font-size:13px;margin:6px 0 16px;">${incRows}${surRows}${excRows}</table>` : ''}
-    <p style="margin:0 0 14px;"><b>What happens next.</b> A site visit on a Friday, then an itemised quote within 48 hours of it. ${sample ? `<a href="${esc(sample)}" style="color:#1E5BFF;font-weight:700;">Here is a sample quote</a> from another job so you know what to expect.` : ''}</p>
-    <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 18px;"><tr><td style="border-radius:999px;background:#1E5BFF;">
-      <a href="${esc(link)}" style="display:inline-block;padding:13px 26px;color:#fff;text-decoration:none;font-weight:800;font-size:12px;letter-spacing:1px;text-transform:uppercase;">Back to your estimate</a></td></tr></table>
-    <p style="margin:0;font-size:13px;color:#5A6068;">Your code ${esc(l.est_code)} keeps working until ${esc(String(l.est_code_expires).slice(0, 10))}, so you can change answers or book a Friday any time. Questions? Call ${esc(phone)}.</p>
+    ${next}
+    <p style="margin:0;font-size:13px;color:#5A6068;">${fit ? `Your code ${esc(l.est_code)} keeps working until ${esc(String(l.est_code_expires).slice(0, 10))}, so you can change answers or book a Friday any time. ` : ''}Questions? Call ${esc(phone)}.</p>
     <p style="margin:18px 0 0;">Estate Landscapers<br><span style="color:#888;font-size:12px;">Licensed Landscapers · LIC 487076C</span></p>`);
   const subject = bp.decline ? 'Your landscaping estimate: a note about access' : bp.tooUnknown ? 'Your landscaping estimate: next step is the site visit' : `Your landscaping ballpark: $${bp.incLo.toLocaleString()} to $${bp.incHi.toLocaleString()}`;
-  const text = `${t.headline}\n\n${t.body}` + (bp.inc && bp.inc.length ? '\n\nIncluded: ' + bp.inc.filter(i => !/Establishment/.test(i.name)).map(i => `${i.name} (${i.qty})`).join('; ') : '') + (bp.exc.length ? '\nTo check on site: ' + bp.exc.join('; ') : '') + (sample ? `\n\nSample quote: ${sample}` : '');
+  const text = `${t.headline}\n\n${t.body}` + (bp.inc && bp.inc.length ? '\n\nIncluded: ' + bp.inc.filter(i => !/Establishment/.test(i.name)).map(i => `${i.name} (${i.qty})`).join('; ') : '') + (bp.exc.length ? '\nTo check on site: ' + bp.exc.join('; ') : '') + (fit ? (sample ? `\n\nSample quote: ${sample}` : '') : `\n\n${NOT_FIT_TEXT} ${NOT_FIT_HELP}`);
   let outcome = 'sent', err = null;
   try { const r = await sendMail({ to: l.email, subject, html }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } } catch (e) { outcome = 'failed'; err = e.message; }
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
@@ -550,6 +597,6 @@ function quick(l) {
   return { signal: sig.signal, why: sig.why, opens: sessions.length, lastSession: sessions.length ? sessions[0].started_at : null, status: l.est_status || null };
 }
 
-module.exports = { enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
+module.exports = { isFit, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
   invite, canInvite, introEmail, verify, byToken, answersOf, prefillFrom, saveAnswers, complete, clientText, sendBallparkEmail,
   fridaySlots, book, sendBookingEmail, logEvent, sessionsFor, signalFor, summary, quick, estimatorLink, sampleQuoteLink };

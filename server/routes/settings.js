@@ -32,6 +32,10 @@ router.put('/', (req, res) => {
   KEYS.forEach(k => { if (req.body[k] !== undefined) settingSet(k, req.body[k]); });
   res.json({ ok: true });
 });
+// Why the sample-quote link in estimator emails would be missing, for the Settings page.
+router.get('/estimator-status', (req, res) => {
+  try { res.json(require('../utils/estimator').sampleStatus()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
 router.post('/management/check', (req, res) => {
   res.json({ ok: hashPin(req.body.pin) === settingGet('management_pin_hash') });
 });
