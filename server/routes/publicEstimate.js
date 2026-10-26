@@ -23,7 +23,10 @@ router.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', o);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Est-Token');
+    // Echo whatever headers the browser asks about (Content-Type, X-Est-Token, X-Est-Visitor),
+    // so a header added later never breaks the preflight again.
+    res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type, X-Est-Token, X-Est-Visitor');
+    res.setHeader('Access-Control-Max-Age', '600');
   }
   if (req.method === 'OPTIONS') return res.status(204).end();
   next();
