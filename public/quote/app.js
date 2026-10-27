@@ -219,7 +219,7 @@
         : `<div class="cta-wrap"><button class="btn btn-blue" id="acceptBtn">Accept <span id="acceptTier">${tier}</span> package &amp; review contract &rarr;</button>
         <div class="cta-sub">You'll review the full contract, warranty and your protections before signing.</div></div>`}
       <footer>${esc(c.tagline || 'Integrity. Precision. Value.')}</footer>
-      <div class="wm" aria-hidden="true">${Array.from({ length: 24 }).map(() => `<span>Prepared for ${esc(D.client || 'our client')} &middot; Quote ${esc(D.quoteNumber || '')} &middot; not for distribution</span>`).join('')}</div>
+      <div class="wm" aria-hidden="true">${Array.from({ length: 24 }).map(() => `<span>Prepared by Estate Landscapers &middot; Quote ${esc(D.quoteNumber || '')} &middot; Not for distribution</span>`).join('')}</div>
       <div class="view-only">This proposal is personal to you. Your use of this link is recorded to help us serve you better.</div>
     </div>`;
 
