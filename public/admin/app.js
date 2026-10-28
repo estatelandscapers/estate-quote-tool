@@ -1366,9 +1366,40 @@ async function leadConsole(v) {
     toast('Snoozed until ' + r.until); leadConsole(v);
   });
   $('#ld_close').addEventListener('click', async () => {
-    if (!confirm('Close this enquiry out? It stays on record and can be reopened.')) return;
-    await api(`/leads/${l.id}/stage`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: 'closeout' }) });
-    toast('Enquiry closed'); state.leadId = null; leadsTab(v);
+    const co = await api(`/leads/${l.id}/closeout`);
+    if (co.error) return toast(co.error);
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    const pick = co.suggested || (co.canEmail ? 'fit' : 'nocontact');
+    const bpLine = co.ballpark ? `Ballpark on record: <b>$${co.ballpark.lo.toLocaleString()} – $${co.ballpark.hi.toLocaleString()}</b>${co.suggested ? ` → suggested <b>${esc((co.reasons.find(r => r.id === co.suggested) || {}).label || '')}</b> (under $${co.thresholds.small.toLocaleString()} / over $${co.thresholds.large.toLocaleString()}, set in Settings)` : ''}.` : 'No ballpark on record.';
+    bg.innerHTML = `<div class="modal" style="max-width:640px;">
+      <h2 style="margin:0 0 3px;">Close this enquiry</h2>
+      <div class="sub">${bpLine} It stays on record and can be stepped back.</div><div class="rule"></div>
+      <div class="field"><label>Reason</label><div class="chips" id="co_reasons">${co.reasons.map(r => `<span class="chip ${r.id === pick ? 'on' : ''}" data-r="${r.id}">${esc(r.label)}</span>`).join('')}</div></div>
+      <div class="field" id="co_noteWrap" style="display:none;"><label>Note (goes on the record, not to the client)</label><input id="co_note" placeholder="e.g. wants a pool first"></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;margin:6px 0 8px;cursor:pointer;"><input type="checkbox" id="co_send" ${co.canEmail ? 'checked' : 'disabled'} style="width:auto;"> Send a close-out email${co.canEmail ? ` to ${esc(co.email)}` : ' (no email on this lead)'}</label>
+      <div id="co_mail">
+        <div class="field"><label>Subject</label><input id="co_subject"></div>
+        <div class="field"><label>Message (edit freely; your signature is added underneath)</label><textarea id="co_body" rows="12"></textarea></div>
+      </div>
+      <div id="co_err" style="color:var(--red);font-size:12px;"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button class="btn btn-ghost" id="co_cancel">Cancel</button>
+        <button class="btn btn-danger" id="co_go">Close enquiry</button></div></div>`;
+    document.body.appendChild(bg);
+    let reason = pick;
+    const fill = () => { const t = co.templates[reason] || co.templates.other; bg.querySelector('#co_subject').value = t.subject; bg.querySelector('#co_body').value = t.body; bg.querySelector('#co_noteWrap').style.display = reason === 'other' ? '' : 'none'; };
+    fill();
+    bg.querySelectorAll('#co_reasons .chip').forEach(c => c.addEventListener('click', () => { bg.querySelectorAll('#co_reasons .chip').forEach(x => x.classList.remove('on')); c.classList.add('on'); reason = c.dataset.r; fill(); }));
+    const sendCb = bg.querySelector('#co_send'); const mailBox = bg.querySelector('#co_mail');
+    const syncMail = () => { mailBox.style.display = sendCb.checked ? '' : 'none'; }; sendCb.addEventListener('change', syncMail); syncMail();
+    bg.querySelector('#co_cancel').addEventListener('click', () => bg.remove());
+    bg.querySelector('#co_go').addEventListener('click', async () => {
+      const go = bg.querySelector('#co_go'); go.disabled = true; go.textContent = sendCb.checked ? 'Sending…' : 'Closing…';
+      const r = await api(`/leads/${l.id}/close`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason, note: bg.querySelector('#co_note').value, sendEmail: sendCb.checked, subject: bg.querySelector('#co_subject').value, body: bg.querySelector('#co_body').value }) });
+      if (r.error) { go.disabled = false; go.textContent = 'Close enquiry'; bg.querySelector('#co_err').textContent = r.error + (r.hint ? ' ' + r.hint : ''); return; }
+      bg.remove(); toast(r.emailed ? 'Enquiry closed, email sent to ' + r.emailed : 'Enquiry closed'); state.leadId = null; leadsTab(v);
+    });
   });
   const sb = $('#ld_stepback'); if (sb) sb.addEventListener('click', async () => {
     const r = await api(`/leads/${l.id}/stepback`, { method: 'POST' });
@@ -3174,6 +3205,9 @@ async function settingsTab(v) {
     <div class="grid4">${[['est_hot_sessions', 'Hot: sessions in window'], ['est_hot_window_h', 'Hot window (hours)'], ['est_hot_toggles', 'Hot: tier comparisons after ballpark'], ['est_warm_answer_pct', 'Warm: % of questions answered'], ['est_warm_active_sec', 'Warm: seconds in a session'], ['est_hot_fade_days', 'Hot fades after (days)'], ['est_warm_fade_days', 'Warm fades after (days)']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <div class="muted" style="font-size:11px;margin:6px 0 10px;">Hot = booked a Friday, <i>or</i> reached the ballpark and compared tiers, <i>or</i> the session count inside the window. Warm = reached the ballpark without booking, or answered the percentage with the seconds in one session. "Out of budget" is always cold.</div>
     <button class="btn btn-blue" id="saveEst">Save estimator settings</button></div>
+  <div class="card"><h2>Closing out enquiries</h2><div class="sub">When you close an enquiry, the reason is suggested from its online ballpark: "too small" under the first figure, "too large" over the second. The close-out email is editable before it sends.</div><div class="rule"></div>
+    <div class="grid2">${[['close_small_under', 'Too small: ballpark high end under $'], ['close_large_over', 'Too large: ballpark low end over $']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <button class="btn btn-blue" id="saveClose">Save</button></div>
   <div class="card"><h2>Quote ageing (days)</h2><div class="rule"></div>
     <div class="grid3">${[['age_flag', 'Follow up from'], ['age_chase', 'Chase from'], ['age_dead', 'Dead from']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveAge">Save ageing</button></div>
@@ -3227,6 +3261,7 @@ async function settingsTab(v) {
     toast(on ? 'Auto lead processing ON: new leads get a code, estimator live' : 'Auto lead processing OFF: no automatic emails, estimator paused');
   });
   $('#saveEst').addEventListener('click', save(['est_enabled', 'est_url', 'tool_url', 'est_intro_subject', 'est_code_days', 'est_lockout_tries', 'est_lockout_min', 'est_slots_per_half', 'est_hot_sessions', 'est_hot_window_h', 'est_hot_toggles', 'est_warm_answer_pct', 'est_warm_active_sec', 'est_hot_fade_days', 'est_warm_fade_days'], 'Estimator settings saved'));
+  $('#saveClose').addEventListener('click', save(['close_small_under', 'close_large_over'], 'Saved'));
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
   $('#saveSig').addEventListener('click', save(['sig_hot_opens', 'sig_hot_window_h', 'sig_hot_active_min', 'sig_hot_toggles', 'sig_warm_days', 'sig_warm_active_sec', 'sig_warm_opens', 'sig_hot_fade_days', 'sig_warm_fade_days', 'events_rollup_days'], 'Signal rules saved'));

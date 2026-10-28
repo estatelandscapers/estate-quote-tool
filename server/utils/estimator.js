@@ -34,6 +34,8 @@ const lower = s => String(s || '').trim().toLowerCase();
 
 // ---- settings (all editable in Settings → Online estimator) ----------------------------
 const DEFAULTS = {
+  close_small_under: '10000',     // closing out: suggest 'too small' under this ballpark
+  close_large_over: '300000',     // and 'too large' over this
   est_enabled: '1',               // master switch: 0 = no automatic emails, estimator paused
   est_url: 'https://www.estatelandscapers.com.au/estimate/',
   est_code_days: '7',            // the code works for this long; the rep can reissue

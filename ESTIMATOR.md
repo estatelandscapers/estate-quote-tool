@@ -98,3 +98,15 @@ POST /api/public/estimate/files/complete {uploaded:[names]}
 ```
 5 wrong code attempts per IP = 15 minute lockout. Codes expire after `est_code_days` and stop
 working once the lead is Won or Lost.
+
+## Closing an enquiry out (v23)
+
+**Lead console → Close this enquiry** opens a dialog: pick a reason (too small, too large, not the
+right fit, client not proceeding, no contact, other), optionally send a close-out email, edit the
+subject and message before it goes. The reason is suggested from the online ballpark: "too small"
+when the high end is under `close_small_under` ($10,000), "too large" when the low end is over
+`close_large_over` ($300,000), both in Settings → Closing out enquiries. The lead becomes
+**Not proceeding** (or **Closed, no contact**) with the reason and ballpark on the record; the
+email is logged on the lead and sent with the usual signature. If the email cannot be sent, the
+enquiry is not closed, so nothing closes silently. Templates: `closeTemplates()` in
+`server/routes/leads.js`. Routes: `GET /:id/closeout`, `POST /:id/close`.

@@ -834,6 +834,84 @@ router.post('/:id/message', async (req, res) => {
   res.status(201).json({ ok: true, outcome });
 });
 
+// ---- closing an enquiry out, with an optional close-out email -------------------------
+// The reason is suggested from the online ballpark (too small under close_small_under, too
+// large over close_large_over, both in Settings); the rep can pick another. Every template
+// is editable before it goes. The email is sent through the same sender and signature as
+// every other lead email, and logged on the lead.
+const CLOSE_REASONS = [
+  { id: 'small',     label: 'Too small for us',           stage: 'lost' },
+  { id: 'large',     label: 'Too large for us right now', stage: 'lost' },
+  { id: 'fit',       label: 'Not the right fit',          stage: 'lost' },
+  { id: 'declined',  label: 'Client not proceeding',      stage: 'lost' },
+  { id: 'nocontact', label: 'No contact / no reply',      stage: 'closeout' },
+  { id: 'other',     label: 'Other',                      stage: 'lost' },
+];
+function closeTemplates(l, me) {
+  const first = String(l.name || 'there').trim().split(/\s+/)[0];
+  const suburb = String(l.suburb || l.address || '').split(',')[0].trim();
+  const proj = suburb ? `your ${suburb} project` : 'your landscaping project';
+  let viaEstimator = false; try { viaEstimator = !!(JSON.parse(l.call_answers || '{}') || {})._estimator; } catch (e) {}
+  const opener = `Hi ${first},\n\n${me} from Estate Landscapers here. Thank you for ${viaEstimator ? 'completing the online estimate for' : 'getting in touch about'} ${proj}, and for the detail you put into it.`;
+  const close = `Thanks again for your time, and all the best with the project.\n\nAll the best,`;
+  const subject = `Your landscaping enquiry${l.enquiry_ref ? ' ' + l.enquiry_ref : ''}, Estate Landscapers`;
+  const size = why => `${opener}\n\nHaving looked through everything, we don't think we're the right fit for this one. ${why} We'd rather say so now than have you waiting on a quote that wouldn't serve you well.\n\nIf it helps, we're glad to point you towards a landscaper better matched to the job, or answer a quick question if you're weighing up options. Just reply to this email.\n\n${close}`;
+  return {
+    small: { subject, body: size('It is a smaller project than our crews and setup are built around, and a job this size deserves a team that is geared to it.') },
+    large: { subject, body: size('It is a larger project than we can take on at the moment, and we would not want to commit to something we could not deliver to our usual standard.') },
+    fit: { subject, body: size('Our crews and setup are geared to a particular kind of project, and this one sits outside that.') },
+    declined: { subject, body: `${opener}\n\nThanks for letting us know you won't be going ahead for now. No problem at all, and we'll close the enquiry off at our end.\n\nIf plans change down the track, just reply to this email and we'll pick it straight back up.\n\n${close}` },
+    nocontact: { subject, body: `Hi ${first},\n\n${me} from Estate Landscapers here. We've tried to reach you a few times about ${proj} without any luck, so we'll close the enquiry off for now rather than keep calling.\n\nIf the timing is better later, just reply to this email or give us a call and we'll pick it straight back up.\n\n${close}` },
+    other: { subject, body: `${opener}\n\nHaving looked through everything, we don't think we're the right fit for this one, and we'd rather say so now than keep you waiting.\n\nIf it helps, we're glad to point you towards a landscaper better matched to the job. Just reply to this email.\n\n${close}` },
+  };
+}
+router.get('/:id/closeout', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const me = settingGet('company_contact_name') || (req.user && (req.user.name || req.user.username)) || 'Smit';
+  let a = {}; try { a = JSON.parse(l.call_answers || '{}') || {}; } catch (e) {}
+  const bp = CS.ballpark(a);
+  const small = +(settingGet('close_small_under') || 10000), large = +(settingGet('close_large_over') || 300000);
+  let suggested = null, ballpark = null;
+  if (!bp.decline && !bp.tooUnknown && bp.incHi) {
+    ballpark = { lo: bp.incLo, hi: bp.incHi };
+    if (bp.incHi < small) suggested = 'small'; else if (bp.incLo > large) suggested = 'large';
+  }
+  res.json({ reasons: CLOSE_REASONS, suggested, ballpark, thresholds: { small, large }, templates: closeTemplates(l, me), canEmail: !!l.email, email: l.email || '' });
+});
+router.post('/:id/close', async (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const r = CLOSE_REASONS.find(x => x.id === b.reason) || CLOSE_REASONS[5];
+  const who = req.user ? (req.user.name || req.user.username) : '';
+  let a = {}; try { a = JSON.parse(l.call_answers || '{}') || {}; } catch (e) {}
+  const bp = CS.ballpark(a);
+  const bpNote = (!bp.decline && !bp.tooUnknown && bp.incHi) ? ` (ballpark $${bp.incLo.toLocaleString()} to $${bp.incHi.toLocaleString()})` : '';
+  const reason = (r.label + (b.note ? ': ' + String(b.note).slice(0, 80) : '') + bpNote).slice(0, 160);
+  let emailed = null;
+  if (b.sendEmail) {
+    const { sendMail, validateEmail } = require('../utils/email');
+    const to = String(b.to || l.email || '').trim();
+    const bad = validateEmail(to);
+    if (bad) return res.status(400).json({ error: bad, field: 'to' });
+    const { shell, esc, signatureHtml } = require('../utils/quoteEmail');
+    const html = shell(String(b.body || '').split(/\n{2,}/).map(p => `<p style="margin:0 0 14px;">${esc(p).replace(/\n/g, '<br>')}</p>`).join('') + signatureHtml());
+    try {
+      const sent = await sendMail({ to, subject: b.subject || 'Your landscaping enquiry', html });
+      if (sent && sent.skipped) return res.status(502).json({ error: sent.reason });
+      emailed = to;
+    } catch (e) { return res.status(502).json({ error: e.message, hint: e.hint }); }
+    db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(newId(), l.id, 'email', r.stage, b.subject || null, b.body || null, who, 'sent', 'Close-out email: ' + r.label);
+  }
+  db.prepare("UPDATE leads SET stage=?, status='Lost', next_followup=NULL, declined_reason=?, stage_override=NULL, override_snapshot=NULL, parked=0, updated_at=datetime('now') WHERE id=?").run(r.stage, reason, l.id);
+  if (l.quote_id) { try { db.prepare("UPDATE quotes SET lost_at=COALESCE(lost_at, datetime('now')), lost_reason=COALESCE(lost_reason, ?), link_off=1, updated_at=datetime('now') WHERE id=? AND status<>'accepted'").run(reason, l.quote_id); } catch (e) {} }
+  db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
+    .run(newId(), l.id, 'note', r.stage, who, 'logged', 'Closed: ' + reason + (emailed ? ' · close-out email sent' : ''));
+  res.json({ ok: true, stage: r.stage, reason, emailed });
+});
+
 // The sample-quote message for this lead: link to the current sample plus wording the rep
 // can send from the enquiry with WhatsApp, Email or SMS exactly like any other message.
 router.get('/:id/sample-message', (req, res) => {
