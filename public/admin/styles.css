@@ -327,6 +327,8 @@ input[type=range]::-moz-range-thumb{width:30px;height:30px;border-radius:50%;bac
   table.qb td.center{flex:1 1 30%;order:4;text-align:center;}
   table.qb td.center .tcell{min-height:56px;padding:6px 4px;}
   table.qb td.right{flex:1 1 100%;order:5;display:flex;justify-content:flex-end;gap:6px;}
+  table.qb .grip{display:none;}            /* phones: ▲▼ do the moving */
+  table.qb .mv{margin-right:auto;}
 
   /* Type: 16px in every field, including the ones the builder styles inline —
      anything smaller makes iOS zoom the whole page when a field is tapped. */
@@ -464,3 +466,11 @@ div.kv .v{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums;}
 .wonbadge{display:inline-flex;gap:6px;align-items:center;background:#E6F4EA;color:#1F6B37;border-radius:7px;padding:5px 10px;font-weight:800;font-size:11px;letter-spacing:.4px;text-transform:uppercase;}
 .dropzone{border:2px dashed var(--line);border-radius:9px;padding:14px;text-align:center;color:var(--grey);font-size:12px;cursor:pointer;}
 .dropzone.has{border-style:solid;border-color:var(--green);color:var(--green);}
+
+/* Quote builder: move lines. A grip on the code cell for dragging, ▲▼ in the actions cell. */
+table.qb .grip{cursor:grab;color:var(--grey);font-size:12px;letter-spacing:-2px;margin-right:6px;user-select:none;vertical-align:middle;}
+table.qb tr.dragging{opacity:.45;}
+table.qb tr[draggable]{cursor:default;}
+table.qb .mv{display:inline-flex;gap:2px;margin-right:4px;}
+table.qb .mv .btn{padding:4px 7px;font-size:9px;line-height:1;}
+table.qb .vo-tot{align-self:center;white-space:nowrap;}

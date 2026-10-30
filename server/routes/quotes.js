@@ -8,7 +8,7 @@ const router = express.Router();
 const getPI = id => id ? db.prepare('SELECT * FROM price_items WHERE id=?').get(id) : null;
 
 function computeQuote(q) {
-  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order').all(q.id);
+  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order, rowid').all(q.id);
   const applied = JSON.parse(q.applied_surcharges || '[]');
   const out = { scope1: [], scope2: [] };
   const scope1TierTotals = { Basic: 0, Standard: 0, Premium: 0 };
@@ -107,6 +107,51 @@ function hasSiblings(quoteId, it) {
   return db.prepare('SELECT COUNT(*) n FROM quote_items WHERE quote_id=? AND price_item_id=?')
     .get(quoteId, it.price_item_id).n > 1;
 }
+// ---- line order ----------------------------------------------------------------------
+// Every reader of a quote's lines (builder, client page, PDF, costing, PO) sorts by
+// scope, sort_order, rowid. Lines are placed in Pricing-list order as they are added
+// (same deliverable's instances together: GT-1, GT-2; custom lines after, C1, C2, C3)
+// and the user can then move any line — a manual move sticks until "Tidy order".
+//
+// Sort key: catalogue lines by their Pricing-list position then instance number;
+// custom lines after every catalogue line, by the number in their code.
+function lineKey(it) {
+  if (it.price_item_id) {
+    const pi = getPI(it.price_item_id);
+    return [0, pi ? (pi.sort_order || 0) : 0, it.instance_no || 1];
+  }
+  const n = parseInt(String(it.custom_code || '').replace(/^C/i, ''), 10);
+  return [1, isNaN(n) ? 1e9 : n, 0];
+}
+const keyCmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+function orderedLines(quoteId, scope) {
+  return db.prepare('SELECT * FROM quote_items WHERE quote_id=? AND scope=? ORDER BY sort_order, rowid').all(quoteId, scope);
+}
+function writeOrder(ids) {
+  const up = db.prepare('UPDATE quote_items SET sort_order=? WHERE id=?');
+  ids.forEach((id, i) => up.run(i + 1, id));
+}
+// Slot a just-added line where it belongs: after the last existing line that sorts at or
+// before it. Respects whatever manual order the rest of the quote already has.
+function placeNewLine(quoteId, itemId) {
+  const it = db.prepare('SELECT * FROM quote_items WHERE id=?').get(itemId);
+  if (!it) return;
+  const rest = orderedLines(quoteId, it.scope).filter(x => x.id !== itemId);
+  const k = lineKey(it);
+  let at = -1;
+  rest.forEach((x, i) => { if (keyCmp(lineKey(x), k) <= 0) at = i; });
+  rest.splice(at + 1, 0, it);
+  writeOrder(rest.map(x => x.id));
+}
+// Rebuild both scopes in Pricing-list order from scratch.
+function tidyOrder(quoteId) {
+  [1, 2].forEach(scope => {
+    const rows = orderedLines(quoteId, scope).map((x, i) => ({ x, i, k: lineKey(x) }));
+    rows.sort((a, b) => keyCmp(a.k, b.k) || a.i - b.i);
+    writeOrder(rows.map(r => r.x.id));
+  });
+}
+
 // Renumber a deliverable's instances 1..n in their current order. Only ever called for a
 // DRAFT quote — once the quote is sent the numbers are frozen, because the client's drawings
 // refer to them by name ("RW-2, side of garage") and a shifting label would be a real-world
@@ -775,6 +820,7 @@ router.post('/:id/items', (req, res) => {
       .run(max + 1, b.locationNote || '', id);
     if (!sent) renumberSiblings(req.params.id, b.priceItemId);
   }
+  placeNewLine(req.params.id, id);
   res.status(201).json({ id, code: db.prepare('SELECT custom_code c FROM quote_items WHERE id=?').get(id).c });
 });
 router.put('/:id/items/:itemId', (req, res) => {
@@ -817,6 +863,24 @@ router.put('/:id/items/:itemId', (req, res) => {
     db.prepare('UPDATE quote_items SET custom_tiered=? WHERE id=?').run(b.customTiered ? 1 : 0, req.params.itemId);
   res.json({ ok: true });
 });
+// Move lines. Body: { scope, ids } — the full order of that scope's lines, top to bottom.
+// The builder sends it for ▲/▼ and for drag-and-drop alike.
+router.put('/:id/items-order', (req, res) => {
+  const b = req.body || {};
+  const scope = Number(b.scope) === 2 ? 2 : 1;
+  const have = orderedLines(req.params.id, scope).map(x => x.id);
+  const ids = Array.isArray(b.ids) ? b.ids.filter(id => have.includes(id)) : [];
+  if (ids.length !== have.length) return res.status(400).json({ error: 'ids must list every line of that scope exactly once' });
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
+  writeOrder(ids);
+  res.json({ ok: true });
+});
+// Put everything back in Pricing-list order (instances together, custom lines last).
+router.post('/:id/items/tidy', (req, res) => {
+  try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
+  tidyOrder(req.params.id);
+  res.json({ ok: true });
+});
 router.delete('/:id/items/:itemId', (req, res) => {
   try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id); } catch (e) {}
   const gone = db.prepare('SELECT price_item_id FROM quote_items WHERE id=?').get(req.params.itemId);
@@ -839,6 +903,8 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   const q = db.prepare('SELECT id, status, sent_at FROM quotes WHERE id=?').get(req.params.id);
   const id = newId();
   const cols = Object.keys(src).filter(k => !['id', 'qty', 'instance_no', 'location_note', 'sort_order'].includes(k));
+  // Starts at the end, then placeNewLine() slots it next to its sibling (RW-1, RW-2 read
+  // together) instead of leaving the second wall stranded at the bottom of the quote.
   const sort = (db.prepare('SELECT MAX(sort_order) m FROM quote_items WHERE quote_id=?').get(req.params.id).m || 0) + 1;
   db.prepare(`INSERT INTO quote_items (id, qty, sort_order, ${cols.join(',')}) VALUES (?,?,?,${cols.map(() => '?').join(',')})`)
     .run(id, 0, sort, ...cols.map(c => src[c]));
@@ -848,6 +914,7 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
     db.prepare('UPDATE quote_items SET instance_no=?, location_note=? WHERE id=?').run(max + 1, '', id);
     if (!quoteIsSent(q)) renumberSiblings(req.params.id, src.price_item_id);
   }
+  placeNewLine(req.params.id, id);
   const row = db.prepare('SELECT instance_no FROM quote_items WHERE id=?').get(id);
   res.status(201).json({ id, instanceNo: row.instance_no });
 });

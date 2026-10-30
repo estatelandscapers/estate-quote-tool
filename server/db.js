@@ -464,6 +464,35 @@ try {
     console.log(`[db] ${n} unsigned quote(s) now inherit the default special clauses`);
   }
 } catch (e) { console.error('[db] clauses migration failed:', e.message); }
+// Site-specific sell/cost: one figure covers all three packages unless the line is marked
+// "different per package". The builder used to save only the quote's default package, so
+// a client upgrade silently fell back to the rate card (and to zero cost). Fill the gaps
+// from the package the figure was entered against. Lines marked per-package are left alone.
+try {
+  if (settingGet2('vo_all_tiers') !== '1') {
+    const rows = db.prepare(`SELECT qi.id, qi.price_item_id, qi.val_basic, qi.val_standard, qi.val_premium, qi.cost_basic, qi.cost_standard, qi.cost_premium,
+        COALESCE(q.default_package,'Standard') dp FROM quote_items qi JOIN quotes q ON q.id=qi.quote_id
+      WHERE qi.value_override=1 AND COALESCE(qi.custom_tiered,0)=0`).all();
+    const up = db.prepare('UPDATE quote_items SET val_basic=?, val_standard=?, val_premium=?, cost_basic=?, cost_standard=?, cost_premium=? WHERE id=?');
+    let n = 0;
+    rows.forEach(r => {
+      const k = String(r.dp).toLowerCase();
+      const v = r['val_' + k], c = r['cost_' + k];
+      // Custom lines carry one figure by definition; catalogue lines only get their blanks filled.
+      const custom = !r.price_item_id;
+      const V = {}, C = {};
+      ['basic', 'standard', 'premium'].forEach(t => {
+        V[t] = custom ? (v != null ? v : r['val_' + t]) : (r['val_' + t] != null ? r['val_' + t] : v);
+        C[t] = custom ? (c != null ? c : r['cost_' + t]) : (r['cost_' + t] != null ? r['cost_' + t] : c);
+      });
+      if (['basic', 'standard', 'premium'].some(t => V[t] !== r['val_' + t] || C[t] !== r['cost_' + t])) {
+        up.run(V.basic, V.standard, V.premium, C.basic, C.standard, C.premium, r.id); n++;
+      }
+    });
+    settingSet2('vo_all_tiers', '1');
+    console.log(`[db] ${n} site-specific line(s) now carry their figure on every package`);
+  }
+} catch (e) { console.error('[db] site-specific tiers migration failed:', e.message); }
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

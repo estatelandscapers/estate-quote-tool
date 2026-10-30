@@ -66,7 +66,7 @@ function clientView(q) {
   const validUntil = new Date(new Date(q.quote_date).getTime() + q.validity_days * 86400000);
   const expired = !q.is_sample && Date.now() > validUntil.getTime() && q.status !== 'accepted';
 
-  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order').all(q.id);
+  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY scope, sort_order, rowid').all(q.id);
   const applied = JSON.parse(q.applied_surcharges || '[]');
   const scope1 = [], scope2 = [];
   const tierTotals = { Basic: 0, Standard: 0, Premium: 0 };

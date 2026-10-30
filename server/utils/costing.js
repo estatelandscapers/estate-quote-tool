@@ -185,7 +185,7 @@ function recalcWasteUplift(itemId) {
 
 function costQuote(q, opts = {}) {
   const useSelections = !!opts.useSelections;
-  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? AND scope=1 ORDER BY sort_order').all(q.id);
+  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? AND scope=1 ORDER BY sort_order, rowid').all(q.id);
   const crew = Math.max(1, q.crew_size || 2);
   const hpd = Math.max(1, parseFloat(settingGet('hours_per_day') || '8'));
   const base = q.default_package || 'Standard';
@@ -219,10 +219,17 @@ function costQuote(q, opts = {}) {
       let c = costVariant({ qty: it.qty, wastageOverride: it.wastage_override, subDaysOverride: subDaysOv, vendorOverride }, recs[method], t);
       // A hand-entered cost wins over the recipe: used for site-priced lines (plant
       // schedules) and for promoted custom items that don't have a recipe yet.
+      //
+      // The figure is a PER-UNIT cost, exactly like the site-specific sell figure that
+      // lineTotal() multiplies by quantity — the two must scale together or the margin
+      // is fiction. Treating it as a flat total was the bug: a 49.5 m sandstone wall
+      // sold at $650/m but costed at $450 in total reported a 95% margin. Only a lump
+      // line (value_lump) carries its cost as a total, same as its sell.
+      const perUnit = it.value_lump ? 1 : (it.qty || 0);
       const manual = it['cost_' + t.toLowerCase()];
-      if (manual != null) c = { ...c, cost: manual, matCost: manual, plantCost: 0, labCost: 0, subCost: 0, ohCost: 0, delivery: 0, hrs: c.hrs, lines: c.lines };
+      if (manual != null) c = { ...c, cost: manual * perUnit, matCost: manual * perUnit, plantCost: 0, labCost: 0, subCost: 0, ohCost: 0, delivery: 0, hrs: c.hrs, lines: c.lines };
       else if (!Object.keys(recs).length && pi && pi['entered_cost_' + t.toLowerCase()] != null)
-        c = { ...c, cost: pi['entered_cost_' + t.toLowerCase()], matCost: pi['entered_cost_' + t.toLowerCase()] };
+        c = { ...c, cost: pi['entered_cost_' + t.toLowerCase()] * perUnit, matCost: pi['entered_cost_' + t.toLowerCase()] * perUnit };
       line.tiers[t] = { spec: r.spec, rate: r.rate, sell, cost: c.cost, hrs: c.hrs, subDays: c.subDays };
       tierTot[t].cost += c.cost; tierTot[t].sell += sell; tierTot[t].hrs += c.hrs;
       line.tiers[t].wastageSurcharge = Math.round(c.wastageSurcharge);

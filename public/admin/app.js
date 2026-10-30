@@ -706,16 +706,21 @@ async function customDialog(q, existing, done) {
       <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;"><input type="radio" name="cutier" value="tiered" ${tiered ? 'checked' : ''} style="width:auto;"> Different per package</label>
     </div>
     <table><thead><tr><th style="width:96px;">Package</th><th>Specification shown to client</th>
-      <th class="right" style="width:110px;">Unit rate $</th><th class="right" style="width:120px;">Sell total $</th>
-      <th class="right" style="width:120px;">Our cost (total) $</th><th class="right" style="width:74px;">Margin</th></tr></thead><tbody>
-      ${TIERS.map(t => `<tr data-trow="${t}"><td><b class="tname">${t}</b></td>
+      <th class="right" style="width:100px;">Sell / unit $</th><th class="right" style="width:110px;">Sell total $</th>
+      <th class="right" style="width:100px;">Cost / unit $</th><th class="right" style="width:110px;">Cost total $</th><th class="right" style="width:70px;">Margin</th></tr></thead><tbody>
+      ${TIERS.map(t => { const q0 = existing ? (parseFloat(existing.qty) || 0) : 1;
+        const v0 = existing && existing.value && existing.value[t] != null ? existing.value[t] : '';
+        const c0 = existing && existing.lineCost && existing.lineCost[t] != null ? existing.lineCost[t] : '';
+        const tot = x => x === '' ? '' : Math.round(x * q0 * 100) / 100;
+        return `<tr data-trow="${t}"><td><b class="tname">${t}</b></td>
         <td><input data-cs="${t}" value="${esc(existing && existing.customSpec ? (existing.customSpec[t] || '') : '')}"></td>
-        <td class="right"><input data-cr="${t}" type="number" step="0.01" style="text-align:right;" placeholder="per unit"></td>
-        <td class="right"><input data-cv="${t}" type="number" step="0.01" style="text-align:right;" value="${existing && existing.value && existing.value[t] != null ? existing.value[t] : ''}"></td>
-        <td class="right"><input data-cc="${t}" type="number" step="0.01" style="text-align:right;" value="${existing && existing.lineCost && existing.lineCost[t] != null ? existing.lineCost[t] : ''}"></td>
-        <td class="right" data-cm="${t}"><span class="muted">—</span></td></tr>`).join('')}
+        <td class="right"><input data-cr="${t}" type="number" step="0.01" style="text-align:right;" placeholder="per unit" value="${v0}"></td>
+        <td class="right"><input data-cv="${t}" type="number" step="0.01" style="text-align:right;" placeholder="qty × rate" value="${tot(v0)}"></td>
+        <td class="right"><input data-cu="${t}" type="number" step="0.01" style="text-align:right;" placeholder="per unit" value="${c0}"></td>
+        <td class="right"><input data-cc="${t}" type="number" step="0.01" style="text-align:right;" placeholder="qty × cost" value="${tot(c0)}"></td>
+        <td class="right" data-cm="${t}"><span class="muted">—</span></td></tr>`; }).join('')}
     </tbody></table>
-    <div class="legend">Type a <b>unit rate</b> and the sell total fills in as qty × rate. Type over the sell total whenever the job isn't a neat multiple. <b>Our cost is the total for the line</b>, not per unit.</div>
+    <div class="legend"><b>Sell and cost are both per unit</b> (per m, m², each…) — the totals beside them fill in as qty × rate, and typing a total works the other way round. Margin is worked out on the totals, so it scales correctly when the quantity changes later.</div>
     <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:12px;">
       ${existing ? '' : `<label style="font-size:11.5px;margin-right:auto;display:flex;align-items:center;gap:7px;"><input type="checkbox" id="cu_save2p" checked style="width:auto;"> Also offer it for the Pricing list afterwards</label>`}
       <button class="btn btn-ghost" id="cu_cancel">Cancel</button>
@@ -733,26 +738,31 @@ async function customDialog(q, existing, done) {
     const cell = bg.querySelector(`[data-cm="${t}"]`);
     cell.innerHTML = s > 0 ? `<b style="color:${(s - c) / s >= 0.25 ? 'var(--green)' : 'var(--red)'};">${Math.round((s - c) / s * 1000) / 10}%</b>` : '<span class="muted">—</span>';
   });
-  const sellFromRate = t => {
-    const rate = parseFloat(bg.querySelector(`[data-cr="${t}"]`).value);
-    if (isNaN(rate)) return;
-    const qty = parseFloat(qtyEl.value) || 0;
-    bg.querySelector(`[data-cv="${t}"]`).value = Math.round(rate * qty * 100) / 100;
-    recalcMargin();
+  // Per-unit and total are two views of one figure: typing either fills the other from
+  // the quantity. Unit is what gets saved (the engine multiplies by qty), so a later
+  // quantity change on the quote reprices sell AND cost together.
+  const r2 = x => Math.round(x * 100) / 100;
+  const link = (unitSel, totSel) => {
+    const fromUnit = t => { const u = parseFloat(bg.querySelector(`[${unitSel}="${t}"]`).value); const qty = parseFloat(qtyEl.value) || 0;
+      bg.querySelector(`[${totSel}="${t}"]`).value = isNaN(u) ? '' : r2(u * qty); recalcMargin(); };
+    const fromTotal = t => { const tot = parseFloat(bg.querySelector(`[${totSel}="${t}"]`).value); const qty = parseFloat(qtyEl.value) || 0;
+      bg.querySelector(`[${unitSel}="${t}"]`).value = isNaN(tot) ? '' : (qty > 0 ? r2(tot / qty) : ''); recalcMargin(); };
+    TIERS.forEach(t => {
+      bg.querySelector(`[${unitSel}="${t}"]`).addEventListener('input', () => fromUnit(t));
+      bg.querySelector(`[${totSel}="${t}"]`).addEventListener('input', () => fromTotal(t));
+    });
+    return fromUnit;
   };
-  TIERS.forEach(t => {
-    bg.querySelector(`[data-cr="${t}"]`).addEventListener('input', () => sellFromRate(t));
-    bg.querySelector(`[data-cv="${t}"]`).addEventListener('input', recalcMargin);
-    bg.querySelector(`[data-cc="${t}"]`).addEventListener('input', recalcMargin);
-  });
-  qtyEl.addEventListener('input', () => TIERS.forEach(sellFromRate));
+  const sellFromRate = link('data-cr', 'data-cv');
+  const costFromRate = link('data-cu', 'data-cc');
+  qtyEl.addEventListener('input', () => TIERS.forEach(t => { sellFromRate(t); costFromRate(t); }));
   bg.querySelectorAll('input[name=cutier]').forEach(r => r.addEventListener('change', applyTierMode));
   applyTierMode(); recalcMargin();
   $('#cu_cancel').addEventListener('click', () => bg.remove());
   $('#cu_ok').addEventListener('click', async () => {
     const isTiered = bg.querySelector('input[name=cutier]:checked').value === 'tiered';
     const grab = sel => { const o = {}; TIERS.forEach(t => { const val = bg.querySelector(`[${sel}="${t}"]`).value; o[t] = val === '' ? null : (sel === 'data-cs' ? val : Number(val)); }); return o; };
-    const spec = grab('data-cs'), value = grab('data-cv'), cost = grab('data-cc');
+    const spec = grab('data-cs'), value = grab('data-cr'), cost = grab('data-cu');
     if (!isTiered) TIERS.forEach(t => { spec[t] = spec.Standard; value[t] = value.Standard; cost[t] = cost.Standard; });
     if (!$('#cu_name').value.trim()) return toast('Give it a name first');
     const body = { customCode: $('#cu_code').value, customName: $('#cu_name').value, customUnit: $('#cu_unit').value,
@@ -1788,6 +1798,7 @@ async function quoteEditor(v) {
       <button class="btn btn-blue" id="addSelected" disabled style="opacity:.5;">Add selected</button>
       <a href="#" id="showMore" style="font-size:11px;">Show all deliverables</a>
       <button class="btn btn-ghost btn-sm" id="addCustom">+ Custom line</button>
+      <button class="btn btn-ghost btn-sm" id="tidyOrder" title="Put every line back in Pricing-list order — same deliverable's instances together, custom lines last">Tidy order</button>
       <span class="muted" style="font-size:11px;" id="pickCount">Tick the ones you need, then Add selected.</span>
     </div>
   </div>
@@ -2007,6 +2018,7 @@ async function quoteEditor(v) {
     toast(staged.size + ' deliverable(s) added'); reload();
   });
   $('#addCustom').addEventListener('click', () => customDialog(q, null, reload));
+  $('#tidyOrder').addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/tidy`, { method: 'POST' }); toast('Lines sorted in Pricing-list order'); reload(); });
 
   const surPut = (i, body) => api(`/quotes/${q.id}/surcharges/${i}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(() => reload());
   v.querySelectorAll('[data-smode]').forEach(s => s.addEventListener('change', () => surPut(s.dataset.smode, { mode: s.value })));
@@ -2123,18 +2135,23 @@ async function quoteEditor(v) {
       } else tierCells = `<td class="center muted" colspan="3">—</td>`;
       const diff = cl && cl.selected !== c.base;
       const up = diff && TIERS.indexOf(cl.selected) > TIERS.indexOf(c.base);
-      return `<tr data-line="${it.id}" data-pi="${it.priceItemId || ''}" title="Double-click to add another one of these">
-        <td><b>${esc(it.displayCode || it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
+      return `<tr data-line="${it.id}" data-pi="${it.priceItemId || ''}" data-scope="${it.scope}" draggable="true" title="Double-click to add another one of these · drag to move">
+        <td><span class="grip" title="Drag to move">⋮⋮</span><b>${esc(it.displayCode || it.code)}</b><br>${diff ? `<span class="tag ${up ? 't-up' : 't-down'}">${up ? '↑' : '↓'}</span>` : ''}</td>
         <td>${esc(it.name)}
           ${behav ? `<br><span class="tag tag-${it.behaviour === 'remeasurable' ? 'rem' : 'opt'}">${behav}</span>` : ''}
           ${it.hasSiblings ? `<input data-loc="${it.id}" value="${esc(it.locationNote || '')}" placeholder="where on site? e.g. front boundary" style="font-size:10.5px;margin-top:4px;width:100%;max-width:260px;" title="Shown to the client and on the crew's site PO">` : ''}
           <textarea data-desc="${it.id}" rows="2" placeholder="Scope description shown to the client…" style="font-size:10.5px;margin-top:4px;width:100%;">${esc(it.description || '')}</textarea>
           <label style="font-size:10px;display:flex;align-items:center;gap:6px;margin-top:4px;" title="Price this line from a supplier quote instead of the rate card">
-            <input type="checkbox" data-vo="${it.id}" ${it.valueOverride ? 'checked' : ''} style="width:auto;"> site-specific value</label>
-          <div class="vofields" id="vo_${it.id}" style="display:${it.valueOverride ? 'flex' : 'none'};gap:4px;margin-top:4px;flex-wrap:wrap;">
-            <input data-val="${it.id}" type="number" step="0.01" value="${it.value && it.value[cTier] != null ? it.value[cTier] : ''}" placeholder="sell $" style="width:84px;font-size:10.5px;" title="What the client pays for this line">
-            <input data-lcost="${it.id}" type="number" step="0.01" value="${it.lineCost && it.lineCost[cTier] != null ? it.lineCost[cTier] : ''}" placeholder="our cost $" style="width:84px;font-size:10.5px;" title="Total cost to us for this line">
-            <span class="muted" style="font-size:9.5px;align-self:center;">rate card <s>${money(it.qty * (it.perTier[cTier] ? it.perTier[cTier].rate : 0))}</s></span></div>
+            <input type="checkbox" data-vo="${it.id}" ${it.valueOverride ? 'checked' : ''} style="width:auto;"> site-specific value
+            <span class="muted" style="font-size:9.5px;">rate card <s>${money(it.qty * (it.perTier[cTier] ? it.perTier[cTier].rate : 0))}</s></span></label>
+          <div class="vofields" id="vo_${it.id}" style="display:${it.valueOverride ? 'block' : 'none'};margin-top:4px;">
+            ${(it.customTiered ? TIERS : [cTier]).map(t => `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-bottom:3px;">
+              ${it.customTiered ? `<b style="font-size:9.5px;width:52px;">${t}</b>` : ''}
+              <input data-val="${it.id}" data-t="${t}" type="number" step="0.01" value="${it.value && it.value[t] != null ? it.value[t] : ''}" placeholder="sell $/unit" style="width:84px;font-size:10.5px;" title="What the client pays per ${esc(it.unit || 'unit')} — the engine multiplies by qty">
+              <input data-lcost="${it.id}" data-t="${t}" type="number" step="0.01" value="${it.lineCost && it.lineCost[t] != null ? it.lineCost[t] : ''}" placeholder="cost $/unit" style="width:84px;font-size:10.5px;" title="Our cost per ${esc(it.unit || 'unit')} — the engine multiplies by qty">
+              <span class="muted vo-tot" data-vot="${it.id}" data-t="${t}" style="font-size:9.5px;"></span></div>`).join('')}
+            <label style="font-size:9.5px;display:inline-flex;align-items:center;gap:5px;" title="Tick to enter a different sell and cost for Basic, Standard and Premium">
+              <input type="checkbox" data-votier="${it.id}" ${it.customTiered ? 'checked' : ''} style="width:auto;"> different per package${it.customTiered ? '' : ' <span class="muted">(one figure covers all three)</span>'}</label></div>
           ${it.descIsCustom ? '<span class="muted" style="font-size:9.5px;">edited for this quote</span>' : ''}
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;align-items:center;">
             <select data-method="${it.id}" style="width:104px;font-size:10.5px;" title="How this deliverable is done">
@@ -2148,7 +2165,7 @@ async function quoteEditor(v) {
         </td>
         <td><input type="number" step="0.01" value="${it.qty}" data-qty="${it.id}" style="width:70px;"> ${esc(it.unit)}</td>
         ${tierCells}
-        <td class="right">${it.priceItemId ? `<button class="btn btn-ghost btn-sm" data-dup="${it.id}" title="Add another one of these — e.g. a second retaining wall elsewhere on the property">+</button> ` : ''}${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
+        <td class="right"><span class="mv"><button class="btn btn-ghost btn-sm" data-move="${it.id}" data-dir="-1" title="Move up">▲</button><button class="btn btn-ghost btn-sm" data-move="${it.id}" data-dir="1" title="Move down">▼</button></span> ${it.priceItemId ? `<button class="btn btn-ghost btn-sm" data-dup="${it.id}" title="Add another one of these — e.g. a second retaining wall elsewhere on the property">+</button> ` : ''}${it.isCustom ? `<button class="btn btn-ghost btn-sm" data-cedit="${it.id}" title="Edit this custom deliverable">Edit</button> ` : ''}<button class="btn btn-danger btn-sm" data-del="${it.id}">✕</button></td></tr>`;
     };
     const head = `<table class="qb"><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th class="center">Basic</th><th class="center">Standard</th><th class="center">Premium</th><th></th></tr></thead><tbody>`;
     $('#scope1').innerHTML = q.items.scope1.length ? head + q.items.scope1.map(row).join('') + '</tbody></table>' : '<p class="muted">No Scope 1 items yet.</p>';
@@ -2169,6 +2186,44 @@ async function quoteEditor(v) {
     }));
     v.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', async () => { await api(`/quotes/${q.id}/items/${i.dataset.qty}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qty: parseFloat(i.value) || 0 }) }); refreshCosting(); }));
     v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { state.scrollY = window.scrollY; await api(`/quotes/${q.id}/items/${b.dataset.del}`, { method: 'DELETE' }); reload(); }));
+    // Moving lines: ▲/▼ and drag-and-drop both send the scope's full order. The table is
+    // re-ordered in place first so the move reads as instant; the reload only confirms it.
+    const saveOrder = async tbody => {
+      const rows = [...tbody.querySelectorAll('tr[data-line]')];
+      state.scrollY = window.scrollY;
+      await api(`/quotes/${q.id}/items-order`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: Number(rows[0].dataset.scope) || 1, ids: rows.map(r => r.dataset.line) }) });
+      reload();
+    };
+    v.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', async () => {
+      const tr = b.closest('tr'); const tbody = tr.parentElement;
+      const other = Number(b.dataset.dir) < 0 ? tr.previousElementSibling : tr.nextElementSibling;
+      if (!other) return;
+      if (Number(b.dataset.dir) < 0) tbody.insertBefore(tr, other); else tbody.insertBefore(other, tr);
+      await saveOrder(tbody);
+    }));
+    let dragging = null;
+    v.querySelectorAll('tr[data-line]').forEach(tr => {
+      tr.addEventListener('dragstart', e => {
+        // Only a grab on the row itself (or the handle) starts a drag; a drag that starts
+        // inside a text field must stay a text selection.
+        if (e.target.closest && e.target.closest('input,textarea,select,button')) { e.preventDefault(); return; }
+        dragging = tr; tr.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', tr.dataset.line); } catch (x) {}
+      });
+      tr.addEventListener('dragover', e => {
+        if (!dragging || dragging === tr || dragging.parentElement !== tr.parentElement) return;
+        e.preventDefault();
+        const r = tr.getBoundingClientRect();
+        const after = e.clientY > r.top + r.height / 2;
+        tr.parentElement.insertBefore(dragging, after ? tr.nextSibling : tr);
+      });
+      tr.addEventListener('dragend', async () => {
+        if (!dragging) return;
+        const tb = dragging.parentElement; dragging.classList.remove('dragging'); dragging = null;
+        await saveOrder(tb);
+      });
+    });
     // "Another one of these, somewhere else on the property." Two ways in: the + button and
     // a double-click on the row. Quantity starts empty so it has to be measured, not assumed.
     const duplicate = async id => {
@@ -2199,18 +2254,50 @@ async function quoteEditor(v) {
     }));
     v.querySelectorAll('[data-vo]').forEach(c => c.addEventListener('change', async () => {
       const box = document.getElementById('vo_' + c.dataset.vo);
-      if (box) box.style.display = c.checked ? 'flex' : 'none';
+      if (box) box.style.display = c.checked ? 'block' : 'none';
       if (c.checked) { const f = box && box.querySelector('[data-val]'); if (f) f.focus(); }
       await api(`/quotes/${q.id}/items/${c.dataset.vo}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ valueOverride: c.checked }) });
       refreshCosting();
     }));
-    v.querySelectorAll('[data-val]').forEach(i => i.addEventListener('change', async () => {
-      await api(`/quotes/${q.id}/items/${i.dataset.val}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: { [cTier]: i.value } }) });
-      refreshCosting(); toast('Value updated');
-    }));
-    v.querySelectorAll('[data-lcost]').forEach(i => i.addEventListener('change', async () => {
-      await api(`/quotes/${q.id}/items/${i.dataset.lcost}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cost: { [cTier]: i.value } }) });
-      refreshCosting(); toast('Cost updated');
+    // Per-unit figures. One figure covers all three packages unless the line is marked
+    // "different per package" — saving only the default package left the other two on the
+    // rate card (and at zero cost) the moment a client upgraded.
+    const itemById = {}; [...(q.items.scope1 || []), ...(q.items.scope2 || [])].forEach(i => itemById[i.id] = i);
+    const tiersFor = (id, t) => { const o = {}; (itemById[id] && itemById[id].customTiered ? [t] : TIERS).forEach(x => o[x] = x); return o; };
+    const voTotals = id => {
+      const it = itemById[id]; if (!it) return;
+      v.querySelectorAll(`[data-vot="${id}"]`).forEach(sp => {
+        const t = sp.dataset.t;
+        const sv = parseFloat((v.querySelector(`[data-val="${id}"][data-t="${t}"]`) || {}).value), cv = parseFloat((v.querySelector(`[data-lcost="${id}"][data-t="${t}"]`) || {}).value);
+        const qty = parseFloat(it.qty) || 0;
+        const S = isNaN(sv) ? null : sv * qty, C = isNaN(cv) ? null : cv * qty;
+        sp.innerHTML = S == null ? '' : `= ${money(S)}${C == null ? '' : ` · cost ${money(C)} · <b style="color:${S > 0 && (S - C) / S >= 0.25 ? 'var(--green)' : 'var(--red)'};">${S > 0 ? Math.round((S - C) / S * 1000) / 10 : 0}%</b>`}`;
+      });
+    };
+    Object.keys(itemById).forEach(voTotals);
+    v.querySelectorAll('[data-val]').forEach(i => {
+      i.addEventListener('input', () => voTotals(i.dataset.val));
+      i.addEventListener('change', async () => {
+        const o = tiersFor(i.dataset.val, i.dataset.t); Object.keys(o).forEach(k => o[k] = i.value);
+        await api(`/quotes/${q.id}/items/${i.dataset.val}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: o }) });
+        refreshCosting(); toast('Value updated');
+      });
+    });
+    v.querySelectorAll('[data-lcost]').forEach(i => {
+      i.addEventListener('input', () => voTotals(i.dataset.lcost));
+      i.addEventListener('change', async () => {
+        const o = tiersFor(i.dataset.lcost, i.dataset.t); Object.keys(o).forEach(k => o[k] = i.value);
+        await api(`/quotes/${q.id}/items/${i.dataset.lcost}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cost: o }) });
+        refreshCosting(); toast('Cost updated');
+      });
+    });
+    v.querySelectorAll('[data-votier]').forEach(c => c.addEventListener('change', async () => {
+      const it = itemById[c.dataset.votier]; state.scrollY = window.scrollY;
+      const body = { customTiered: c.checked };
+      // Collapsing back to one figure: the default package's numbers become the figure.
+      if (!c.checked && it) { body.value = {}; body.cost = {}; TIERS.forEach(t => { body.value[t] = it.value[cTier] ?? ''; body.cost[t] = it.lineCost[cTier] ?? ''; }); }
+      await api(`/quotes/${q.id}/items/${c.dataset.votier}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      reload();
     }));
     v.querySelectorAll('[data-desc]').forEach(t => t.addEventListener('change', async () => {
       await api(`/quotes/${q.id}/items/${t.dataset.desc}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: t.value }) });
