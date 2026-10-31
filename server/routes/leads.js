@@ -230,6 +230,40 @@ router.get('/board', (req, res) => {
     parkedCount: db.prepare('SELECT COUNT(*) c FROM leads WHERE COALESCE(parked,0)=1').get().c });
 });
 
+// Hot right now: every open lead whose quote link or estimator signal is hot (or warm),
+// one list, latest activity first. The same signals the cards carry, pulled out of the
+// five columns so nobody has to hunt for them. A lead drops off when the signal fades
+// (the sig_*/est_* fade days), or once it is won, lost or parked.
+router.get('/hot', (req, res) => {
+  const LA = require('../utils/linkAnalytics'); const EST = require('../utils/estimator');
+  const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') AND COALESCE(parked,0)=0").all();
+  const out = [];
+  rows.forEach(l => {
+    const { stage, quote } = syncLeadStage(l);
+    const s = stageById(stage);
+    let link = null, est = null, fullQ = null, value = null;
+    if (quote) { fullQ = db.prepare('SELECT * FROM quotes WHERE id=?').get(quote.id); try { link = LA.quick(fullQ); } catch (e) {} try { value = require('./quotes').cachedTotals(fullQ).ex; } catch (e) {} }
+    try { est = EST.quick(l); } catch (e) {}
+    const rank = x => x === 'hot' ? 2 : x === 'warm' ? 1 : 0;
+    const pick = [link && { src: 'link', sig: link.signal, why: link.signalWhy, at: link.lastOpened }, est && { src: 'estimate', sig: est.signal, why: est.why, at: est.lastSession }]
+      .filter(Boolean).filter(x => rank(x.sig) > 0).sort((a, b) => rank(b.sig) - rank(a.sig) || String(b.at || '').localeCompare(String(a.at || '')))[0];
+    if (!pick) return;
+    // "Called" only counts if it came AFTER the activity that made the lead hot — a call
+    // from three weeks ago says nothing about whether anyone answered this signal.
+    const call = db.prepare("SELECT created_at, sent_by FROM lead_messages WHERE lead_id=? AND channel='call' AND created_at > ? ORDER BY created_at DESC LIMIT 1").get(l.id, pick.at || '');
+    let extra = '';
+    if (link && pick.src === 'link') { try { const r = LA.record(fullQ); if (r && r.signStep >= 2) extra = 'reached the signature step, did not sign'; else if (r && r.reachedAccept) extra = 'opened the contract review, did not sign'; } catch (e) {} }
+    out.push({ id: l.id, name: l.name, suburb: l.suburb || l.address || '', phone: l.phone || null, source: l.source || '',
+      stage: s.id, stageLabel: s.label, phase: s.phase,
+      quoteId: fullQ ? fullQ.id : null, quoteNumber: fullQ ? fullQ.quote_number : null, value: value != null ? Math.round(value) : null,
+      estRange: !fullQ && est && est.status ? est.status : null,
+      signal: pick.sig, via: pick.src, why: [pick.why, extra].filter(Boolean).join(' · '), lastAt: pick.at,
+      called: call ? { at: call.created_at, by: call.sent_by } : null });
+  });
+  const byTime = (a, b) => String(b.lastAt || '').localeCompare(String(a.lastAt || ''));
+  res.json({ hot: out.filter(x => x.signal === 'hot').sort(byTime), warm: out.filter(x => x.signal === 'warm').sort(byTime) });
+});
+
 // ---- board actions ------------------------------------------------------------------
 // Drag a card to a step. Won is refused here (it needs a signed or PO-approved quote —
 // use Mark won on the quote page); the other four set an override that holds until new

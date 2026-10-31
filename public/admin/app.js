@@ -283,14 +283,14 @@ async function leadsTab(v) {
 
 // ---------- TAB 1 · SUMMARY: figures on top, then the pipeline ----------
 async function leadsSummary(v) {
-  const [board, d, stageData, act] = await Promise.all([api('/leads/board' + (state.showParked ? '?parked=1' : '')), api('/dashboard'), api('/leads/stages'), api('/leads/link-activity?limit=40')]);
+  const [board, d, stageData, act, fc, hotFeed] = await Promise.all([api('/leads/board' + (state.showParked ? '?parked=1' : '')), api('/dashboard'), api('/leads/stages'), api('/leads/link-activity?limit=40'), api('/dashboard/forecast'), api('/leads/hot')]);
   if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
   const today = localYmd();
   const tile = (key, label, value, note, hero) => `<div class="stat ${hero ? 'hero' : ''} tap" data-fig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
   const open = board.cards.length;
   const byPhase = {}; board.cards.forEach(c => byPhase[c.phase] = (byPhase[c.phase] || 0) + 1);
   $('#leadBody').innerHTML = `
-    <div class="card"><h2>Figures</h2><div class="sub">All values exclude GST. Only the current revision of each quote is counted. Tap a tile to see exactly which quotes are in it.</div><div class="rule"></div>
+    <div class="card"><h2>Current</h2><div class="sub">All values exclude GST. Only the current revision of each quote is counted. Tap a tile to see exactly which quotes are in it.</div><div class="rule"></div>
       <div class="grid4">
         ${tile('wk', 'Secured — week', money(d.securedWeek), `${d.securedWeekCount || 0} job${d.securedWeekCount === 1 ? '' : 's'}`, true)}
         ${tile('mo', 'Secured — month', money(d.securedMonth), `${d.securedMonthCount || 0} job${d.securedMonthCount === 1 ? '' : 's'}`, true)}
@@ -300,11 +300,47 @@ async function leadsSummary(v) {
       <div class="grid4" style="margin-top:10px;">
         ${tile('built', 'Quotes built (30d)', d.builtMonth || 0, d.revisionsMonth > d.builtMonth ? `${d.revisionsMonth} revisions → ${d.builtMonth} jobs` : 'current revisions')}
         ${tile('quoted', 'Value quoted (30d)', money(d.quotedValueMonth), 'excl. GST · current revisions')}
-        ${tile('win', 'Win rate (value, FY)', (d.winRateValue || 0) + '%', `${money(d.fySecured || 0)} of ${money(d.fyQuoted || 0)}`)}
+        <div class="stat tap" data-fig="win" role="button" tabindex="0"><div class="k">Win rate (FY)</div><div class="pair"><div><div class="v">${d.winRateValue || 0}%</div><div class="n">by value · ${money(d.fySecured || 0)} of ${money(d.fyQuoted || 0)}</div></div><div class="r"><div class="v">${fc.winCount || 0}%</div><div class="n">by count · ${fc.wonCount || 0} of ${fc.quotedCount || 0}</div></div></div></div>
         ${tile('lost', 'Lost this FY', money(d.lostValueFY || 0), `${d.lostFY || 0} job${d.lostFY === 1 ? '' : 's'} · counted once each`)}
       </div></div>
 
+    <div class="card"><h2>Forecast</h2><div class="sub">What is in play, how fast it decides, and what today's rates say about the months ahead. Every figure is worked from the quotes and leads in the tool — tap a tile for the list behind it.</div><div class="rule"></div>
+      ${(() => {
+        if (!fc || fc.error) return `<p class="muted">Could not load the forecast${fc && fc.error ? ': ' + esc(fc.error) : ''}.</p>`;
+        const k = n => '$' + Math.round((n || 0) / 1000).toLocaleString('en-AU') + 'k';
+        const w = fc.window || {};
+        const mk = Object.entries(fc.months || {});
+        const maxM = Math.max(1, ...mk.map(([, m]) => m.quotes));
+        const mon = ym => new Date(ym + '-15').toLocaleString('en-AU', { month: 'short' });
+        const needed = fc.needed != null;
+        const reasons = (fc.reasons || []).slice(0, 3); const maxR = Math.max(1, ...reasons.map(r => r.count));
+        const isAdmin = USER && USER.role === 'admin';
+        return `<div class="grid4">
+          ${tile('fc_open', 'Quotes out, awaiting decision', `${fc.open.count} · ${money(fc.open.value)}`, `${fc.open.fresh.count} fresh (≤${fc.staleDays} d) ${money(fc.open.fresh.value)} · ${fc.open.stale.count} stale ${money(fc.open.stale.value)}${fc.open.unsent.count ? ` · ${fc.open.unsent.count} not sent ${money(fc.open.unsent.value)}` : ''}`, true)}
+          ${tile('fc_expected', 'Expected to land', `≈ ${k(fc.expected.value)} · ${fc.expected.jobs} job${fc.expected.jobs === 1 ? '' : 's'}`, `fresh × ${fc.winValue}% + stale × ${fc.staleRate}% + not sent × ${fc.winValue}%`, true)}
+          ${tile('fc_window', 'Decision window', w.wonMedian != null ? `${w.wonMedian} d → ${w.lostMedian != null ? w.lostMedian + ' d' : '—'}` : '—', w.wonMedian != null ? `median days from sending: won ${w.wonMedian} (max ${w.wonMax}) · lost ${w.lostMedian != null ? w.lostMedian : '—'} · ${w.wonN} won, ${w.lostN} lost on record` : 'no signed quotes on record yet')}
+          <div class="stat tap ${fc.stale.count ? 'warnbox' : ''}" data-fig="fc_stale" role="button" tabindex="0"><div class="k">Stale — chase or close</div><div class="v">${fc.stale.count} · ${money(fc.stale.value)}</div><div class="n">${fc.stale.rows.slice(0, 2).map(r => `${esc(r.quoteNumber)} ${esc((r.client || '').split(' ')[0])}`).join(' · ') || `nothing older than ${fc.staleDays} days`}</div></div>
+        </div>
+        <div class="grid4" style="margin-top:10px;">
+          ${tile('fc_runrate', 'Run rate · secured, 90 d', `${k(fc.runRate)} / month`, `${money(fc.secured90)} in 90 d · at this pace FY ends ≈ <b>${money(fc.projected)}</b>`)}
+          <div class="stat tap" data-fig="fc_target" role="button" tabindex="0"><div class="k">FY target</div><div class="v">${fc.target > 0 ? Math.round(fc.securedFY / fc.target * 100) + '%' : '—'}</div>
+            <div class="n">${money(fc.securedFY)} of ${isAdmin ? `<input class="tgt" id="fyTarget" value="${fc.target ? fc.target.toLocaleString('en-AU') : ''}" placeholder="set target" title="FY target, ex GST — saved when you leave the box">` : (fc.target ? money(fc.target) : 'no target set')} · ${fc.monthsLeft} months left</div>
+            <div class="bar"><i style="width:${fc.target > 0 ? Math.min(100, Math.round(fc.securedFY / fc.target * 100)) : 0}%"></i></div></div>
+          ${tile('fc_needed', 'Needed from here', needed ? `${k(fc.needed)} / month` : '—', needed ? `≈ ${fc.needWins != null ? fc.needWins.toFixed(1) : '—'} wins · ${fc.needQuotes != null ? Math.round(fc.needQuotes) : '—'} quotes · ${fc.needLeads != null ? Math.round(fc.needLeads) : '—'} leads a month at today's rates` : 'set an FY target to see this')}
+          ${tile('fc_avgwon', 'Average won job', money(fc.avgWon), `average quote ${money(fc.avgQuote)}${fc.avgWon > fc.avgQuote ? ' · bigger jobs are winning' : fc.wonCount ? ' · smaller jobs are winning' : ''}`)}
+        </div>
+        <div class="grid4" style="margin-top:10px;">
+          <div class="stat tap" data-fig="fc_l2q" role="button" tabindex="0"><div class="k">Lead → quote</div><div class="pair"><div><div class="v">${fc.leadToQuote.fy}%</div><div class="n">FY · ${fc.leadToQuote.fyQ} of ${fc.leadToQuote.fyN} leads</div></div><div class="r"><div class="v" style="${fc.leadToQuote.d30 < fc.leadToQuote.fy - 5 ? 'color:var(--red);' : ''}">${fc.leadToQuote.d30}%</div><div class="n">last 30 d · ${fc.leadToQuote.d30Q} of ${fc.leadToQuote.d30N}</div></div></div></div>
+          ${tile('fc_l2w', 'Lead → win', `${fc.leadToWin.pct}%`, `FY · ${fc.leadToWin.won} of ${fc.leadToWin.n}${fc.leadToWin.leadsPerWin ? ` → 1 win ≈ ${fc.leadToWin.leadsPerWin} leads` : ''}`)}
+          <div class="stat tap" data-fig="fc_months" role="button" tabindex="0"><div class="k">Quotes built vs won, by month</div><div class="mini">${mk.map(([ym, m]) => `<b title="${ym}: ${m.quotes} built, ${m.won} won"><i style="height:${Math.round(m.quotes / maxM * 26) + 2}px"></i><i class="w" style="height:${Math.round(m.won / maxM * 26)}px"></i>${mon(ym)} ${m.quotes}·${m.won}</b>`).join('')}</div></div>
+          <div class="stat tap" data-fig="fc_lost" role="button" tabindex="0"><div class="k">Why we lose (FY, ${fc.lostCount})</div><div class="reasons">${reasons.map((r, i) => `<div><div><span>${esc(r.reason)}</span><div class="bar"><i class="${i === 0 ? 'hot' : ''}" style="width:${Math.round(r.count / maxR * 100)}%"></i></div></div><b>${r.count}</b></div>`).join('') || '<span class="muted">nothing lost this FY</span>'}</div></div>
+        </div>
+        <div class="legend" style="margin-top:10px;">Expected = each open quote × the win rate for its age band (fresh and not-yet-sent at the FY rate by value, stale at ${fc.staleRate}%). Run rate = secured in the last 90 days ÷ 3. Needed = (target − secured) ÷ months left, then ÷ average won job, ÷ win rate by count, ÷ lead-to-quote. Stale cut-off and stale rate are in Editor → Settings.</div>`;
+      })()}
+    </div>
+
     <div class="card"><h2>Lead pipeline</h2><div class="sub">Drag a card to move it a step — it holds there until new evidence (a quote, drawings, a discovery call) moves it on. Each column scrolls, searches and sorts on its own. Won needs a signed quote or a PO, from the quote page.</div><div class="rule"></div>
+      <div class="hstrip" id="hotStrip"></div>
       <div class="tstrip" id="todayStrip"></div>
       <div class="boardtools">
         <input type="search" id="boardSearch" placeholder="Search all columns — name, suburb, quote number" value="${esc(state.boardSearch || '')}">
@@ -339,6 +375,49 @@ async function leadsSummary(v) {
   $$('[data-fig]').forEach(el => { const go = () => openFigure(el.dataset.fig); el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
   $$('#leadBody .feedtbl tr.row').forEach(r => r.addEventListener('click', () => openBehaviour(r.dataset.q)));
   $$('[data-unpark]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); await api('/leads/' + a.dataset.unpark + '/unpark', { method: 'POST' }); toast('Back on the board'); leadsSummary(v); }));
+
+  // FY target: typed straight on the tile (admin), saved on blur.
+  const tgt = $('#fyTarget'); if (tgt) {
+    tgt.addEventListener('click', e => e.stopPropagation()); tgt.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') tgt.blur(); });
+    tgt.addEventListener('change', async () => { const v = String(tgt.value).replace(/[^0-9.]/g, ''); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fy_target: v }) }); toast(v ? 'FY target saved' : 'FY target cleared'); leadsSummary(v); });
+  }
+
+  // ---- Hot right now: hot first, then warm, latest activity first ----
+  const paintHot = () => {
+    const el = $('#hotStrip'); if (!el) return;
+    if (!hotFeed || hotFeed.error) { el.hidden = true; return; }
+    const hot = hotFeed.hot || [], warm = hotFeed.warm || [];
+    const showWarm = state.hotWarm !== false;
+    const agoOf = v => { if (!v) return ''; const ms = Date.now() - new Date(String(v).replace(' ', 'T') + 'Z').getTime(); const m = Math.round(ms / 6e4);
+      if (m < 60) return `${Math.max(1, m)} min ago`; const h = Math.round(m / 60); if (h < 24) return `${h} h ago`; const d = Math.round(h / 24); return d === 1 ? 'yesterday' : `${d} d ago`; };
+    const row = l => `<div class="hrow ${l.signal}" style="--sc:var(--s${l.phase || 1})">
+      <div class="who" data-open="${l.id}">${esc(l.name || '—')}${l.suburb ? ` <span>· ${esc(l.suburb)}</span>` : ''}</div>
+      <div class="q">${l.quoteNumber ? `<b>${esc(l.quoteNumber)}</b>${l.value != null && USER.role === 'admin' ? ` <span>· ${money(l.value)}</span>` : ''}` : '<b>No quote yet</b>'}</div>
+      <div class="st"><span class="pill">${l.phase || ''} · ${esc(l.stageLabel || '')}</span></div>
+      <div class="why" title="${esc(l.why || '')}"><i>${l.via === 'estimate' ? 'Estimator' : 'Quote link'}</i>${l.called ? `<em>✓ Called ${agoOf(l.called.at)}${l.called.by ? ' (' + esc(l.called.by) + ')' : ''}</em> · ` : ''}${esc(l.why || '')}</div>
+      <div class="when">${agoOf(l.lastAt)}</div>
+      <div class="btns">${l.phone ? `<a class="btn-call ${l.called ? 'called' : ''}" href="tel:${esc(String(l.phone).replace(/\s+/g, ''))}" data-call="${l.id}" title="${esc(l.phone)} — dials and logs the call">${l.called ? '✓ Called' : '📞 Call'}</a>` : '<span class="muted" style="font-size:11px;">no number</span>'}${l.quoteId ? `<button data-q="${l.quoteId}">Quote</button><button data-bh="${l.quoteId}">Record</button>` : `<button data-open="${l.id}">Lead</button>`}</div></div>`;
+    if (!hot.length && !warm.length) {
+      el.innerHTML = `<div class="head"><span class="lbl">Hot right now</span><span class="cnt">nothing hot — ${board.cards.filter(c => c.quoteNumber).length} quote${board.cards.filter(c => c.quoteNumber).length === 1 ? '' : 's'} out, none opened in the last 48 h</span></div>`;
+      el.classList.add('empty'); return;
+    }
+    el.classList.remove('empty');
+    el.innerHTML = `<div class="head"><span class="lbl">Hot right now</span><span class="cnt"><b>${hot.length} hot</b> · ${warm.length} warm · latest activity first</span></div>
+      <div class="rows">${hot.map(row).join('') || '<div class="muted" style="font-size:11.5px;">No hot leads at the moment.</div>'}</div>
+      ${warm.length ? `<div class="sect">Warm <a id="hotWarmToggle">${showWarm ? 'hide' : 'show ' + warm.length}</a></div>${showWarm ? `<div class="rows">${warm.map(row).join('')}</div>` : ''}` : ''}
+      <div class="more"><span>Call dials the number and logs "Called" on the lead. A lead drops off when its signal fades or once it is won, lost or parked.</span></div>`;
+    const wt = $('#hotWarmToggle'); if (wt) wt.addEventListener('click', () => { state.hotWarm = state.hotWarm === false; paintHot(); });
+    $$('#hotStrip [data-open]').forEach(x => x.addEventListener('click', () => { state.leadId = x.dataset.open; leadConsole(v); }));
+    $$('#hotStrip [data-q]').forEach(b => b.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = b.dataset.q; state.leadId = null; state.scrollY = 0; shell(); }));
+    $$('#hotStrip [data-bh]').forEach(b => b.addEventListener('click', () => openBehaviour(b.dataset.bh)));
+    $$('#hotStrip [data-call]').forEach(a => a.addEventListener('click', async () => {
+      // Let the phone dial, then record it. The row repaints from the server so the
+      // "Called 1 min ago (name)" stamp is the stored one, not a guess.
+      const r = await api('/leads/' + a.dataset.call + '/message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channel: 'call', note: 'Called from Hot leads' }) });
+      if (r && !r.error) { toast('Call logged'); const fresh = await api('/leads/hot'); if (fresh && !fresh.error) { hotFeed.hot = fresh.hot; hotFeed.warm = fresh.warm; paintHot(); } }
+    }));
+  };
+  paintHot();
 
   // ---- Today strip: overdue first, then due today ----
   const dueList = [...board.overdue, ...board.dueToday];
@@ -3294,6 +3373,9 @@ async function settingsTab(v) {
       ['sig_warm_days', 'Warm window (days)'], ['sig_warm_active_sec', 'Warm: reading seconds'], ['sig_warm_opens', 'Warm: opens in window'], ['sig_hot_fade_days', 'Hot fades after (days)'], ['sig_warm_fade_days', 'Warm fades after (days)'], ['events_rollup_days', 'Fold raw events after (days)']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <div class="muted" style="font-size:11px;margin:6px 0 10px;">Hot = opens ≥ the count inside the window, <i>or</i> reached the Accept step, <i>or</i> reading minutes <i>and</i> comparisons both met within the warm window. Warm = opened inside the warm window with the reading seconds, or the opens count. Otherwise cold.</div>
     <button class="btn btn-blue" id="saveSig">Save signal rules</button></div>
+  <div class="card"><h2>Forecast</h2><div class="sub">The three inputs behind the Forecast card on the Leads tab. Everything else there is worked from the quotes and leads themselves.</div><div class="rule"></div>
+    <div class="grid3">${[['fy_target', 'FY target, ex GST ($)', 'e.g. 1600000'], ['fc_stale_days', 'Stale after (days since sending)', '14'], ['fc_stale_rate', 'Win rate assumed for stale quotes (%)', '5']].map(([k, l, ph]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}" placeholder="${ph}"></div>`).join('')}</div>
+    <button class="btn btn-blue" id="saveFc">Save forecast settings</button></div>
   <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;"><h2>Online estimator</h2>
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;cursor:pointer;"><input type="checkbox" id="set_est_enabled_cb" ${s.est_enabled !== '0' ? 'checked' : ''} style="width:auto;"> Auto lead processing <span class="tag ${s.est_enabled !== '0' ? 'tag-accepted' : 'tag-superseded'}" id="estOnTag">${s.est_enabled !== '0' ? 'ON' : 'OFF'}</span></label></div>
     <div class="muted" style="font-size:11px;margin:4px 0 8px;">Off = no automatic code emails to new leads, the website estimator shows "paused", and the Send code button is disabled. Leads keep arriving exactly as before. Nothing is lost when it comes back on.</div>
@@ -3370,6 +3452,7 @@ async function settingsTab(v) {
   $('#saveClose').addEventListener('click', save(['close_small_under', 'close_large_over'], 'Saved'));
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
+  $('#saveFc').addEventListener('click', save(['fy_target', 'fc_stale_days', 'fc_stale_rate'], 'Forecast settings saved'));
   $('#saveSig').addEventListener('click', save(['sig_hot_opens', 'sig_hot_window_h', 'sig_hot_active_min', 'sig_hot_toggles', 'sig_warm_days', 'sig_warm_active_sec', 'sig_warm_opens', 'sig_hot_fade_days', 'sig_warm_fade_days', 'events_rollup_days'], 'Signal rules saved'));
   ['set_crew_day_rate', 'set_crew_people', 'set_hours_per_day'].forEach(id => {
     const el = $('#' + id); if (!el) return;

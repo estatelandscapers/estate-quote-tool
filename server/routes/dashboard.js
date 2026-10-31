@@ -101,8 +101,142 @@ router.get('/', (req, res) => {
   });
 });
 
+// ---- Forecast -----------------------------------------------------------------------
+// What is in play, how fast it decides, and what today's rates say about the months
+// ahead. Like figures(), every number is built from a LIST so a tap can show exactly
+// which quotes or leads are behind it. Only three inputs are settings: the FY target,
+// the stale cut-off (days since sending) and the win rate assumed for stale quotes.
+function forecast() {
+  const { settingGet } = require('../db');
+  const n = (k, d) => { const v = parseFloat(settingGet(k)); return isNaN(v) ? d : v; };
+  const target = n('fy_target', 0), staleDays = n('fc_stale_days', 14), staleRate = n('fc_stale_rate', 5) / 100;
+  const now = Date.now(), fy = fyStart(), fyT = fy.getTime();
+  const fyEnd = new Date(fy.getFullYear() + 1, 6, 1);
+  const monthsLeft = Math.max(1, Math.round((fyEnd - now) / (30.44 * 864e5) * 10) / 10);
+  const T = s => new Date(String(s || '').replace(' ', 'T') + 'Z').getTime();
+  const days = (a, b) => (T(b) - T(a)) / 864e5;
+  const ymd = s => String(s || '').slice(0, 10);
+  const quotes = db.prepare('SELECT * FROM quotes WHERE COALESCE(is_sample,0)=0').all();
+  const current = quotes.filter(q => q.status !== 'superseded' && !isSuperseded(q));
+  const fyQ = current.filter(q => T(q.created_at) >= fyT);
+  const won = fyQ.filter(q => q.status === 'accepted');
+  const lost = fyQ.filter(q => q.lost_at && q.status !== 'accepted');
+  const open = fyQ.filter(q => q.status !== 'accepted' && !q.lost_at);
+  const val = q => Math.round(quoteValue(q) || 0);
+  const sum = l => l.reduce((a, q) => a + val(q), 0);
+  const row = (q, note, value, extra) => ({ quoteId: q.id, quoteNumber: q.quote_number, client: q.client_name, package: q.accepted_package || q.default_package, note, value: value != null ? value : val(q), ...(extra || {}) });
+
+  // Win rates (FY, current revisions)
+  const quotedV = sum(fyQ), wonV = sum(won);
+  const winValue = quotedV > 0 ? wonV / quotedV : 0;
+  const winCount = fyQ.length ? won.length / fyQ.length : 0;
+
+  // Open quotes by age band
+  const LA = require('../utils/linkAnalytics');
+  const ageOf = q => q.sent_at ? (now - T(q.sent_at)) / 864e5 : null;
+  const band = q => { const a = ageOf(q); return a == null ? 'unsent' : a > staleDays ? 'stale' : 'fresh'; };
+  const fresh = open.filter(q => band(q) === 'fresh'), stale = open.filter(q => band(q) === 'stale'), unsent = open.filter(q => band(q) === 'unsent');
+  const lastOpen = q => { try { return LA.quick(q).lastOpened; } catch (e) { return null; } };
+  const openRows = [...fresh, ...stale, ...unsent].map(q => { const b = band(q); const a = ageOf(q); const lo = lastOpen(q);
+    return row(q, b === 'unsent' ? 'not sent yet' : `${b} · sent ${ymd(q.sent_at)} (${Math.round(a)} d)${lo ? ' · last opened ' + ymd(lo) : ' · never opened'}`); });
+  const rateFor = q => band(q) === 'stale' ? staleRate : winValue;
+  const expectedRows = open.map(q => row(q, `${band(q)} · ${val(q).toLocaleString('en-AU')} × ${Math.round(rateFor(q) * 100)}%`, Math.round(val(q) * rateFor(q))));
+  const expected = expectedRows.reduce((a, r) => a + r.value, 0);
+  // Jobs use the win rate BY COUNT (a $200k quote is not three wins).
+  const expectedJobs = open.reduce((a, q) => a + (band(q) === 'stale' ? staleRate : winCount), 0);
+  const staleRows = stale.map(q => { const lo = lastOpen(q); return row(q, `sent ${ymd(q.sent_at)} · ${Math.round(ageOf(q))} d${lo ? ' · last opened ' + ymd(lo) : ' · never opened'}`); });
+
+  // Decision window — all-time, because a single FY rarely has enough signed quotes
+  const median = l => { if (!l.length) return null; const s = [...l].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  const wonAll = current.filter(q => q.status === 'accepted' && q.sent_at && q.accepted_at);
+  const lostAll = current.filter(q => q.lost_at && q.sent_at && q.status !== 'accepted');
+  const wonDays = wonAll.map(q => days(q.sent_at, q.accepted_at)), lostDays = lostAll.map(q => days(q.sent_at, q.lost_at));
+  const windowRows = [...wonAll.map(q => row(q, `won · ${Math.round(days(q.sent_at, q.accepted_at))} d after sending`)),
+    ...lostAll.map(q => row(q, `lost · ${Math.round(days(q.sent_at, q.lost_at))} d after sending${q.lost_reason ? ' · ' + q.lost_reason : ''}`))];
+
+  // Run rate and target
+  const d90 = now - 90 * 864e5;
+  const secured90 = current.filter(q => q.status === 'accepted' && T(q.accepted_at || q.updated_at) >= d90);
+  const runRate = sum(secured90) / 3;
+  const securedFY = wonV;
+  const projected = Math.round(securedFY + runRate * monthsLeft);
+  const needed = target > 0 ? Math.max(0, (target - securedFY) / monthsLeft) : null;
+  const avgWon = won.length ? wonV / won.length : 0, avgQuote = fyQ.length ? quotedV / fyQ.length : 0;
+
+  // Leads
+  const leads = db.prepare('SELECT * FROM leads').all();
+  const quotedLead = l => !!(l.quote_id || quotes.some(q => q.lead_id === l.id));
+  const leadsFY = leads.filter(l => T(l.created_at) >= fyT), leads30 = leads.filter(l => T(l.created_at) >= now - 30 * 864e5);
+  const l2qFY = leadsFY.length ? leadsFY.filter(quotedLead).length / leadsFY.length : 0;
+  const l2q30 = leads30.length ? leads30.filter(quotedLead).length / leads30.length : 0;
+  const wonLeadsFY = leadsFY.filter(l => l.status === 'Won' || quotes.some(q => q.lead_id === l.id && q.status === 'accepted'));
+  const l2w = leadsFY.length ? wonLeadsFY.length / leadsFY.length : 0;
+  const leadRow = (l, note) => { const q = l.quote_id ? quotes.find(x => x.id === l.quote_id) : quotes.find(x => x.lead_id === l.id);
+    return { leadId: l.id, quoteId: q ? q.id : null, quoteNumber: q ? q.quote_number : '—', client: l.name, package: l.suburb || l.address || '', note, value: q ? val(q) : null }; };
+  const needWins = needed != null && avgWon > 0 ? needed / avgWon : null;
+  const needQuotes = needWins != null && winCount > 0 ? needWins / winCount : null;
+  const needLeads = needQuotes != null && l2qFY > 0 ? needQuotes / l2qFY : null;
+
+  // Month by month (quotes built that month, and how many of those were won)
+  const months = {};
+  const ymLocal = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  for (let d = new Date(fy); d <= new Date(); d.setMonth(d.getMonth() + 1)) months[ymLocal(d)] = { quotes: 0, won: 0, value: 0, wonValue: 0 };
+  fyQ.forEach(q => { const k = ymd(q.created_at).slice(0, 7); if (!months[k]) months[k] = { quotes: 0, won: 0, value: 0, wonValue: 0 }; months[k].quotes++; months[k].value += val(q); if (q.status === 'accepted') { months[k].won++; months[k].wonValue += val(q); } });
+
+  // Why we lose (one row per job, latest lost revision)
+  const reasons = {};
+  lost.forEach(q => { const r = q.lost_reason || 'No reason recorded'; reasons[r] = (reasons[r] || 0) + 1; });
+  const reasonList = Object.entries(reasons).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
+
+  const pct = x => Math.round(x * 100);
+  return {
+    fyStart: ymLocal(fy) + '-01', monthsLeft, staleDays, staleRate: pct(staleRate), target,
+    open: { count: open.length, value: sum(open), fresh: { count: fresh.length, value: sum(fresh) }, stale: { count: stale.length, value: sum(stale) }, unsent: { count: unsent.length, value: sum(unsent) } },
+    expected: { value: Math.round(expected), jobs: Math.round(expectedJobs * 10) / 10 },
+    window: { wonMedian: median(wonDays) != null ? Math.round(median(wonDays)) : null, wonMax: wonDays.length ? Math.round(Math.max(...wonDays)) : null, lostMedian: median(lostDays) != null ? Math.round(median(lostDays)) : null, wonN: wonDays.length, lostN: lostDays.length },
+    stale: { count: stale.length, value: sum(stale), rows: staleRows },
+    runRate: Math.round(runRate), secured90: sum(secured90), securedFY: Math.round(securedFY), projected,
+    needed: needed != null ? Math.round(needed) : null, needWins, needQuotes, needLeads,
+    avgWon: Math.round(avgWon), avgQuote: Math.round(avgQuote), wonCount: won.length, quotedCount: fyQ.length,
+    winValue: pct(winValue), winCount: pct(winCount),
+    leadToQuote: { fy: pct(l2qFY), fyN: leadsFY.length, fyQ: leadsFY.filter(quotedLead).length, d30: pct(l2q30), d30N: leads30.length, d30Q: leads30.filter(quotedLead).length },
+    leadToWin: { pct: pct(l2w), n: leadsFY.length, won: wonLeadsFY.length, leadsPerWin: wonLeadsFY.length ? Math.round(leadsFY.length / wonLeadsFY.length) : null },
+    months, reasons: reasonList, lostCount: lost.length,
+    lists: {
+      fc_open: { title: 'Quotes out, awaiting decision', rows: openRows, note: `Open quotes this FY (current revisions). Fresh = sent within ${staleDays} days; stale = older; not sent = still being built.` },
+      fc_expected: { title: 'Expected to land', rows: expectedRows, note: `Each open quote × the win rate for its age band: fresh and unsent at the FY win rate by value (${pct(winValue)}%), stale at ${pct(staleRate)}%.` },
+      fc_window: { title: 'Decision window', rows: windowRows, note: 'Days between sending and the decision, every signed or lost quote on record (all time — one FY has too few to trust).' },
+      fc_stale: { title: 'Stale — chase or close', rows: staleRows, note: `Sent more than ${staleDays} days ago with no decision. Chase once, then mark lost so the figures stay honest.` },
+      fc_runrate: { title: 'Run rate — secured, last 90 days', rows: secured90.map(q => row(q, 'accepted ' + ymd(q.accepted_at))), note: `Secured in the last 90 days ÷ 3 = ${Math.round(runRate).toLocaleString('en-AU')} a month. Projection = secured this FY + run rate × ${monthsLeft} months left.` },
+      fc_target: { title: 'FY target', rows: won.map(q => row(q, 'accepted ' + ymd(q.accepted_at))), note: target > 0 ? `Secured this FY against the target of $${target.toLocaleString('en-AU')}. Set the target on the tile (admin).` : 'No target set yet — type one on the tile (admin).' },
+      fc_needed: { title: 'Needed from here', rows: needed == null ? [] : [
+        { quoteNumber: '1', client: `Target $${target.toLocaleString('en-AU')} − secured $${Math.round(securedFY).toLocaleString('en-AU')} = $${Math.round(target - securedFY).toLocaleString('en-AU')} to find`, value: null },
+        { quoteNumber: '2', client: `÷ ${monthsLeft} months left`, value: Math.round(needed), note: 'a month' },
+        { quoteNumber: '3', client: `÷ average won job $${Math.round(avgWon).toLocaleString('en-AU')} = ${needWins != null ? needWins.toFixed(1) : '—'} wins a month`, value: null },
+        { quoteNumber: '4', client: `÷ win rate by count ${pct(winCount)}% = ${needQuotes != null ? needQuotes.toFixed(1) : '—'} quotes a month`, value: null },
+        { quoteNumber: '5', client: `÷ lead-to-quote ${pct(l2qFY)}% = ${needLeads != null ? needLeads.toFixed(1) : '—'} leads a month`, value: null }], note: 'The arithmetic, step by step, from the figures on this card.' },
+      fc_avgwon: { title: 'Average won job', rows: won.map(q => row(q, 'won · accepted ' + ymd(q.accepted_at))), note: `${won.length} won this FY, average $${Math.round(avgWon).toLocaleString('en-AU')}; average quote across all ${fyQ.length} current quotes $${Math.round(avgQuote).toLocaleString('en-AU')}.` },
+      fc_l2q: { title: 'Lead → quote', rows: leadsFY.map(l => leadRow(l, quotedLead(l) ? 'quoted' : 'not quoted' + (l.status === 'Lost' ? ' · lost' : ''))), note: `Leads received this FY and whether a quote was built for them. Last 30 days: ${leads30.filter(quotedLead).length} of ${leads30.length}.` },
+      fc_l2w: { title: 'Lead → win', rows: leadsFY.filter(l => wonLeadsFY.includes(l)).map(l => leadRow(l, 'won')), note: `${wonLeadsFY.length} of ${leadsFY.length} leads this FY became a signed job.` },
+      fc_months: { title: 'Quotes built vs won, by month', rows: fyQ.map(q => row(q, `built ${ymd(q.created_at)} · ${q.status === 'accepted' ? 'won' : q.lost_at ? 'lost' : 'open'}`)), note: 'Current revision of every quote this FY, by the month it was built.' },
+      fc_lost: { title: 'Why we lose', rows: lost.map(q => row(q, `${q.lost_reason || 'No reason recorded'} · ${ymd(q.lost_at)}`)), note: 'One row per job lost this FY, with the reason recorded when it was marked lost.' },
+    },
+  };
+}
+router.get('/forecast', (req, res) => {
+  try { const f = forecast(); delete f.lists; res.json(f); }
+  catch (e) { console.error('[forecast]', e); res.status(500).json({ error: e.message }); }
+});
+
 // What's inside a tile. Keys match the tiles on the Leads summary.
 router.get('/figure/:key', (req, res) => {
+  if (String(req.params.key).startsWith('fc_')) {
+    const f = forecast().lists[req.params.key];
+    if (!f) return res.status(404).json({ error: 'unknown figure' });
+    // Lead lists and the arithmetic list carry no meaningful total.
+    const noTotal = ['fc_needed', 'fc_l2q', 'fc_l2w'].includes(req.params.key);
+    return res.json({ ...f, total: !noTotal && f.rows.some(r => r.value != null) ? Math.round(f.rows.reduce((a, r) => a + (r.value || 0), 0)) : null });
+  }
   const { F, totals } = figures();
   const k = req.params.key;
   const map = {
