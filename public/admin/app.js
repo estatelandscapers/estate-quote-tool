@@ -147,9 +147,10 @@ async function openFigure(key) {
   openDrawer('<div class="muted">Loading…</div>');
   const f = await api('/dashboard/figure/' + key);
   if (f.error) return openDrawer(`<h3>Figure</h3><p class="muted">${esc(f.error)}</p>`);
+  const hasM = USER && USER.role === 'admin' && f.rows.some(r => r.margin != null);
   openDrawer(`<h3>${esc(f.title)}${f.total != null ? ' · ' + money(f.total) : ''}</h3><div class="muted" style="font-size:12px;margin:4px 0 10px;">${esc(f.note || '')} ${f.rows.length} row${f.rows.length === 1 ? '' : 's'}.</div>
-    <div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>Quote</th><th>Client</th><th>Package / note</th><th class="right">Ex GST</th></tr></thead><tbody>
-    ${f.rows.map(r => `<tr class="row" data-q="${esc(r.quoteId || '')}" data-l="${esc(r.leadId || '')}"><td><b>${esc(r.quoteNumber || '—')}</b>${r.wonMethod === 'manual' ? ' <span class="chip won">PO</span>' : ''}</td><td>${esc(r.client || '')}</td><td class="muted">${esc(r.package || '')}${r.note ? ' · ' + esc(r.note) : ''}</td><td class="right">${r.value != null ? money(r.value) : '—'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Nothing in this figure.</td></tr>'}</tbody></table></div>`);
+    <div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>Quote</th><th>Client</th><th>Package / note</th><th class="right">Ex GST</th>${hasM ? '<th class="right">Cost</th><th class="right">Margin</th>' : ''}</tr></thead><tbody>
+    ${f.rows.map(r => `<tr class="row" data-q="${esc(r.quoteId || '')}" data-l="${esc(r.leadId || '')}"><td><b>${esc(r.quoteNumber || '—')}</b>${r.wonMethod === 'manual' ? ' <span class="chip won">PO</span>' : ''}</td><td>${esc(r.client || '')}</td><td class="muted">${esc(r.package || '')}${r.note ? ' · ' + esc(r.note) : ''}</td><td class="right">${r.value != null ? money(r.value) : '—'}</td>${hasM ? `<td class="right">${r.cost != null ? money(r.cost) : '—'}</td><td class="right" style="white-space:nowrap;">${r.margin != null ? money(r.margin) + (r.marginPct != null ? ` <span class="muted">${r.marginPct}%</span>` : '') : '—'}${r.priced === false ? ' <span class="muted">no costing</span>' : ''}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${hasM ? 6 : 4}" class="muted">Nothing in this figure.</td></tr>`}</tbody></table></div>${hasM ? `<div class="muted" style="font-size:11px;margin-top:6px;">Total margin ${money(f.rows.reduce((a, r) => a + (r.margin || 0), 0))}.</div>` : ''}`);
   $$('#drawerBody tr.row').forEach(r => r.addEventListener('click', () => {
     closeDrawer();
     if (r.dataset.q) { state.tab = 'quotes'; state.quoteId = r.dataset.q; state.leadId = null; state.scrollY = 0; shell(); }
@@ -291,51 +292,66 @@ async function leadsSummary(v) {
   const byPhase = {}; board.cards.forEach(c => byPhase[c.phase] = (byPhase[c.phase] || 0) + 1);
   $('#leadBody').innerHTML = `
     <div class="card"><h2>Current</h2><div class="sub">All values exclude GST. Only the current revision of each quote is counted. Tap a tile to see exactly which quotes are in it.</div><div class="rule"></div>
-      <div class="grid4">
-        ${tile('wk', 'Secured — week', money(d.securedWeek), `${d.securedWeekCount || 0} job${d.securedWeekCount === 1 ? '' : 's'}`, true)}
-        ${tile('mo', 'Secured — month', money(d.securedMonth), `${d.securedMonthCount || 0} job${d.securedMonthCount === 1 ? '' : 's'}`, true)}
-        ${tile('fy', 'Secured — FY', money(d.securedFY), `${d.securedCountFY || 0} job${d.securedCountFY === 1 ? '' : 's'}${d.securedManualFY ? ` · ${d.securedManualFY} by PO/contract` : ''}`, true)}
+      ${(() => {
+        const isAdmin = USER && USER.role === 'admin';
+        const m = (fc && !fc.error && fc.margin) || null;
+        // Secured tiles: value left, margin on those jobs right (admin only).
+        const secured = (key, label, value, count, margin, pct) => `<div class="stat hero tap" data-fig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="pair"><div><div class="v">${money(value)}</div><div class="n">${count || 0} job${count === 1 ? '' : 's'}</div></div>${isAdmin ? `<div class="r"><div class="v">${money(margin || 0)}</div><div class="n">margin${pct != null ? ' · ' + Math.round(pct) + '%' : ''}</div></div>` : ''}</div></div>`;
+        const trio = (a, b, c) => `<div class="trio">${[a, b, c].map(x => `<div><div class="v" style="${x.color ? 'color:' + x.color + ';' : ''}">${x.v}</div><div class="n">${x.n}</div></div>`).join('')}</div>`;
+        const pc = x => x != null ? x + '%' : '—';
+        const w = (fc && fc.window) || {};
+        return `<div class="grid4">
+        ${secured('wk', 'Secured — week', d.securedWeek, d.securedWeekCount, d.marginWeek, d.marginWeekPct)}
+        ${secured('mo', 'Secured — month', d.securedMonth, d.securedMonthCount, d.marginMonth, d.marginMonthPct)}
+        ${secured('fy', 'Secured — FY', d.securedFY, d.securedCountFY, d.marginFY, d.marginFYPct)}
         ${tile('open', 'Open enquiries', open, [1, 2, 3, 4].filter(p => byPhase[p]).map(p => `${byPhase[p]} step ${p}`).join(' · ') || 'none')}
       </div>
       <div class="grid4" style="margin-top:10px;">
         ${tile('built', 'Quotes built (30d)', d.builtMonth || 0, d.revisionsMonth > d.builtMonth ? `${d.revisionsMonth} revisions → ${d.builtMonth} jobs` : 'current revisions')}
         ${tile('quoted', 'Value quoted (30d)', money(d.quotedValueMonth), 'excl. GST · current revisions')}
-        <div class="stat tap" data-fig="win" role="button" tabindex="0"><div class="k">Win rate (FY)</div><div class="pair"><div><div class="v">${d.winRateValue || 0}%</div><div class="n">by value · ${money(d.fySecured || 0)} of ${money(d.fyQuoted || 0)}</div></div><div class="r"><div class="v">${fc.winCount || 0}%</div><div class="n">by count · ${fc.wonCount || 0} of ${fc.quotedCount || 0}</div></div></div></div>
+        <div class="stat tap" data-fig="win" role="button" tabindex="0"><div class="k">Win rate (FY)</div><div class="pair"><div><div class="v">${d.winRateValue || 0}%</div><div class="n">by value · ${money(d.fySecured || 0)} of ${money(d.fyQuoted || 0)}</div></div><div class="r"><div class="v">${fc && fc.winCount != null ? fc.winCount : 0}%</div><div class="n">by count · ${fc && fc.wonCount != null ? fc.wonCount : 0} of ${fc && fc.quotedCount != null ? fc.quotedCount : 0}</div></div></div></div>
         ${tile('lost', 'Lost this FY', money(d.lostValueFY || 0), `${d.lostFY || 0} job${d.lostFY === 1 ? '' : 's'} · counted once each`)}
-      </div></div>
+      </div>
+      ${fc && !fc.error ? `<div class="grid4" style="margin-top:10px;">
+        ${isAdmin ? `<div class="stat tap" data-fig="fc_margin" role="button" tabindex="0"><div class="k">Average margin</div>${trio(
+          { v: pc(m.won.pct), n: `won jobs, FY · ${money(m.won.perJob)} / job`, color: m.won.pct != null ? (m.won.pct >= m.target ? 'var(--green)' : 'var(--red)') : '' },
+          { v: pc(m.open.pct), n: `open quotes · ${m.open.n} priced` },
+          { v: pc(m.built30.pct), n: 'built last 30 d' })}<div class="n" style="margin-top:6px;">Target ${m.target}% (${esc(m.targetTier || '')})${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).length ? ` · ${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).join(', ')} not counted (no costing yet)` : ''}</div></div>` : ''}
+        <div class="stat tap" data-fig="fc_conv" role="button" tabindex="0"><div class="k">Lead conversion</div>${trio(
+          { v: `${fc.leadToQuote.fy}%`, n: `lead → quote, FY · ${fc.leadToQuote.fyQ} of ${fc.leadToQuote.fyN}` },
+          { v: `${fc.leadToQuote.d30}%`, n: `lead → quote, 30 d · ${fc.leadToQuote.d30Q} of ${fc.leadToQuote.d30N}`, color: fc.leadToQuote.d30 < fc.leadToQuote.fy - 5 ? 'var(--red)' : '' },
+          { v: `${fc.leadToWin.pct}%`, n: `lead → win, FY · ${fc.leadToWin.won} of ${fc.leadToWin.n}` })}<div class="n" style="margin-top:6px;">${fc.leadToWin.leadsPerWin ? `1 win ≈ ${fc.leadToWin.leadsPerWin} leads` : 'no wins from this FY\'s leads yet'}${fc.winCount ? ` ≈ ${Math.round(100 / fc.winCount)} quotes` : ''}</div></div>
+        <div class="stat tap" data-fig="fc_avgwon" role="button" tabindex="0"><div class="k">Average job</div><div class="pair"><div><div class="v">${money(fc.avgWon)}</div><div class="n">won, FY · ${fc.wonCount} job${fc.wonCount === 1 ? '' : 's'}</div></div><div class="r"><div class="v">${money(fc.avgQuote)}</div><div class="n">quoted, FY · ${fc.quotedCount}</div></div></div><div class="n" style="margin-top:4px;">${fc.wonCount ? (fc.avgWon > fc.avgQuote ? 'bigger jobs are winning' : 'smaller jobs are winning') : ''}</div></div>
+        ${tile('fc_window', 'Decision window', w.wonMedian != null ? `${w.wonMedian} d → ${w.lostMedian != null ? w.lostMedian + ' d' : '—'}` : '—', w.wonMedian != null ? `median days from sending: won ${w.wonMedian} (max ${w.wonMax}) · lost ${w.lostMedian != null ? w.lostMedian : '—'} · ${w.wonN} won, ${w.lostN} lost on record` : 'no signed quotes on record yet')}
+      </div>` : ''}`;
+      })()}
+    </div>
 
-    <div class="card"><h2>Forecast</h2><div class="sub">What is in play, how fast it decides, and what today's rates say about the months ahead. Every figure is worked from the quotes and leads in the tool — tap a tile for the list behind it.</div><div class="rule"></div>
+    <div class="card"><h2>Forecast</h2><div class="sub">What is in play and what today's rates say about the months ahead. Every figure is worked from the quotes and leads in the tool — tap a tile for the list behind it.</div><div class="rule"></div>
       ${(() => {
         if (!fc || fc.error) return `<p class="muted">Could not load the forecast${fc && fc.error ? ': ' + esc(fc.error) : ''}.</p>`;
         const k = n => '$' + Math.round((n || 0) / 1000).toLocaleString('en-AU') + 'k';
-        const w = fc.window || {};
-        const mk = Object.entries(fc.months || {});
-        const maxM = Math.max(1, ...mk.map(([, m]) => m.quotes));
-        const mon = ym => new Date(ym + '-15').toLocaleString('en-AU', { month: 'short' });
         const needed = fc.needed != null;
         const reasons = (fc.reasons || []).slice(0, 3); const maxR = Math.max(1, ...reasons.map(r => r.count));
         const isAdmin = USER && USER.role === 'admin';
+        const P = fc.profit || {}; const mw = (fc.margin && fc.margin.won) || {}; const mo = (fc.margin && fc.margin.open) || {};
+        const tpct = fc.target > 0 ? Math.round(fc.securedFY / fc.target * 100) : null;
         return `<div class="grid4">
-          ${tile('fc_open', 'Quotes out, awaiting decision', `${fc.open.count} · ${money(fc.open.value)}`, `${fc.open.fresh.count} fresh (≤${fc.staleDays} d) ${money(fc.open.fresh.value)} · ${fc.open.stale.count} stale ${money(fc.open.stale.value)}${fc.open.unsent.count ? ` · ${fc.open.unsent.count} not sent ${money(fc.open.unsent.value)}` : ''}`, true)}
-          ${tile('fc_expected', 'Expected to land', `≈ ${k(fc.expected.value)} · ${fc.expected.jobs} job${fc.expected.jobs === 1 ? '' : 's'}`, `fresh × ${fc.winValue}% + stale × ${fc.staleRate}% + not sent × ${fc.winValue}%`, true)}
-          ${tile('fc_window', 'Decision window', w.wonMedian != null ? `${w.wonMedian} d → ${w.lostMedian != null ? w.lostMedian + ' d' : '—'}` : '—', w.wonMedian != null ? `median days from sending: won ${w.wonMedian} (max ${w.wonMax}) · lost ${w.lostMedian != null ? w.lostMedian : '—'} · ${w.wonN} won, ${w.lostN} lost on record` : 'no signed quotes on record yet')}
-          <div class="stat tap ${fc.stale.count ? 'warnbox' : ''}" data-fig="fc_stale" role="button" tabindex="0"><div class="k">Stale — chase or close</div><div class="v">${fc.stale.count} · ${money(fc.stale.value)}</div><div class="n">${fc.stale.rows.slice(0, 2).map(r => `${esc(r.quoteNumber)} ${esc((r.client || '').split(' ')[0])}`).join(' · ') || `nothing older than ${fc.staleDays} days`}</div></div>
-        </div>
-        <div class="grid4" style="margin-top:10px;">
-          ${tile('fc_runrate', 'Run rate · secured, 90 d', `${k(fc.runRate)} / month`, `${money(fc.secured90)} in 90 d · at this pace FY ends ≈ <b>${money(fc.projected)}</b>`)}
-          <div class="stat tap" data-fig="fc_target" role="button" tabindex="0"><div class="k">FY target</div><div class="v">${fc.target > 0 ? Math.round(fc.securedFY / fc.target * 100) + '%' : '—'}</div>
+          <div class="stat hero tap" data-fig="fc_target" role="button" tabindex="0"><div class="k">FY target</div><div class="v">${tpct != null ? tpct + '%' : '—'}</div>
             <div class="n">${money(fc.securedFY)} of ${isAdmin ? `<input class="tgt" id="fyTarget" value="${fc.target ? fc.target.toLocaleString('en-AU') : ''}" placeholder="set target" title="FY target, ex GST — saved when you leave the box">` : (fc.target ? money(fc.target) : 'no target set')} · ${fc.monthsLeft} months left</div>
-            <div class="bar"><i style="width:${fc.target > 0 ? Math.min(100, Math.round(fc.securedFY / fc.target * 100)) : 0}%"></i></div></div>
-          ${tile('fc_needed', 'Needed from here', needed ? `${k(fc.needed)} / month` : '—', needed ? `≈ ${fc.needWins != null ? fc.needWins.toFixed(1) : '—'} wins · ${fc.needQuotes != null ? Math.round(fc.needQuotes) : '—'} quotes · ${fc.needLeads != null ? Math.round(fc.needLeads) : '—'} leads a month at today's rates` : 'set an FY target to see this')}
-          ${tile('fc_avgwon', 'Average won job', money(fc.avgWon), `average quote ${money(fc.avgQuote)}${fc.avgWon > fc.avgQuote ? ' · bigger jobs are winning' : fc.wonCount ? ' · smaller jobs are winning' : ''}`)}
+            <div class="bar"><i style="width:${tpct != null ? Math.min(100, tpct) : 0}%"></i></div></div>
+          ${tile('fc_runrate', 'Run rate · secured, 90 d', `${k(fc.runRate)} / month`, `${money(fc.secured90)} in 90 d · at this pace FY ends ≈ <b>${money(fc.projected)}</b>`)}
+          ${isAdmin ? `<div class="stat profit tap" data-fig="fc_profit" role="button" tabindex="0"><div class="k">Forecast profit, FY</div><div class="pair"><div><div class="v">${P.atTarget != null ? k(P.atTarget) : '—'}</div><div class="n">${P.atTarget != null ? `at the ${k(fc.target)} target × ${mw.pct != null ? mw.pct + '%' : '—'} margin` : 'set a target'}</div></div><div class="r"><div class="v">${k(P.atRunRate)}</div><div class="n">at run rate (${k(fc.projected)})</div></div></div>
+            <div class="bar"><i style="width:${P.atTarget ? Math.min(100, Math.round(P.banked / P.atTarget * 100)) : 0}%"></i></div><div class="n">${money(P.banked)} banked so far${P.atTarget ? ` · ${Math.round(P.banked / P.atTarget * 100)}% of target profit` : ''}</div></div>` : ''}
+          ${tile('fc_open', 'Quotes out, awaiting decision', `${fc.open.count} · ${money(fc.open.value)}`, `${fc.open.fresh.count} fresh (≤${fc.staleDays} d) ${money(fc.open.fresh.value)} · ${fc.open.stale.count} stale ${money(fc.open.stale.value)}${fc.open.unsent.count ? ` · ${fc.open.unsent.count} not sent ${money(fc.open.unsent.value)}` : ''}`)}
         </div>
         <div class="grid4" style="margin-top:10px;">
-          <div class="stat tap" data-fig="fc_l2q" role="button" tabindex="0"><div class="k">Lead → quote</div><div class="pair"><div><div class="v">${fc.leadToQuote.fy}%</div><div class="n">FY · ${fc.leadToQuote.fyQ} of ${fc.leadToQuote.fyN} leads</div></div><div class="r"><div class="v" style="${fc.leadToQuote.d30 < fc.leadToQuote.fy - 5 ? 'color:var(--red);' : ''}">${fc.leadToQuote.d30}%</div><div class="n">last 30 d · ${fc.leadToQuote.d30Q} of ${fc.leadToQuote.d30N}</div></div></div></div>
-          ${tile('fc_l2w', 'Lead → win', `${fc.leadToWin.pct}%`, `FY · ${fc.leadToWin.won} of ${fc.leadToWin.n}${fc.leadToWin.leadsPerWin ? ` → 1 win ≈ ${fc.leadToWin.leadsPerWin} leads` : ''}`)}
-          <div class="stat tap" data-fig="fc_months" role="button" tabindex="0"><div class="k">Quotes built vs won, by month</div><div class="mini">${mk.map(([ym, m]) => `<b title="${ym}: ${m.quotes} built, ${m.won} won"><i style="height:${Math.round(m.quotes / maxM * 26) + 2}px"></i><i class="w" style="height:${Math.round(m.won / maxM * 26)}px"></i>${mon(ym)} ${m.quotes}·${m.won}</b>`).join('')}</div></div>
+          ${tile('fc_needed', 'Needed from here', needed ? `${k(fc.needed)} / month` : '—', needed ? `≈ ${fc.needWins != null ? fc.needWins.toFixed(1) : '—'} wins · ${fc.needQuotes != null ? Math.round(fc.needQuotes) : '—'} quotes · ${fc.needLeads != null ? Math.round(fc.needLeads) : '—'} leads a month at today's rates${isAdmin && P.needed != null ? ` · <b>${k(P.needed)} profit</b> a month` : ''}` : 'set an FY target to see this')}
+          <div class="stat tap" data-fig="fc_expected" role="button" tabindex="0"><div class="k">Expected to land</div><div class="pair"><div><div class="v">≈ ${k(fc.expected.value)} · ${fc.expected.jobs} job${fc.expected.jobs === 1 ? '' : 's'}</div><div class="n">fresh × ${fc.winValue}% + stale × ${fc.staleRate}% + not sent × ${fc.winValue}%</div></div>${isAdmin ? `<div class="r"><div class="v" style="color:var(--green);">≈ ${k(P.expected)}</div><div class="n">profit · ${mo.pct != null ? mo.pct + '%' : (mw.pct != null ? mw.pct + '%' : '—')}</div></div>` : ''}</div></div>
+          <div class="stat tap ${fc.stale.count ? 'warnbox' : ''}" data-fig="fc_stale" role="button" tabindex="0"><div class="k">Stale — chase or close</div><div class="v">${fc.stale.count} · ${money(fc.stale.value)}</div><div class="n">${fc.stale.rows.slice(0, 2).map(r => `${esc(r.quoteNumber)} ${esc((r.client || '').split(' ')[0])}`).join(' · ') || `nothing older than ${fc.staleDays} days`}</div></div>
           <div class="stat tap" data-fig="fc_lost" role="button" tabindex="0"><div class="k">Why we lose (FY, ${fc.lostCount})</div><div class="reasons">${reasons.map((r, i) => `<div><div><span>${esc(r.reason)}</span><div class="bar"><i class="${i === 0 ? 'hot' : ''}" style="width:${Math.round(r.count / maxR * 100)}%"></i></div></div><b>${r.count}</b></div>`).join('') || '<span class="muted">nothing lost this FY</span>'}</div></div>
         </div>
-        <div class="legend" style="margin-top:10px;">Expected = each open quote × the win rate for its age band (fresh and not-yet-sent at the FY rate by value, stale at ${fc.staleRate}%). Run rate = secured in the last 90 days ÷ 3. Needed = (target − secured) ÷ months left, then ÷ average won job, ÷ win rate by count, ÷ lead-to-quote. Stale cut-off and stale rate are in Editor → Settings.</div>`;
+        <div class="legend" style="margin-top:10px;">Margin is each quote's own gross margin (sell − materials, labour, subcontract, plant); overheads come off at year end on Projects. Forecast profit = FY target × average margin on won jobs this FY. Expected = each open quote × the win rate for its age band (fresh and not-yet-sent at the FY rate by value, stale at ${fc.staleRate}%). Run rate = secured in the last 90 days ÷ 3. Needed = (target − secured) ÷ months left, then ÷ average won job, ÷ win rate by count, ÷ lead-to-quote. Stale cut-off and stale rate are in Editor → Forecast.</div>`;
       })()}
     </div>
 

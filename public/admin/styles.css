@@ -532,3 +532,15 @@ table.qb .vo-tot{align-self:center;white-space:nowrap;}
   .hrow{grid-template-columns:1fr auto;grid-template-areas:"who when" "q st" "why why" "btns btns";row-gap:5px;}
   .hrow .who{grid-area:who;}.hrow .when{grid-area:when;text-align:right;}.hrow .q{grid-area:q;}.hrow .st{grid-area:st;text-align:right;}.hrow .why{grid-area:why;white-space:normal;}.hrow .btns{grid-area:btns;justify-content:flex-start;}
 }
+
+/* Current: three figures in one tile; Forecast: profit tile */
+.stat .trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:2px;}
+.stat .trio .v{font-size:15px;}
+.stat .trio .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.stat.profit{background:linear-gradient(135deg,#2E7D46,#1E5A32);color:#fff;border:none;}
+.stat.profit .k,.stat.profit .n{color:#CDEBD6;}
+.stat.profit .pair .r .v{color:#fff;opacity:.9;}
+.stat.profit .bar{background:rgba(255,255,255,.25);}
+.stat.profit .bar i{background:#fff;}
+.stat.hero .pair .r .n{color:#cfe0ff;}
+@media(max-width:820px){.stat .trio .n{white-space:normal;}}
