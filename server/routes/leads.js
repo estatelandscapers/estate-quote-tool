@@ -91,6 +91,13 @@ router.get('/:id/estimate', (req, res) => {
   if (!l) return res.status(404).json({ error: 'not found' });
   res.json(require('../utils/estimator').summary(l));
 });
+router.post('/:id/estimate/cancel', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  const n = require('../utils/estimator').cancelPending(l.id, 'cancelled by ' + (req.user ? (req.user.name || req.user.username) : 'rep'));
+  if (n) db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', l.stage, req.user ? (req.user.name || req.user.username) : '', 'logged', 'Code email cancelled by hand');
+  res.json({ ok: true, cancelled: n });
+});
 router.post('/:id/estimate/invite', async (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'not found' });
@@ -796,6 +803,7 @@ router.post('/:id/message', async (req, res) => {
   const channel = ['whatsapp', 'sms', 'email', 'call', 'note'].includes(b.channel) ? b.channel : 'note';
   const who = req.user ? (req.user.name || req.user.username) : '';
   let outcome = 'logged';
+  const msgId = newId();      // fixed before sending so the tracking pixel can point at it
 
   if (channel === 'email') {
     const { sendMail, validateEmail } = require('../utils/email');
@@ -806,16 +814,18 @@ router.post('/:id/message', async (req, res) => {
     const { signatureHtml } = require('../utils/quoteEmail');
     const html = shell(String(b.body || '').split(/\n{2,}/).map(p => `<p style="margin:0 0 14px;">${esc(p).replace(/\n/g, '<br>')}</p>`).join('') + signatureHtml());
     try {
-      await sendMail({ to, subject: b.subject || 'Estate Landscapers', html });
+      await sendMail({ to, subject: b.subject || 'Estate Landscapers', html, track: msgId });
       outcome = 'sent';
       if (!l.email) db.prepare('UPDATE leads SET email=? WHERE id=?').run(to, l.id);
     } catch (e) {
       return res.status(502).json({ error: e.message, hint: e.hint });
     }
   }
+  // A human reached out: a pending code email is no longer wanted.
+  if (['call', 'whatsapp', 'sms', 'email'].includes(channel)) { try { require('../utils/estimator').cancelPending(l.id, 'lead contacted by ' + who); } catch (e) {} }
 
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
-    VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, channel, b.stage || l.stage || null,
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(msgId, l.id, channel, b.stage || l.stage || null,
     b.subject || null, b.body || null, who, outcome, b.note || null);
 
   // Advance the lead and diarise the next action automatically — this is what makes
@@ -897,16 +907,18 @@ router.post('/:id/close', async (req, res) => {
     if (bad) return res.status(400).json({ error: bad, field: 'to' });
     const { shell, esc, signatureHtml } = require('../utils/quoteEmail');
     const html = shell(String(b.body || '').split(/\n{2,}/).map(p => `<p style="margin:0 0 14px;">${esc(p).replace(/\n/g, '<br>')}</p>`).join('') + signatureHtml());
+    const msgId = newId();
     try {
-      const sent = await sendMail({ to, subject: b.subject || 'Your landscaping enquiry', html });
+      const sent = await sendMail({ to, subject: b.subject || 'Your landscaping enquiry', html, track: msgId });
       if (sent && sent.skipped) return res.status(502).json({ error: sent.reason });
       emailed = to;
     } catch (e) { return res.status(502).json({ error: e.message, hint: e.hint }); }
     db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(newId(), l.id, 'email', r.stage, b.subject || null, b.body || null, who, 'sent', 'Close-out email: ' + r.label);
+      .run(msgId, l.id, 'email', r.stage, b.subject || null, b.body || null, who, 'sent', 'Close-out email: ' + r.label);
   }
   db.prepare("UPDATE leads SET stage=?, status='Lost', next_followup=NULL, declined_reason=?, stage_override=NULL, override_snapshot=NULL, parked=0, updated_at=datetime('now') WHERE id=?").run(r.stage, reason, l.id);
   if (l.quote_id) { try { db.prepare("UPDATE quotes SET lost_at=COALESCE(lost_at, datetime('now')), lost_reason=COALESCE(lost_reason, ?), link_off=1, updated_at=datetime('now') WHERE id=? AND status<>'accepted'").run(reason, l.quote_id); } catch (e) {} }
+  try { require('../utils/estimator').cancelPending(l.id, 'lead closed'); } catch (e) {}
   db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
     .run(newId(), l.id, 'note', r.stage, who, 'logged', 'Closed: ' + reason + (emailed ? ' · close-out email sent' : ''));
   res.json({ ok: true, stage: r.stage, reason, emailed });
@@ -949,8 +961,14 @@ router.get('/:id/not-a-fit-message', (req, res) => {
 
 router.get('/:id/history', (req, res) => {
   const rows = db.prepare('SELECT * FROM lead_messages WHERE lead_id=? ORDER BY created_at DESC').all(req.params.id);
+  const opens = require('../utils/estimator').opensFor(rows.filter(r => r.channel === 'email' && r.outcome === 'sent').map(r => r.id));
   res.json(rows.map(r => ({ id: r.id, channel: r.channel, stage: r.stage, subject: r.subject,
-    body: r.body, sentBy: r.sent_by, outcome: r.outcome, note: r.note, at: r.created_at })));
+    body: r.body, sentBy: r.sent_by, outcome: r.outcome, note: r.note, at: r.created_at,
+    opens: r.channel === 'email' && r.outcome === 'sent' ? (opens[r.id] || { count: 0 }) : null })));
+});
+// The email funnel for the Leads tab: sent → opened → code used → ballpark → booked.
+router.get('/estimator-funnel', (req, res) => {
+  res.json(require('../utils/estimator').funnel(parseInt(req.query.days, 10) || 30));
 });
 
 module.exports = router;

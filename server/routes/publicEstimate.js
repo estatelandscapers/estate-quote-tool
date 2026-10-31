@@ -43,6 +43,18 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of HITS) { const a
 
 const mask = e => { const [u, d] = String(e || '').split('@'); return u && d ? `${u.slice(0, 2)}••••@${d}` : ''; };
 
+// ---- email opens, forwarded by the pixel Worker (track.estatelandscapers.com.au) ---------------
+// Server to server, no CORS needed. Sits above the master switch so opens are recorded even
+// while the estimator is paused. The id is the lead_messages row id (unguessable), prefixed em_.
+router.post('/email-open', (req, res) => {
+  const b = req.body || {};
+  const id = String(b.id || '').replace(/^em_/, '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.json({ ok: false });
+  if (limited(ipOf(req), 600)) return res.json({ ok: false });
+  const ok = EST.recordOpen(id, { at: b.at, country: b.country, ua: b.ua });
+  res.json({ ok });
+});
+
 // ---- master switch ----------------------------------------------------------------------------
 // Off = every call answers 503 "paused" and the website shows its fallback. Nothing is deleted;
 // codes, answers and sessions are all still there when it comes back on.

@@ -50,6 +50,9 @@ const DEFAULTS = {
   est_hot_fade_days: '3',
   est_warm_fade_days: '7',
   est_intro_subject: 'Your landscaping estimate, {{first}}: your access code inside',
+  est_invite_delay_min: '15',    // the code email waits this long after the lead arrives (0 = instant)
+  est_warm_email_opens: '3',     // opened the code email this many times (no code used) = warm
+  pixel_url: 'https://track.estatelandscapers.com.au/',
 };
 // Auto lead processing on/off. Off: no lead gets a code automatically, the public estimator
 // answers "paused" to every call, and the website falls back to the plain acknowledgement.
@@ -58,7 +61,98 @@ function enabled() { return settingGet('est_enabled') !== '0'; }
 // The three automatic doors (website form, hipages/email ingest, typed-in lead) call this.
 async function autoInvite(leadId, opts) {
   if (!enabled()) return { ok: false, paused: true };
-  return invite(leadId, opts);
+  const delay = n('est_invite_delay_min', 15);
+  if (delay <= 0) return invite(leadId, opts);
+  return schedule(leadId, delay);
+}
+
+// ---- the delayed code email -------------------------------------------------------------------
+// A new lead gets its code email est_invite_delay_min minutes after arriving, not instantly.
+// The scheduler below runs every 30 s. If the lead has moved on before it is due (someone
+// called, booked, closed it, or sent the code by hand) the email is cancelled and the card
+// says so. The rep can still send it from the card.
+function schedule(leadId, delayMin) {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(leadId);
+  if (!l) return { ok: false, error: 'lead not found' };
+  if (!canInvite(l)) { db.prepare("UPDATE leads SET est_status='noemail' WHERE id=?").run(l.id); return { ok: false, error: 'no email address on the lead' }; }
+  cancelPending(l.id, 'rescheduled');
+  const due = new Date(Date.now() + delayMin * 60e3).toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare('INSERT INTO scheduled_emails (id,lead_id,kind,due_at) VALUES (?,?,?,?)').run(newId(), l.id, 'invite', due);
+  db.prepare("UPDATE leads SET est_status=COALESCE(NULLIF(est_status,''),'scheduled'), updated_at=datetime('now') WHERE id=?").run(l.id);
+  if (!l.est_status) db.prepare("UPDATE leads SET est_status='scheduled' WHERE id=?").run(l.id);
+  return { ok: true, scheduled: true, due };
+}
+function pending(leadId) {
+  return db.prepare("SELECT * FROM scheduled_emails WHERE lead_id=? AND kind='invite' AND sent_at IS NULL AND cancelled_at IS NULL ORDER BY due_at LIMIT 1").get(leadId) || null;
+}
+function cancelPending(leadId, reason) {
+  const r = db.prepare("UPDATE scheduled_emails SET cancelled_at=datetime('now'), reason=? WHERE lead_id=? AND kind='invite' AND sent_at IS NULL AND cancelled_at IS NULL").run(String(reason || '').slice(0, 80), leadId);
+  if (r.changes) db.prepare("UPDATE leads SET est_status=CASE WHEN est_status='scheduled' THEN NULL ELSE est_status END WHERE id=?").run(leadId);
+  return r.changes;
+}
+// Why a pending code email should not go: the lead has already been dealt with.
+function blockedReason(l) {
+  if (['Won', 'Lost'].includes(l.status)) return 'lead closed';
+  if (l.est_invited_at) return 'code already sent';
+  const { phaseOf } = require('./leadTemplates');
+  if (phaseOf(l.stage || 'call1') > 1 || ['callback', 'details', 'confirm'].includes(l.stage)) return 'lead already contacted';
+  const touched = db.prepare("SELECT 1 FROM lead_messages WHERE lead_id=? AND channel IN ('call','whatsapp','sms','email') AND COALESCE(sent_by,'') NOT IN ('auto','client','') LIMIT 1").get(l.id);
+  if (touched) return 'lead already contacted';
+  const visit = db.prepare("SELECT 1 FROM site_visits WHERE lead_id=? AND status='booked' LIMIT 1").get(l.id);
+  if (visit) return 'site visit already booked';
+  return null;
+}
+async function runScheduler() {
+  const due = db.prepare("SELECT * FROM scheduled_emails WHERE kind='invite' AND sent_at IS NULL AND cancelled_at IS NULL AND due_at <= datetime('now') ORDER BY due_at LIMIT 20").all();
+  for (const row of due) {
+    const l = db.prepare('SELECT * FROM leads WHERE id=?').get(row.lead_id);
+    const why = !l ? 'lead deleted' : !enabled() ? 'estimator switched off' : blockedReason(l);
+    if (why) {
+      db.prepare("UPDATE scheduled_emails SET cancelled_at=datetime('now'), reason=? WHERE id=?").run(why, row.id);
+      if (l) {
+        db.prepare("UPDATE leads SET est_status=CASE WHEN est_status='scheduled' THEN NULL ELSE est_status END WHERE id=?").run(l.id);
+        db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
+          .run(newId(), l.id, 'note', l.stage, 'auto', 'logged', 'Code email cancelled: ' + why);
+      }
+      continue;
+    }
+    db.prepare("UPDATE scheduled_emails SET sent_at=datetime('now') WHERE id=?").run(row.id);
+    try { await invite(l.id, { reason: 'new', by: 'auto' }); }
+    catch (e) { console.log('[estimator] scheduled invite failed:', e.message); }
+  }
+}
+function startScheduler() {
+  setInterval(() => { runScheduler().catch(e => console.error('[estimator] scheduler:', e.message)); }, 30e3).unref();
+  setTimeout(() => { runScheduler().catch(() => {}); }, 5e3).unref();
+}
+
+// ---- email opens (from the pixel Worker) -------------------------------------------------------
+function recordOpen(messageId, { at, country, ua } = {}) {
+  const m = db.prepare('SELECT id, lead_id FROM lead_messages WHERE id=?').get(messageId);
+  if (!m) return false;
+  // Mail clients often fetch the image twice within seconds; count that once.
+  const recent = db.prepare("SELECT 1 FROM email_opens WHERE message_id=? AND created_at > datetime('now','-45 seconds')").get(messageId);
+  if (recent) return true;
+  db.prepare('INSERT INTO email_opens (id,message_id,lead_id,opened_at,country,ua) VALUES (?,?,?,?,?,?)')
+    .run(newId(), messageId, m.lead_id, (at && String(at).slice(0, 19).replace('T', ' ')) || nowIso(), String(country || '').slice(0, 4), String(ua || '').slice(0, 200));
+  return true;
+}
+function opensFor(messageIds) {
+  if (!messageIds.length) return {};
+  const out = {};
+  const rows = db.prepare(`SELECT message_id, COUNT(*) n, MIN(opened_at) first, MAX(opened_at) last, MAX(country) country FROM email_opens WHERE message_id IN (${messageIds.map(() => '?').join(',')}) GROUP BY message_id`).all(...messageIds);
+  rows.forEach(r => out[r.message_id] = { count: r.n, first: r.first, last: r.last, country: r.country });
+  return out;
+}
+// The code email(s) for a lead: sent when, opened how often, code used or not.
+function introEmailStatus(l) {
+  const msgs = db.prepare("SELECT id, created_at, outcome FROM lead_messages WHERE lead_id=? AND channel='email' AND stage='estinvite' ORDER BY created_at DESC").all(l.id);
+  const opens = opensFor(msgs.map(m => m.id));
+  let count = 0, first = null, last = null, country = '';
+  msgs.forEach(m => { const o = opens[m.id]; if (o) { count += o.count; if (!first || o.first < first) first = o.first; if (!last || o.last > last) last = o.last; country = country || o.country; } });
+  const p = pending(l.id);
+  return { sent: msgs.length, lastSentAt: msgs.length ? msgs[0].created_at : null, delivered: msgs.some(m => m.outcome === 'sent'),
+    opens: count, firstOpen: first, lastOpen: last, country, pending: p ? { dueAt: p.due_at } : null };
 }
 function seedDefaults() {
   Object.entries(DEFAULTS).forEach(([k, v]) => { if (settingGet(k) == null) settingSet(k, v); });
@@ -175,10 +269,12 @@ async function invite(leadId, { reason = 'new', by = '' } = {}) {
   l.est_code = code; l.est_code_expires = exp;
   const mail = introEmail(l);
   let outcome = 'sent', err = null;
-  try { const r = await sendMail({ to: l.email, subject: mail.subject, html: mail.html }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } }
+  const msgId = newId();      // known before sending, so the pixel in the email points at this row
+  try { const r = await sendMail({ to: l.email, subject: mail.subject, html: mail.html, track: msgId }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } }
   catch (e) { outcome = 'failed'; err = e.message; console.log(`[estimator] intro email failed for ${l.name}: ${e.message}`); }
+  cancelPending(l.id, 'sent now');
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(newId(), l.id, 'email', 'estinvite', mail.subject, mail.text, by || 'auto', outcome,
+    .run(msgId, l.id, 'email', 'estinvite', mail.subject, mail.text, by || 'auto', outcome,
       `Online estimator ${reason === 'resend' ? 'code resent' : 'invitation'} · code ${code} · valid to ${exp.slice(0, 10)}${err ? ' · NOT SENT: ' + err : ''}`);
   return { ok: outcome === 'sent', code, expires: exp, error: err };
 }
@@ -418,9 +514,10 @@ async function sendBallparkEmail(l, bp, a, version) {
   const subject = bp.decline ? 'Your landscaping estimate: a note about access' : bp.tooUnknown ? 'Your landscaping estimate: next step is the site visit' : `Your landscaping ballpark: $${bp.incLo.toLocaleString()} to $${bp.incHi.toLocaleString()}`;
   const text = `${t.headline}\n\n${t.body}` + (bp.inc && bp.inc.length ? '\n\nIncluded: ' + bp.inc.filter(i => !/Establishment/.test(i.name)).map(i => `${i.name} (${i.qty})`).join('; ') : '') + (bp.exc.length ? '\nTo check on site: ' + bp.exc.join('; ') : '') + (fit ? (sample ? `\n\nSample quote: ${sample}` : '') : `\n\n${NOT_FIT_TEXT} ${NOT_FIT_HELP}`);
   let outcome = 'sent', err = null;
-  try { const r = await sendMail({ to: l.email, subject, html }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } } catch (e) { outcome = 'failed'; err = e.message; }
+  const msgId = newId();
+  try { const r = await sendMail({ to: l.email, subject, html, track: msgId }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } } catch (e) { outcome = 'failed'; err = e.message; }
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(newId(), l.id, 'email', 'estimatedone', subject, text, 'auto', outcome, `Ballpark email after online estimate (version ${version})${err ? ' · NOT SENT: ' + err : ''}`);
+    .run(msgId, l.id, 'email', 'estimatedone', subject, text, 'auto', outcome, `Ballpark email after online estimate (version ${version})${err ? ' · NOT SENT: ' + err : ''}`);
   const a2 = answersOf(db.prepare('SELECT est_answers FROM leads WHERE id=?').get(l.id));
   if (a2.versions[version - 1]) { a2.versions[version - 1].emailed = outcome === 'sent'; db.prepare('UPDATE leads SET est_answers=? WHERE id=?').run(JSON.stringify(a2), l.id); }
   return { ok: outcome === 'sent', error: err };
@@ -478,9 +575,10 @@ async function sendBookingEmail(l, bk) {
     <p style="margin:18px 0 0;">Estate Landscapers<br><span style="color:#888;font-size:12px;">Licensed Landscapers · LIC 487076C</span></p>`);
   const subject = `Site visit request: ${when}`;
   let outcome = 'sent', err = null;
-  try { const r = await sendMail({ to: l.email, subject, html }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } } catch (e) { outcome = 'failed'; err = e.message; }
+  const msgId = newId();
+  try { const r = await sendMail({ to: l.email, subject, html, track: msgId }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } } catch (e) { outcome = 'failed'; err = e.message; }
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(newId(), l.id, 'email', 'visitbooked', subject, `Site visit request received for ${when}. We will confirm the day before with an ETA.`, 'auto', outcome, err ? 'NOT SENT: ' + err : null);
+    .run(msgId, l.id, 'email', 'visitbooked', subject, `Site visit request received for ${when}. We will confirm the day before with an ETA.`, 'auto', outcome, err ? 'NOT SENT: ' + err : null);
 }
 
 // ---- tracking: events → sessions → signal -----------------------------------------------------
@@ -528,7 +626,19 @@ function visitorMeta(k) {
 //   cold   everything else; "out of budget" reaction is cold whatever else happened
 //   hot fades to warm after est_hot_fade_days without a session; warm to cold after est_warm_fade_days
 function signalFor(l, sessions) {
-  if (!sessions.length) return { signal: 'unopened', why: l.est_status === 'noemail' ? 'no email to send a code to' : l.est_invited_at ? 'code sent, not used yet' : 'not invited' };
+  if (!sessions.length) {
+    // No session yet: the email opens are the only behaviour there is. Opened several times
+    // without using the code is interest worth a call; never opened is the honest "unopened".
+    if (l.est_status === 'noemail') return { signal: 'unopened', why: 'no email to send a code to' };
+    if (!l.est_invited_at) return { signal: 'unopened', why: pending(l.id) ? 'code email scheduled' : 'not invited' };
+    const em = introEmailStatus(l);
+    const win = n('est_hot_window_h', 48) * 3600e3;
+    const recentOpens = em.lastOpen && (Date.now() - ms(em.lastOpen) <= win);
+    if (em.opens >= n('est_warm_email_opens', 3) && recentOpens) return { signal: 'warm', why: `opened the code email ${em.opens}×, code not used yet` };
+    if (em.opens) return { signal: 'cold', why: `opened the code email ${em.opens}×, code not used` };
+    const sinceSent = em.lastSentAt ? Date.now() - ms(em.lastSentAt) : 0;
+    return { signal: 'unopened', why: sinceSent > 864e5 ? `code email not opened in ${Math.floor(sinceSent / 864e5)} d` : 'code email sent, not opened yet' };
+  }
   const now = Date.now(), last = ms(sessions[0].started_at), since = now - last;
   const a = answersOf(l), ac = answeredCount(a.current || {});
   const pct = ac.total ? Math.round(100 * ac.answered / ac.total) : 0;
@@ -578,6 +688,7 @@ function summary(l) {
   const last = a.versions[a.versions.length - 1];
   return {
     enabled: enabled(),
+    email: introEmailStatus(l),
     invited: !!l.est_invited_at, invitedAt: l.est_invited_at || null, canInvite: canInvite(l),
     code: l.est_code || null, expires: l.est_code_expires || null, live, status: l.est_status || null,
     signal: sig.signal, why: sig.why,
@@ -593,12 +704,29 @@ function summary(l) {
 }
 // Compact form for the pipeline board chip.
 function quick(l) {
-  if (!l.est_invited_at && !l.est_status) return null;
+  if (!l.est_invited_at && !l.est_status && !pending(l.id)) return null;
   const sessions = sessionsFor(l.id);
   const sig = signalFor(l, sessions);
   return { signal: sig.signal, why: sig.why, opens: sessions.length, lastSession: sessions.length ? sessions[0].started_at : null, status: l.est_status || null };
 }
 
-module.exports = { isFit, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
+// Last N days: how many code emails went out, were opened, led to a code being used, a
+// ballpark, a booking. The honest read of whether the email approach is working.
+function funnel(days = 30) {
+  const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 19).replace('T', ' ');
+  const leads = db.prepare("SELECT id FROM leads WHERE est_invited_at >= ?").all(since).map(r => r.id);
+  if (!leads.length) return { days, invited: 0, opened: 0, used: 0, ballpark: 0, booked: 0, notFit: 0, pending: 0 };
+  const q = leads.map(() => '?').join(',');
+  const opened = db.prepare(`SELECT COUNT(DISTINCT lead_id) n FROM email_opens WHERE lead_id IN (${q}) AND message_id IN (SELECT id FROM lead_messages WHERE stage='estinvite')`).get(...leads).n;
+  const used = db.prepare(`SELECT COUNT(DISTINCT lead_id) n FROM estimate_events WHERE lead_id IN (${q}) AND event_type='auth'`).get(...leads).n;
+  const ballpark = db.prepare(`SELECT COUNT(DISTINCT lead_id) n FROM estimate_events WHERE lead_id IN (${q}) AND event_type='ballpark'`).get(...leads).n;
+  const booked = db.prepare(`SELECT COUNT(DISTINCT lead_id) n FROM estimate_events WHERE lead_id IN (${q}) AND event_type='booked'`).get(...leads).n;
+  const notFit = db.prepare(`SELECT COUNT(*) n FROM leads WHERE id IN (${q}) AND stage='disqualified' AND declined_reason LIKE 'Online estimate:%'`).get(...leads).n;
+  const pendingN = db.prepare("SELECT COUNT(*) n FROM scheduled_emails WHERE kind='invite' AND sent_at IS NULL AND cancelled_at IS NULL").get().n;
+  const cancelled = db.prepare("SELECT COUNT(*) n FROM scheduled_emails WHERE kind='invite' AND cancelled_at IS NOT NULL AND created_at >= ?").get(since).n;
+  return { days, invited: leads.length, opened, used, ballpark, booked, notFit, pending: pendingN, cancelled };
+}
+
+module.exports = { funnel, schedule, pending, cancelPending, runScheduler, startScheduler, recordOpen, opensFor, introEmailStatus, isFit, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
   invite, canInvite, introEmail, verify, byToken, answersOf, prefillFrom, saveAnswers, complete, clientText, sendBallparkEmail,
   fridaySlots, book, sendBookingEmail, logEvent, sessionsFor, signalFor, summary, quick, estimatorLink, sampleQuoteLink };

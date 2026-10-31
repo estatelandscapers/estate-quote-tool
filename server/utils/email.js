@@ -166,7 +166,21 @@ function validateEmail(addr) {
   return null;
 }
 
-async function sendMail({ to, subject, html, attachments }) {
+// A 1x1 image served by the "pixel" Worker (track.estatelandscapers.com.au). Its id is the
+// lead_messages row id prefixed em_, so an open can be matched back to the exact email on the
+// lead. Opens are indicative only: Gmail fetches through its own proxy (country shows as US) and
+// some mail apps pre-load images. "Never opened" is the reliable half of the signal.
+function pixelFor(track) {
+  if (!track) return '';
+  let base = '';
+  try { base = require('../db').settingGet('pixel_url') || ''; } catch (e) {}
+  base = String(base || 'https://track.estatelandscapers.com.au/').trim();
+  if (!/^https?:\/\//i.test(base)) base = 'https://' + base;
+  const url = base + (base.includes('?') ? '&' : (base.endsWith('/') ? '?' : '/?')) + 'id=em_' + encodeURIComponent(track);
+  return `<img src="${url}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0;">`;
+}
+async function sendMail({ to, subject, html, attachments, track }) {
+  if (track && html) html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, pixelFor(track) + '</body>') : html + pixelFor(track);
   const p = provider();
   if (!p) {
     console.log(`[email] no provider configured — skipped: ${subject} → ${to}`);
@@ -207,4 +221,4 @@ async function verifyConnection() {
   return { ok: false, provider: 'smtp', error: errors.join(' | '),
     hint: 'Both SMTP ports timed out — this host blocks outbound SMTP. Switch to an email API: set ZEPTOMAIL_TOKEN, RESEND_API_KEY or SENDGRID_API_KEY in Railway.' };
 }
-module.exports = { sendMail, configured, verifyConnection, provider, fromAddress, validateEmail };
+module.exports = { pixelFor, sendMail, configured, verifyConnection, provider, fromAddress, validateEmail };

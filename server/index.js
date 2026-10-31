@@ -268,6 +268,7 @@ const PORT = process.env.PORT || 3000;
 try { require('./utils/mailIngest').startPolling(); } catch (e) { console.error('[mail] not started:', e.message); }
 
 try { require('./utils/estimator').seedDefaults(); } catch (e) { console.error('[estimator] defaults:', e.message); }
+try { require('./utils/estimator').startScheduler(); } catch (e) { console.error('[estimator] scheduler:', e.message); }
 app.listen(PORT, () => {
   console.log(`Estate Landscapers quote tool running on http://localhost:${PORT}`);
   console.log(`  Admin:  http://localhost:${PORT}/admin`);

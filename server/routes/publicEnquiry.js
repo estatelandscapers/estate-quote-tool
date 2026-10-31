@@ -178,13 +178,12 @@ router.post('/enquiry', async (req, res) => {
     // Residential (including small projects): the intro email with the estimator code IS the
     // acknowledgement, sent now. If files were attached, the file receipt still follows once
     // OneDrive confirms what landed. Commercial keeps the plain acknowledgement.
-    if (email && audience === 'residential' && require('../utils/estimator').enabled()) {
-      require('../utils/estimator').autoInvite(id, { reason: 'new' }).catch(e => console.log('[enquiry] invite failed:', e.message));
-      if (declared.length) scheduleFallbackAck(ref);
-    } else {
-      if (email && !declared.length) sendAck({ email, name, ref, audience, files: [], missing: [] });
-      if (email && declared.length) scheduleFallbackAck(ref);
-    }
+    // The acknowledgement goes straight away as it always did. The estimator code email
+    // follows est_invite_delay_min minutes later (residential only), unless the lead has
+    // been dealt with by then.
+    if (email && !declared.length) sendAck({ email, name, ref, audience, files: [], missing: [] });
+    if (email && declared.length) scheduleFallbackAck(ref);
+    if (email && audience === 'residential') require('../utils/estimator').autoInvite(id, { reason: 'new' }).catch(e => console.log('[enquiry] invite failed:', e.message));
 
     console.log(`[enquiry] ${ref} lead ${id} (${audience}) files=${declared.length} onedrive=${filesOk}`);
     res.status(201).json({
@@ -318,9 +317,9 @@ function sendAck({ email, name, ref, audience, files = [], missing = [] }) {
 <p>Hi ${esc(first)},</p>
 <p>Thanks for your enquiry — it's in front of our team now, reference <b>${ref}</b>.</p>
 ${list}${chase}
-<p><b>What happens next:</b> we'll call you ${audience === 'commercial'
-  ? 'to talk through the project and what documents we need for a priced submission'
-  : 'the same business day to talk through your project'}.</p>
+<p><b>What happens next:</b> ${audience === 'commercial'
+  ? "we'll call you to talk through the project and what documents we need for a priced submission"
+  : "a second email with your access code for the free online estimate follows shortly, and we'll call you the same business day to talk through your project"}.</p>
 <p>If anything changes in the meantime, just reply to this email and quote ${ref}.</p>
 <p>Estate Landscapers<br>
 <span style="color:#666">Licensed Landscapers · LIC 487076C · enquiry@estatelandscapers.com.au</span></p>

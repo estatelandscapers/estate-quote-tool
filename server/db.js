@@ -428,6 +428,21 @@ db.exec(`CREATE TABLE IF NOT EXISTS estimate_events (
 );
 CREATE INDEX IF NOT EXISTS idx_est_events_lead ON estimate_events(lead_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_leads_est_code ON leads(est_code);`);
+// ---- v25: email open tracking + delayed intro email ----
+// Every email the tool sends carries a pixel whose id is the lead_messages row id (em_<id>).
+// The pixel Worker forwards each open here; one row per open. scheduled_emails holds the
+// delayed estimator invitation (est_invite_delay_min) until it is sent or cancelled.
+db.exec(`CREATE TABLE IF NOT EXISTS email_opens (
+  id TEXT PRIMARY KEY, message_id TEXT, lead_id TEXT, opened_at TEXT, country TEXT, ua TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_email_opens_msg ON email_opens(message_id);
+CREATE INDEX IF NOT EXISTS idx_email_opens_lead ON email_opens(lead_id);
+CREATE TABLE IF NOT EXISTS scheduled_emails (
+  id TEXT PRIMARY KEY, lead_id TEXT, kind TEXT, due_at TEXT, sent_at TEXT, cancelled_at TEXT, reason TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_emails(due_at, sent_at, cancelled_at);`);
 // A job won outside the client link (client PO, returned contract, email approval). The
 // evidence file is stored and fingerprinted exactly like an e-signed contract.
 addColumn('quotes','won_method','TEXT');           // 'esign' | 'manual'

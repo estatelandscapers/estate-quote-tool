@@ -319,11 +319,21 @@ async function leadsSummary(v) {
       ${state.showParked ? `<div class="phasebox" style="margin-top:10px;"><b style="font-size:11.5px;">Parked (${board.parked.length})</b> ${board.parked.map(l => `<span class="chip" style="margin-left:6px;">${esc(l.name)}${l.suburb ? ' · ' + esc(l.suburb) : ''} <a href="#" data-unpark="${l.id}" style="margin-left:4px;">unpark</a></span>`).join('') || '<span class="muted">none</span>'}</div>` : ''}
     </div>
 
+    <div class="card" id="estFunnelCard"><h2>Estimator emails, last 30 days</h2><div class="sub">Is the code email working? Sent → opened → code used → ballpark seen → Friday booked. Opens are indicative (Gmail and Apple Mail can hide or fake them); code used is the hard number.</div><div class="rule"></div><div id="estFunnel" class="muted">Loading…</div></div>
     <div class="card"><h2>Client link activity</h2><div class="sub">Every time a client opens their quote link, newest first. Reading time is time with the page in front of them. Tap a row for the full behaviour record.</div><div class="rule"></div>
       <div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>When (Sydney)</th><th>Quote</th><th>Client</th><th>Device · place</th><th class="right">Reading</th><th>What they did</th><th>Signal</th></tr></thead><tbody>
       ${(act.rows || []).map(r => `<tr class="row" data-q="${esc(r.quoteId)}"><td class="muted" style="white-space:nowrap;">${esc(sydTime(r.when))}</td><td><b>${esc(r.quoteNumber)}</b></td><td>${esc(r.client || '')}</td><td class="muted">${esc(r.device)}${r.city ? ' · ' + esc(r.city) : ''}</td><td class="right" style="white-space:nowrap;">${esc(r.activeLabel)}</td><td style="font-size:11.5px;">${esc(r.summary)}</td><td><span class="signal sig-${r.signal}">${SIG_LABEL[r.signal] || r.signal}</span></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No client opens recorded yet.</td></tr>'}
       </tbody></table></div></div>
     <div class="dropbar" id="dropbar"><div data-drop="lost">Not proceeding — lost</div><div data-drop="nofit">Not a fit</div><div data-drop="park">Parked</div></div>`;
+  api('/leads/estimator-funnel?days=30').then(f => {
+    const el = document.getElementById('estFunnel'); if (!el) return;
+    const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '–';
+    const step = (label, n, of) => `<div class="stat"><div class="k">${label}</div><div class="v">${n}</div><div class="muted" style="font-size:10.5px;">${of != null ? pct(n, of) + ' of ' + (of === f.invited ? 'sent' : 'previous') : ''}</div></div>`;
+    el.className = '';
+    el.innerHTML = `<div class="grid4">${step('Code emails sent', f.invited)}${step('Opened', f.opened, f.invited)}${step('Code used', f.used, f.invited)}${step('Ballpark seen', f.ballpark, f.invited)}</div>
+      <div class="grid4" style="margin-top:8px;">${step('Friday booked', f.booked, f.invited)}${step('Not a fit (their answer)', f.notFit, f.invited)}<div class="stat"><div class="k">Waiting to send</div><div class="v">${f.pending}</div><div class="muted" style="font-size:10.5px;">${f.cancelled} cancelled (contacted first)</div></div></div>
+      ${f.invited && !f.opened ? '<div class="warnbox" style="margin-top:10px;"><b>No opens recorded.</b> Either nobody is opening the code email, or the pixel is not reaching the tool. Send yourself a test enquiry and open it on your phone: it should show as opened within a minute.</div>' : ''}`;
+  }).catch(() => { const el = document.getElementById('estFunnel'); if (el) el.textContent = 'Could not load.'; });
 
   // ---- figures ----
   $$('[data-fig]').forEach(el => { const go = () => openFigure(el.dataset.fig); el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
@@ -1336,8 +1346,9 @@ async function leadConsole(v) {
                 <span class="tlFull" style="display:none;white-space:pre-wrap;">${esc(t)}
                 <br><a href="#" class="tlLess" style="color:var(--blue);font-weight:700;">Show less</a></span></div>`;
             };
+            const opened = m.opens ? (m.opens.count ? `<span class="tag tag-accepted" title="first ${esc(sydTime(m.opens.first))}${m.opens.country ? ' · ' + esc(m.opens.country) : ''}">opened ${m.opens.count}×</span>` : '<span class="tag tag-superseded" title="No open recorded yet. Some mail apps block or pre-load images, so treat this as indicative.">not opened</span>') : '';
             return `<div class="tl" style="--c:${(CHAN[m.channel] || CHAN.note)[1]};">
-            <b>${esc(sydTime(m.at))}</b> — ${esc((CHAN[m.channel] || CHAN.note)[0])}${m.outcome === 'sent' ? ' sent' : ''}
+            <b>${esc(sydTime(m.at))}</b> — ${esc((CHAN[m.channel] || CHAN.note)[0])}${m.outcome === 'sent' ? ' sent' : ''} ${opened}
             ${m.sentBy ? `<span class="muted"> · ${esc(m.sentBy)}</span>` : ''}
             ${m.subject ? `<div class="muted" style="font-size:10.5px;margin-top:2px;"><b>${esc(m.subject)}</b></div>` : ''}
             ${clip(m.body)}${clip(m.note)}</div>`; }).join('')
@@ -1438,14 +1449,18 @@ async function leadConsole(v) {
           <div class="sub">${esc(E.why || '')}${E.invited ? ' · invited ' + esc(when(E.invitedAt)) : ''}</div></div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${E.enabled === false ? '<span class="tag tag-superseded" title="Turn it on in Editor → Settings → Online estimator">ESTIMATOR OFF</span>' : ''}
-          <button class="btn ${E.invited ? 'btn-ghost' : 'btn-blue'} btn-sm" id="estInvite" ${E.enabled === false ? 'disabled' : ''}>${E.invited ? '↻ Resend the code' : '✉ Send the estimator code'}</button>
+          ${E.email && E.email.pending ? `<button class="btn btn-ghost btn-sm" id="estCancel">✕ Cancel scheduled email</button>` : ''}
+          <button class="btn ${E.invited ? 'btn-ghost' : 'btn-blue'} btn-sm" id="estInvite" ${E.enabled === false ? 'disabled' : ''}>${E.email && E.email.pending ? '✉ Send the code now' : E.invited ? '↻ Resend the code' : '✉ Send the estimator code'}</button>
         </div></div>
       <div class="rule"></div>
       <div class="grid2">
         <div>
           <div class="alab">Access code</div><div style="margin-bottom:10px;">${codeLine}</div>
           <table class="kv">
-            <tr><td class="muted" style="width:42%;">Status</td><td>${esc(E.status || 'not started')}</td></tr>
+            <tr><td class="muted" style="width:42%;">Code email</td><td>${E.email && E.email.pending ? `<span class="tag tag-draft">scheduled</span> goes at ${esc(when(E.email.pending.dueAt))} unless the lead is contacted first`
+              : E.email && E.email.sent ? `sent ${esc(when(E.email.lastSentAt))}${E.email.sent > 1 ? ` (${E.email.sent}×)` : ''} · ${E.email.opens ? `<span class="tag tag-accepted">opened ${E.email.opens}×</span> first ${esc(when(E.email.firstOpen))}${E.email.country ? ' · ' + esc(E.email.country) : ''}` : '<span class="tag tag-superseded">not opened</span>'} · code ${E.opens ? 'used' : 'not used'}`
+              : '<span class="muted">not sent</span>'}</td></tr>
+            <tr><td class="muted">Status</td><td>${esc(E.status || 'not started')}</td></tr>
             <tr><td class="muted">Answered</td><td>${E.answered} of ${E.total} questions${E.versions ? ` · completed ${E.versions}×` : ''}</td></tr>
             ${bp ? `<tr><td class="muted">Ballpark shown</td><td>${esc(bp)}${E.history.length && E.history[E.history.length - 1].emailed ? ' · emailed' : ''}</td></tr>` : ''}
             ${E.reaction ? `<tr><td class="muted">Reaction</td><td>${esc(E.reaction)}</td></tr>` : ''}
@@ -1460,6 +1475,9 @@ async function leadConsole(v) {
             : '<p class="muted" style="font-size:11.5px;">Not opened yet.</p>'}
         </div>
       </div></div>`;
+    const ec = document.getElementById('estCancel'); if (ec) ec.addEventListener('click', async () => {
+      await api(`/leads/${l.id}/estimate/cancel`, { method: 'POST' }); toast('Scheduled code email cancelled'); leadConsole(v);
+    });
     document.getElementById('estInvite').addEventListener('click', async () => {
       let email = l.email;
       if (!E.canInvite) { email = prompt('Email address to send the code to:'); if (!email) return; }
@@ -3284,10 +3302,11 @@ async function settingsTab(v) {
     <div class="grid2">
       <div class="field"><label>Estimator page URL</label><input id="set_est_url" value="${esc(s.est_url || '')}"></div>
       <div class="field"><label>This tool's public URL (for sample-quote links in emails)</label><input id="set_tool_url" value="${esc(s.tool_url || '')}" placeholder="https://quotes.estatelandscapers.com.au"></div>
+      <div class="field"><label>Email open pixel (the "pixel" Worker)</label><input id="set_pixel_url" value="${esc(s.pixel_url || '')}" placeholder="https://track.estatelandscapers.com.au/"></div>
     </div>
     <div id="estSampleStatus" class="muted" style="font-size:11px;margin:0 0 10px;">Checking the sample-quote link…</div>
     <div class="field"><label>Intro email subject</label><input id="set_est_intro_subject" value="${esc(s.est_intro_subject || '')}"><span class="muted" style="font-size:10px;">{{first}} is the client's first name.</span></div>
-    <div class="grid4">${[['est_code_days', 'Code valid (days)'], ['est_lockout_tries', 'Wrong attempts before lockout'], ['est_lockout_min', 'Lockout (minutes)'], ['est_slots_per_half', 'Friday bookings per AM / PM']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
+    <div class="grid4">${[['est_invite_delay_min', 'Code email delay (minutes, 0 = instant)'], ['est_code_days', 'Code valid (days)'], ['est_lockout_tries', 'Wrong attempts before lockout'], ['est_lockout_min', 'Lockout (minutes)'], ['est_slots_per_half', 'Friday bookings per AM / PM'], ['est_warm_email_opens', 'Warm: code email opened N× (code unused)']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <div class="alab" style="margin-top:6px;">Signal rules</div>
     <div class="grid4">${[['est_hot_sessions', 'Hot: sessions in window'], ['est_hot_window_h', 'Hot window (hours)'], ['est_hot_toggles', 'Hot: tier comparisons after ballpark'], ['est_warm_answer_pct', 'Warm: % of questions answered'], ['est_warm_active_sec', 'Warm: seconds in a session'], ['est_hot_fade_days', 'Hot fades after (days)'], ['est_warm_fade_days', 'Warm fades after (days)']].map(([k, l]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}"></div>`).join('')}</div>
     <div class="muted" style="font-size:11px;margin:6px 0 10px;">Hot = booked a Friday, <i>or</i> reached the ballpark and compared tiers, <i>or</i> the session count inside the window. Warm = reached the ballpark without booking, or answered the percentage with the seconds in one session. "Out of budget" is always cold.</div>
@@ -3347,7 +3366,7 @@ async function settingsTab(v) {
     const t = $('#estOnTag'); t.textContent = on ? 'ON' : 'OFF'; t.className = 'tag ' + (on ? 'tag-accepted' : 'tag-superseded');
     toast(on ? 'Auto lead processing ON: new leads get a code, estimator live' : 'Auto lead processing OFF: no automatic emails, estimator paused');
   });
-  $('#saveEst').addEventListener('click', save(['est_enabled', 'est_url', 'tool_url', 'est_intro_subject', 'est_code_days', 'est_lockout_tries', 'est_lockout_min', 'est_slots_per_half', 'est_hot_sessions', 'est_hot_window_h', 'est_hot_toggles', 'est_warm_answer_pct', 'est_warm_active_sec', 'est_hot_fade_days', 'est_warm_fade_days'], 'Estimator settings saved'));
+  $('#saveEst').addEventListener('click', save(['est_enabled', 'est_invite_delay_min', 'est_warm_email_opens', 'pixel_url', 'est_url', 'tool_url', 'est_intro_subject', 'est_code_days', 'est_lockout_tries', 'est_lockout_min', 'est_slots_per_half', 'est_hot_sessions', 'est_hot_window_h', 'est_hot_toggles', 'est_warm_answer_pct', 'est_warm_active_sec', 'est_hot_fade_days', 'est_warm_fade_days'], 'Estimator settings saved'));
   $('#saveClose').addEventListener('click', save(['close_small_under', 'close_large_over'], 'Saved'));
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
