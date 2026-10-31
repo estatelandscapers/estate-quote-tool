@@ -314,13 +314,13 @@ async function leadsSummary(v) {
       </div>
       ${fc && !fc.error ? `<div class="grid4" style="margin-top:10px;">
         ${isAdmin ? `<div class="stat tap" data-fig="fc_margin" role="button" tabindex="0"><div class="k">Average margin</div>${trio(
-          { v: pc(m.won.pct), n: `won jobs, FY · ${money(m.won.perJob)} / job`, color: m.won.pct != null ? (m.won.pct >= m.target ? 'var(--green)' : 'var(--red)') : '' },
-          { v: pc(m.open.pct), n: `open quotes · ${m.open.n} priced` },
-          { v: pc(m.built30.pct), n: 'built last 30 d' })}<div class="n" style="margin-top:6px;">Target ${m.target}% (${esc(m.targetTier || '')})${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).length ? ` · ${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).join(', ')} not counted (no costing yet)` : ''}</div></div>` : ''}
+          { v: pc(m.won.pct), n: `won jobs this FY · ${money(m.won.perJob)} a job`, color: m.won.pct != null ? (m.won.pct >= m.target ? 'var(--green)' : 'var(--red)') : '' },
+          { v: pc(m.open.pct), n: `open quotes (${m.open.n} priced)` },
+          { v: pc(m.built30.pct), n: 'quotes built, last 30 days' })}<div class="n" style="margin-top:6px;">Target ${m.target}% (${esc(m.targetTier || '')})${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).length ? ` · ${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).join(', ')} not counted (no costing yet)` : ''}</div></div>` : ''}
         <div class="stat tap" data-fig="fc_conv" role="button" tabindex="0"><div class="k">Lead conversion</div>${trio(
-          { v: `${fc.leadToQuote.fy}%`, n: `lead → quote, FY · ${fc.leadToQuote.fyQ} of ${fc.leadToQuote.fyN}` },
-          { v: `${fc.leadToQuote.d30}%`, n: `lead → quote, 30 d · ${fc.leadToQuote.d30Q} of ${fc.leadToQuote.d30N}`, color: fc.leadToQuote.d30 < fc.leadToQuote.fy - 5 ? 'var(--red)' : '' },
-          { v: `${fc.leadToWin.pct}%`, n: `lead → win, FY · ${fc.leadToWin.won} of ${fc.leadToWin.n}` })}<div class="n" style="margin-top:6px;">${fc.leadToWin.leadsPerWin ? `1 win ≈ ${fc.leadToWin.leadsPerWin} leads` : 'no wins from this FY\'s leads yet'}${fc.winCount ? ` ≈ ${Math.round(100 / fc.winCount)} quotes` : ''}</div></div>
+          { v: `${fc.leadToQuote.fy}%`, n: `lead → quote, FY (${fc.leadToQuote.fyQ} of ${fc.leadToQuote.fyN})` },
+          { v: `${fc.leadToQuote.d30}%`, n: `lead → quote, 30 d (${fc.leadToQuote.d30Q} of ${fc.leadToQuote.d30N})`, color: fc.leadToQuote.d30 < fc.leadToQuote.fy - 5 ? 'var(--red)' : '' },
+          { v: `${fc.leadToWin.pct}%`, n: `lead → win, FY (${fc.leadToWin.won} of ${fc.leadToWin.n})` })}<div class="n" style="margin-top:6px;">${fc.leadToWin.leadsPerWin ? `1 win ≈ ${fc.leadToWin.leadsPerWin} leads` : 'no wins from this FY\'s leads yet'}${fc.winCount ? ` ≈ ${Math.round(100 / fc.winCount)} quotes` : ''}</div></div>
         <div class="stat tap" data-fig="fc_avgwon" role="button" tabindex="0"><div class="k">Average job</div><div class="pair"><div><div class="v">${money(fc.avgWon)}</div><div class="n">won, FY · ${fc.wonCount} job${fc.wonCount === 1 ? '' : 's'}</div></div><div class="r"><div class="v">${money(fc.avgQuote)}</div><div class="n">quoted, FY · ${fc.quotedCount}</div></div></div><div class="n" style="margin-top:4px;">${fc.wonCount ? (fc.avgWon > fc.avgQuote ? 'bigger jobs are winning' : 'smaller jobs are winning') : ''}</div></div>
         ${tile('fc_window', 'Decision window', w.wonMedian != null ? `${w.wonMedian} d → ${w.lostMedian != null ? w.lostMedian + ' d' : '—'}` : '—', w.wonMedian != null ? `median days from sending: won ${w.wonMedian} (max ${w.wonMax}) · lost ${w.lostMedian != null ? w.lostMedian : '—'} · ${w.wonN} won, ${w.lostN} lost on record` : 'no signed quotes on record yet')}
       </div>` : ''}`;

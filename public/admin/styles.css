@@ -533,14 +533,20 @@ table.qb .vo-tot{align-self:center;white-space:nowrap;}
   .hrow .who{grid-area:who;}.hrow .when{grid-area:when;text-align:right;}.hrow .q{grid-area:q;}.hrow .st{grid-area:st;text-align:right;}.hrow .why{grid-area:why;white-space:normal;}.hrow .btns{grid-area:btns;justify-content:flex-start;}
 }
 
-/* Current: three figures in one tile; Forecast: profit tile */
-.stat .trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:2px;}
-.stat .trio .v{font-size:15px;}
-.stat .trio .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* Current: three figures in one tile, stacked so the value column lines up; Forecast: profit tile.
+   The Leads grids use minmax(0,1fr) so a long label can never widen its column and squeeze the others. */
+#leadBody .grid4{grid-template-columns:repeat(4,minmax(0,1fr));align-items:stretch;}
+#leadBody .stat{min-height:104px;}
+.stat .trio{display:flex;flex-direction:column;gap:5px;margin-top:4px;}
+.stat .trio>div{display:grid;grid-template-columns:58px 1fr;gap:8px;align-items:baseline;min-width:0;}
+.stat .trio .v{font-size:16px;line-height:1.2;font-variant-numeric:tabular-nums;}
+.stat .trio .n{margin-top:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.stat .pair{align-items:flex-start;}
+.stat .pair .r .v{font-size:16px;}
 .stat.profit{background:linear-gradient(135deg,#2E7D46,#1E5A32);color:#fff;border:none;}
 .stat.profit .k,.stat.profit .n{color:#CDEBD6;}
 .stat.profit .pair .r .v{color:#fff;opacity:.9;}
 .stat.profit .bar{background:rgba(255,255,255,.25);}
 .stat.profit .bar i{background:#fff;}
 .stat.hero .pair .r .n{color:#cfe0ff;}
-@media(max-width:820px){.stat .trio .n{white-space:normal;}}
+@media(max-width:820px){.stat .trio .n{white-space:normal;}#leadBody .grid4{grid-template-columns:1fr;}#leadBody .stat{min-height:0;}}
