@@ -956,7 +956,7 @@ function precallScreen(v, sc, saved, leadsData) {
     { k: 'name', label: 'Name', val: lead.name },
     { k: 'phone', label: 'Mobile', val: lead.phone },
     { k: 'email', label: 'Email', val: lead.email },
-    { k: 'suburb', label: 'Suburb', val: lead.suburb || lead.address },
+    { k: 'suburb', label: 'Site', val: lead.address || lead.suburb },
     { k: 'description', label: 'What they want', val: pf.description || lead.jobType },
     { k: 'timing', label: 'Timeframe', val: pf.timing },
     { k: 'budget', label: 'Budget', val: pf.budget },
@@ -1351,7 +1351,7 @@ async function leadConsole(v) {
   const groups = [...new Set(stages.map(s => s.group))];
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.suburb || l.address || '')}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
+      <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.address || l.suburb || '')}${l.address && l.suburb && !String(l.address).toLowerCase().includes(String(l.suburb).split(',')[0].toLowerCase()) ? ' · ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
         ${l.phone ? `<a class="btn btn-blue btn-sm" href="${telHref(l.phone)}" style="text-decoration:none;">📞 Call ${esc(l.phone)}</a>` : ''}
@@ -1390,7 +1390,8 @@ async function leadConsole(v) {
           <div class="field"><label>Name</label><input id="ld_name" value="${esc(l.name || '')}"></div>
           <div class="field"><label>Mobile</label><input id="ld_phone" value="${esc(l.phone || '')}"></div>
           <div class="field"><label>Email</label><input id="ld_email" value="${esc(l.email || '')}"></div>
-          <div class="field"><label>Suburb</label><input id="ld_suburb" value="${esc(l.suburb || '')}"></div>
+          <div class="field"><label>Site address</label><input id="ld_address" value="${esc(l.address || '')}" placeholder="street, suburb, postcode"></div>
+          <div class="field"><label>Suburb</label><input id="ld_suburb" value="${esc(l.suburb || '')}" placeholder="filled from the address if blank"></div>
           <div class="field"><label>Job type</label><input id="ld_job" value="${esc(l.jobType || '')}" placeholder="e.g. turf and driveway"></div>
           <div class="field"><label>Next follow-up</label><input id="ld_next" type="date" value="${esc(l.nextFollowup || '')}"></div>
         </div>
@@ -1472,7 +1473,7 @@ async function leadConsole(v) {
   $('#ld_save').addEventListener('click', async () => {
     await api('/leads/' + l.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: $('#ld_name').value, phone: $('#ld_phone').value, email: $('#ld_email').value,
-        suburb: $('#ld_suburb').value, jobType: $('#ld_job').value, notes: $('#ld_notes').value,
+        address: $('#ld_address').value, suburb: $('#ld_suburb').value, jobType: $('#ld_job').value, notes: $('#ld_notes').value,
         nextFollowup: $('#ld_next').value || null }) });
     toast('Saved'); leadConsole(v);
   });

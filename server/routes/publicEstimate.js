@@ -188,7 +188,7 @@ router.post('/reaction', withLead, (req, res) => {
   const fresh = db.prepare('SELECT * FROM leads WHERE id=?').get(req.lead.id);
   const r = EST.applyReaction(fresh, v);
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(newId(), req.lead.id, 'note', r.fit ? 'estimatedone' : 'disqualified', null, null, 'client', 'logged', 'Reaction to the online ballpark: ' + r.label + (r.fit ? '' : ' · closed as not a fit'));
+    .run(newId(), req.lead.id, 'note', 'estimatedone', null, null, 'client', 'logged', 'Reaction to the online ballpark: ' + r.label + (r.fit ? '' : ' · not a fit by their answer — left open for you to decide'));
   // One ballpark email per completed version, worded for the fork they took.
   const a = EST.answersOf(fresh); const ver = a.versions[a.versions.length - 1];
   if (ver && !ver.emailed) EST.sendBallparkEmail(db.prepare('SELECT * FROM leads WHERE id=?').get(fresh.id), require('../utils/callScript').ballpark(a.current || {}), a.current || {}, a.versions.length).catch(() => {});

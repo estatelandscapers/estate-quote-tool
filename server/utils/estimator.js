@@ -430,7 +430,10 @@ function complete(l, visitorKey) {
     vals.push(require('./refs').sydneyParts().ymd);
   }
   if (cur.scope && cur.scope.length) { sets.push('job_type=?'); vals.push(cur.scope.map(s => (CS.SIZES.find(x => x.id === s) || { label: s }).label).join(', ')); }
-  if (cur.siteAddress && cur.siteAddress !== l.address) { sets.push('address=?'); vals.push(String(cur.siteAddress).slice(0, 200)); }
+  // The client's address replaces the one on file only when it is at least as complete: a
+  // full street address typed in by the office must not be overwritten by "Mortdale".
+  const hasNumber = x => /\d/.test(String(x || ''));
+  if (cur.siteAddress && cur.siteAddress !== l.address && (hasNumber(cur.siteAddress) || !hasNumber(l.address))) { sets.push('address=?'); vals.push(String(cur.siteAddress).slice(0, 200)); }
   vals.push(l.id);
   db.prepare(`UPDATE leads SET ${sets.join(', ')} WHERE id=?`).run(...vals);
   if (bp.decline) db.prepare('UPDATE leads SET declined_reason=? WHERE id=?').run(bp.reason, l.id);
@@ -462,26 +465,34 @@ function clientText(bp, a) {
 }
 
 // The fork after the ballpark. "Yes, that works" and "lower than I expected" go on to book a
-// Friday. Everything else is not a fit for now: the lead is closed as declined (the rep can
-// step it back), the client is thanked and offered advice by email. A decline on access or a
-// run with too little to price skips the reaction and goes straight to booking.
+// Friday. Everything else stops the run short of booking: the client is thanked and told we
+// will be in touch, and the lead stays OPEN, due today, with the reaction on the card — the
+// decision to proceed or close is the rep's, never the tool's. (It used to close the lead as
+// declined here; enquiries were disappearing from the board before anyone had looked.)
+// A decline on access or a run with too little to price skips the reaction and goes
+// straight to booking.
 const FIT_REACTIONS = ['works', 'low'];
 function isFit(reaction, bp) {
   if (bp && (bp.decline || bp.tooUnknown)) return true;
   return !reaction || FIT_REACTIONS.includes(reaction);
 }
-const NOT_FIT_TEXT = 'Thank you for reaching out and taking the time to fill in the estimator. From what you have told us, we are not the right fit for your project at the moment.';
-const NOT_FIT_HELP = 'We can still help if you need expert advice on your project: just drop us an email and we will take it from there.';
+const REACT_LABEL = { works: 'that works', high: 'higher than expected', low: 'lower than expected', cheaper: 'wants it cheaper', nocommit: 'not sure yet', 'definite-no': 'out of budget' };
+const NOT_FIT_REACTIONS = Object.keys(REACT_LABEL).filter(k => !FIT_REACTIONS.includes(k));
+const NOT_FIT_TEXT = 'Thank you for taking the time to fill in the estimator — we have noted your answer. We will look over what you have told us and be in touch within a business day to talk it through.';
+const NOT_FIT_HELP = 'If anything changes in the meantime, or you would like some advice on the project, just reply to our email and we will take it from there.';
 function applyReaction(l, v) {
   const a = answersOf(l); const bp = CS.ballpark(a.current || {});
   const fit = isFit(v, bp);
-  const REACT_LABEL = { works: 'that works', high: 'higher than expected', low: 'lower than expected', cheaper: 'wants it cheaper', nocommit: 'not sure yet', 'definite-no': 'out of budget' };
-  if (!fit && !['Won'].includes(l.status)) {
-    db.prepare("UPDATE leads SET stage='disqualified', status='Lost', next_followup=NULL, declined_reason=?, updated_at=datetime('now') WHERE id=?")
-      .run('Online estimate: reaction "' + (REACT_LABEL[v] || v) + '" to the ballpark', l.id);
+  if (!fit && !['Won', 'Lost'].includes(l.status)) {
+    // Keep it in front of the rep: due today, back at the estimate step if still qualifying.
+    const { phaseOf } = require('./leadTemplates');
+    const today = require('./refs').sydneyParts().ymd;
+    if (phaseOf(l.stage || 'call1') <= 2) db.prepare("UPDATE leads SET stage='estimatedone', next_followup=?, updated_at=datetime('now') WHERE id=?").run(today, l.id);
+    else db.prepare("UPDATE leads SET next_followup=COALESCE(next_followup, ?), updated_at=datetime('now') WHERE id=?").run(today, l.id);
   }
   return { fit, label: REACT_LABEL[v] || v, NOT_FIT_TEXT, NOT_FIT_HELP };
 }
+const reactionLabel = v => REACT_LABEL[v] || v || null;
 
 // The ballpark email: the same words, sent once per reaction, logged on the lead.
 async function sendBallparkEmail(l, bp, a, version) {
@@ -643,7 +654,8 @@ function signalFor(l, sessions) {
   const a = answersOf(l), ac = answeredCount(a.current || {});
   const pct = ac.total ? Math.round(100 * ac.answered / ac.total) : 0;
   const reaction = (a.current || {}).priceReaction;
-  if (reaction === 'definite-no') return { signal: 'cold', why: 'said the ballpark is out of budget' };
+  if (reaction === 'definite-no') return { signal: 'cold', why: 'said the ballpark is out of budget — your call' };
+  const said = NOT_FIT_REACTIONS.includes(reaction) ? `said "${REACT_LABEL[reaction]}" — your call` : '';
   const inWin = sessions.filter(s => now - ms(s.started_at) <= n('est_hot_window_h', 48) * 3600e3);
   const reached = sessions.some(s => s.reached_ballpark) || !!a.completedAt;
   const toggles = sessions.reduce((t, s) => t + s.toggles, 0);
@@ -652,12 +664,12 @@ function signalFor(l, sessions) {
   else if (reached && toggles >= n('est_hot_toggles', 2)) { hot = true; why = `reached the ballpark, compared tiers ${toggles}×`; }
   else if (inWin.length >= n('est_hot_sessions', 2)) { hot = true; why = `${inWin.length} sessions in ${n('est_hot_window_h', 48)} h`; }
   if (hot && since > n('est_hot_fade_days', 3) * 864e5 && !sessions.some(s => s.booked)) { hot = false; why = `was hot, no session for ${Math.floor(since / 864e5)} d`; }
-  if (hot) return { signal: 'hot', why };
+  if (hot) return { signal: 'hot', why: said ? said + ' · ' + why : why };
   let warm = false;
   if (reached) { warm = true; why = why || 'reached the ballpark, did not book'; }
   else if (sessions.some(s => s.active_seconds >= n('est_warm_active_sec', 60)) && pct >= n('est_warm_answer_pct', 60)) { warm = true; why = why || `answered ${pct}% of the questions`; }
   if (warm && since > n('est_warm_fade_days', 7) * 864e5) { warm = false; why = `was warm, last session ${Math.floor(since / 864e5)} d ago`; }
-  if (warm) return { signal: 'warm', why };
+  if (warm) return { signal: 'warm', why: said ? said + ' · ' + why : why };
   return { signal: 'cold', why: why || (since > 864e5 ? `last session ${Math.floor(since / 864e5)} d ago, ${pct}% answered` : `started, ${pct}% answered`) };
 }
 const fmt = LA.fmt;
@@ -707,7 +719,11 @@ function quick(l) {
   if (!l.est_invited_at && !l.est_status && !pending(l.id)) return null;
   const sessions = sessionsFor(l.id);
   const sig = signalFor(l, sessions);
-  return { signal: sig.signal, why: sig.why, opens: sessions.length, lastSession: sessions.length ? sessions[0].started_at : null, status: l.est_status || null };
+  // A not-fit answer to the ballpark is always on the card, whatever the signal: the
+  // lead is waiting on the rep's decision.
+  const reaction = (answersOf(l).current || {}).priceReaction;
+  const said = NOT_FIT_REACTIONS.includes(reaction) && !/said "/.test(sig.why || '') && !/out of budget/.test(sig.why || '') ? `said "${REACT_LABEL[reaction]}" — your call` : '';
+  return { signal: sig.signal, why: said ? (sig.why ? said + ' · ' + sig.why : said) : sig.why, opens: sessions.length, lastSession: sessions.length ? sessions[0].started_at : null, status: l.est_status || null, reaction: reaction || null };
 }
 
 // Last N days: how many code emails went out, were opened, led to a code being used, a
@@ -721,12 +737,12 @@ function funnel(days = 30) {
   const used = db.prepare(`SELECT COUNT(DISTINCT lead_id) n FROM estimate_events WHERE lead_id IN (${q}) AND event_type='auth'`).get(...leads).n;
   const ballpark = db.prepare(`SELECT COUNT(DISTINCT lead_id) n FROM estimate_events WHERE lead_id IN (${q}) AND event_type='ballpark'`).get(...leads).n;
   const booked = db.prepare(`SELECT COUNT(DISTINCT lead_id) n FROM estimate_events WHERE lead_id IN (${q}) AND event_type='booked'`).get(...leads).n;
-  const notFit = db.prepare(`SELECT COUNT(*) n FROM leads WHERE id IN (${q}) AND stage='disqualified' AND declined_reason LIKE 'Online estimate:%'`).get(...leads).n;
+  const notFit = db.prepare(`SELECT * FROM leads WHERE id IN (${q})`).all(...leads).filter(l => NOT_FIT_REACTIONS.includes((answersOf(l).current || {}).priceReaction)).length;
   const pendingN = db.prepare("SELECT COUNT(*) n FROM scheduled_emails WHERE kind='invite' AND sent_at IS NULL AND cancelled_at IS NULL").get().n;
   const cancelled = db.prepare("SELECT COUNT(*) n FROM scheduled_emails WHERE kind='invite' AND cancelled_at IS NOT NULL AND created_at >= ?").get(since).n;
   return { days, invited: leads.length, opened, used, ballpark, booked, notFit, pending: pendingN, cancelled };
 }
 
-module.exports = { funnel, schedule, pending, cancelPending, runScheduler, startScheduler, recordOpen, opensFor, introEmailStatus, isFit, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
+module.exports = { reactionLabel, NOT_FIT_REACTIONS, funnel, schedule, pending, cancelPending, runScheduler, startScheduler, recordOpen, opensFor, introEmailStatus, isFit, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
   invite, canInvite, introEmail, verify, byToken, answersOf, prefillFrom, saveAnswers, complete, clientText, sendBallparkEmail,
   fridaySlots, book, sendBookingEmail, logEvent, sessionsFor, signalFor, summary, quick, estimatorLink, sampleQuoteLink };

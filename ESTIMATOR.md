@@ -18,11 +18,12 @@ same lead the rep would otherwise fill in by hand.
    in the second person. The same words are emailed to the client and logged on the lead.
    Under-800 mm access gets the script's decline wording and the visit is still offered.
 5. **One tap reaction**, required, with the ballpark still on screen. "Yes, that works" and
-   "Lower than I expected" go on to the Friday booking. Every other answer ends the run: the
-   client is thanked, told we are not the right fit at the moment, and offered advice by email;
-   the lead is closed as **Not proceeding, client declined** with the reaction as the reason
-   (step it back on the card to reopen). The ballpark email goes out after this step so its
-   closing matches.
+   "Lower than I expected" go on to the Friday booking. Every other answer ends the run short
+   of booking: the client is thanked and told we will be in touch within a business day. The
+   lead is **not closed** — it stays on the board at "Online estimate done", due today, with
+   the reaction shown on the card ("said 'higher than expected' — your call"); proceeding or
+   closing is the rep's decision. The ballpark email goes out after this step so its closing
+   matches.
 6. **Friday booking**, AM or PM, a real `site_visits` row. Capacity per half day is in Settings.
    The client is told we have a high number of enquiries and will confirm the day before with
    an ETA. The rep gets a push notification.

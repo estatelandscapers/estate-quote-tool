@@ -71,6 +71,12 @@ router.get('/', (req, res) => {
   const open = rows.filter(l => !['Won', 'Lost'].includes(l.status) && !l.parked);
   res.json({ leads: rows.map(view), openCount: open.length, statuses: STATUS });
 });
+// "12 Example St, Mortdale NSW 2223" -> "Mortdale, 2223". Used wherever an address arrives
+// without a suburb, so the board, the calendar and the quote all have something to show.
+function suburbFromAddress(addr) {
+  const m = String(addr || '').match(/,\s*([A-Za-z][A-Za-z' -]+?)(?:\s+(?:NSW|QLD|VIC|ACT|SA|WA|TAS|NT))?\s*(\d{4})?\s*$/i);
+  return m ? m[1].trim() + (m[2] ? ', ' + m[2] : '') : '';
+}
 router.post('/', (req, res) => {
   const b = req.body || {}; const id = newId();
   db.prepare(`INSERT INTO leads (id,name,phone,email,address,source,notes,status,stage,next_followup,job_type,suburb)
@@ -79,7 +85,7 @@ router.post('/', (req, res) => {
       b.notes || '', b.status || 'New', b.stage || 'noanswer',
       // A new enquiry is due NOW — that's the whole point of "call within 2 hours".
       b.nextFollowup || new Date().toISOString().slice(0, 10),
-      b.jobType || '', b.suburb || '');
+      b.jobType || '', b.suburb || suburbFromAddress(b.address));
   // A lead typed in by hand gets the estimator invitation too, if it has an email.
   if (b.email && b.invite !== false) require('../utils/estimator').autoInvite(id, { reason: 'new', by: req.user ? (req.user.name || req.user.username) : '' }).catch(() => {});
   res.status(201).json({ id });
@@ -117,7 +123,7 @@ router.put('/:id', (req, res) => {
     .run(b.name ?? l.name, b.phone ?? l.phone, b.email ?? l.email, b.address ?? l.address,
       b.source ?? l.source, b.notes ?? l.notes, b.status ?? l.status,
       b.stage ?? l.stage, b.nextFollowup !== undefined ? b.nextFollowup : l.next_followup,
-      b.jobType ?? l.job_type, b.suburb ?? l.suburb, l.id);
+      b.jobType ?? l.job_type, (b.suburb ?? l.suburb) || suburbFromAddress(b.address ?? l.address), l.id);
   res.json({ ok: true });
 });
 router.delete('/:id', (req, res) => { db.prepare('DELETE FROM leads WHERE id=?').run(req.params.id); res.status(204).end(); });
@@ -783,10 +789,7 @@ router.post('/:id/call/finish', (req, res) => {
   const addr = String(a.siteAddress || '').trim();
   if (addr && addr !== (l.address || '')) {
     let suburb = l.suburb || '';
-    if (!suburb) {
-      const m = addr.match(/,\s*([A-Za-z][A-Za-z' -]+?)(?:\s+(?:NSW|QLD|VIC|ACT|SA|WA|TAS|NT))?\s*(\d{4})?\s*$/i);
-      if (m) suburb = m[1].trim() + (m[2] ? ', ' + m[2] : '');
-    }
+    if (!suburb) suburb = suburbFromAddress(addr);
     db.prepare("UPDATE leads SET address=?, suburb=?, updated_at=datetime('now') WHERE id=?").run(addr, suburb, l.id);
     l.address = addr; l.suburb = suburb;
   }
