@@ -62,6 +62,8 @@ function acceptedTotals(q) {
 }
 
 function clientView(q) {
+  // An internal preview of an unsent quote shows what the Pricing sheet says now.
+  try { require('../utils/pricing').syncDraftLocks(q); } catch (e) {}
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
   const validUntil = new Date(new Date(q.quote_date).getTime() + q.validity_days * 86400000);
   const expired = !q.is_sample && Date.now() > validUntil.getTime() && q.status !== 'accepted';

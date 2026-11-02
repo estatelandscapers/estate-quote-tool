@@ -1,7 +1,7 @@
 const express = require('express');
 const { db, settingGet } = require('../db');
 const { newId, newToken } = require('../utils/ids');
-const { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, lineDisplay, surchargeAmount, surchargeBase, surchargeGaps, surchargeList } = require('../utils/pricing');
+const { TIERS, resolveItem, snapshotFromPriceItem, syncDraftLocks, lineTotal, lineDisplay, surchargeAmount, surchargeBase, surchargeGaps, surchargeList } = require('../utils/pricing');
 const { costQuote } = require('../utils/costing');
 
 const router = express.Router();
@@ -295,6 +295,8 @@ router.get('/pending/price-items', (req, res) => {
 router.get('/:id', (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
+  // Unsent: lines follow the Pricing sheet (names, rates, behaviour) until the client has it.
+  try { syncDraftLocks(q); } catch (e) { console.error('[quotes] draft sync', e.message); }
   res.json(fullQuote(q));
 });
 
@@ -949,6 +951,7 @@ function stripCosting(c) {
 router.get('/:id/costing', (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });
+  try { syncDraftLocks(q); } catch (e) {}
   const c = costQuote(q);
   res.json(req.user && req.user.role === 'admin' ? c : stripCosting(c));
 });

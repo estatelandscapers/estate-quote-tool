@@ -32,6 +32,34 @@ function resolveItem(item, pi, tier) {
   };
 }
 
+// A quote that has not been sent follows the Pricing sheet: its lines' locked package
+// names, rates and behaviour are refreshed from the live price items whenever the quote
+// is opened. The lock only starts to mean something once the client has the quote —
+// editing "Premium: Rendered block" to "Sandstone log wall" on the sheet used to leave
+// every draft, and every revision copied from an older quote, showing the old name.
+// Site-specific values (value_override) are untouched: they never came from the sheet.
+// Returns the number of lines refreshed; the caller bumps rev_no so cached totals move.
+function syncDraftLocks(q) {
+  const { db } = require('../db');
+  if (!q || q.sent_at || ['sent', 'viewed', 'accepted', 'superseded'].includes(q.status) || q.is_sample) return 0;
+  const items = db.prepare('SELECT * FROM quote_items WHERE quote_id=? AND price_item_id IS NOT NULL').all(q.id);
+  const up = db.prepare(`UPDATE quote_items SET locked_basic_spec=?, locked_basic_sell=?, locked_standard_spec=?, locked_standard_sell=?,
+    locked_premium_spec=?, locked_premium_sell=?, locked_behaviour=? WHERE id=?`);
+  let n = 0;
+  items.forEach(it => {
+    const pi = db.prepare('SELECT * FROM price_items WHERE id=?').get(it.price_item_id);
+    if (!pi) return;
+    const snap = snapshotFromPriceItem(pi);
+    const same = Object.keys(snap).every(k => (snap[k] ?? null) === (it[k] ?? null));
+    if (same) return;
+    up.run(snap.locked_basic_spec ?? null, snap.locked_basic_sell ?? null, snap.locked_standard_spec ?? null, snap.locked_standard_sell ?? null,
+      snap.locked_premium_spec ?? null, snap.locked_premium_sell ?? null, snap.locked_behaviour ?? null, it.id);
+    n++;
+  });
+  if (n) { try { db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(q.id); q.rev_no = (q.rev_no || 0) + 1; } catch (e) {} }
+  return n;
+}
+
 // Snapshot a price item's current tiers into lock fields (called at add-time).
 function snapshotFromPriceItem(pi) {
   if (!pi) return {};
@@ -139,4 +167,4 @@ function surchargeList(applied) {
     mode: s.mode || 'whole', basis: s.basis || 'full', lines: s.lines || {} }));
 }
 
-module.exports = { TIERS, resolveItem, snapshotFromPriceItem, lineTotal, lineDisplay, surchargeAmount, surchargeBase, surchargeGaps, surchargeList };
+module.exports = { syncDraftLocks, TIERS, resolveItem, snapshotFromPriceItem, lineTotal, lineDisplay, surchargeAmount, surchargeBase, surchargeGaps, surchargeList };
