@@ -167,6 +167,53 @@ function renumberSiblings(quoteId, priceItemId) {
 function quoteIsSent(q) {
   return !!(q && (q.sent_at || ['sent', 'viewed', 'accepted'].includes(q.status)));
 }
+// ---- Duplicate a quote ------------------------------------------------------------------
+// A copy is a NEW job built from an old one: deliverables (quantities, package picks,
+// site-specific values, descriptions, order), surcharges, site notes, special clauses,
+// payment schedule, crew size and customer tier come across. Client details come from the
+// lead (or the caller); the site plan, signatures, sent state and dates never do. The copy
+// remembers its source and carries a review list that must be ticked off before it can be
+// sent — the whole point of copying is speed, and the whole risk is a detail left over
+// from the other job.
+function copyQuote(src, b = {}) {
+  const q = createQuote({ client: b.client ?? '', clientEmail: b.clientEmail ?? '', address: b.address ?? '',
+    projectTitle: src.project_title || 'Landscape Works', leadId: b.leadId || null,
+    defaultPackage: src.default_package, paymentSchedule: src.payment_schedule, crewSize: src.crew_size, customerTier: src.customer_tier });
+  db.prepare(`UPDATE quotes SET site_notes=?, special_clauses=?, validity_days=COALESCE(?, validity_days), surcharges_na=?, copied_from=?, copy_review='{}' WHERE id=?`)
+    .run(src.site_notes || '', src.special_clauses || '', src.validity_days || null, src.surcharges_na || 0, src.id, q.id);
+  const cols = db.prepare('PRAGMA table_info(quote_items)').all().map(c => c.name).filter(c => !['id', 'quote_id'].includes(c));
+  const ins = db.prepare(`INSERT INTO quote_items (id, quote_id, ${cols.join(',')}) VALUES (?,?,${cols.map(() => '?').join(',')})`);
+  const idMap = {};
+  db.prepare('SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order, rowid').all(src.id)
+    .forEach(it => { const nid = newId(); idMap[it.id] = nid; ins.run(nid, q.id, ...cols.map(c => it[c])); });
+  db.prepare('UPDATE quotes SET applied_surcharges=? WHERE id=?').run(remapSurchargeLines(src.applied_surcharges, idMap), q.id);
+  return db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id);
+}
+// What has to be confirmed on a copied quote before it goes out. "auto" items clear
+// themselves from the record (a site plan uploaded, or marked not needed); the rest are
+// ticked by a person and stamped with who and when.
+const COPY_REVIEW = [
+  { key: 'client', label: 'Client name and email are this client\'s, not the source quote\'s' },
+  { key: 'address', label: 'Site address is this site' },
+  { key: 'drawings', label: 'Site plan / drawings uploaded for this site, or marked not needed', auto: q => !!q.siteplan_data || !!q.siteplan_na },
+  { key: 'notes', label: 'Site-specific notes rewritten for this site' },
+  { key: 'quantities', label: 'Quantities and package picks checked against this site' },
+  { key: 'surcharges', label: 'Surcharges reviewed for this site (access, slope, disposal)' },
+  { key: 'clauses', label: 'Special clauses apply to this job' },
+];
+function copyReview(q) {
+  if (!q.copied_from) return null;
+  let done = {}; try { done = JSON.parse(q.copy_review || '{}') || {}; } catch (e) {}
+  const src = db.prepare('SELECT id, quote_number, client_name, address FROM quotes WHERE id=?').get(q.copied_from);
+  const items = COPY_REVIEW.map(r => {
+    const auto = r.auto ? r.auto(q) : false;
+    const d = done[r.key];
+    return { key: r.key, label: r.label, done: auto || !!d, auto, by: d ? d.by : null, at: d ? d.at : null };
+  });
+  return { source: src ? { id: src.id, quoteNumber: src.quote_number, client: src.client_name, address: src.address } : null,
+    items, complete: items.every(i => i.done), outstanding: items.filter(i => !i.done).map(i => i.label) };
+}
+
 function fullQuote(q) {
   const c = computeQuote(q);
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
@@ -188,6 +235,7 @@ function fullQuote(q) {
     siteplanNa: !!q.siteplan_na, surchargesNa: !!q.surcharges_na,
     rev: q.rev_no || 0, linkOff: !!q.link_off,
     emailStatus: q.email_status || null, emailDetail: q.email_detail || null,
+    copyReview: copyReview(q),
     ...viewStats(q.id),
     link: (() => { try { return require('../utils/linkAnalytics').quick(q); } catch (e) { return null; } })(),
     sentAt: q.sent_at || null, sentTo: q.sent_to || null, sentBy: q.sent_by || null, sendCount: q.send_count || 0,
@@ -236,7 +284,8 @@ router.get('/', (req, res) => {
     let status = q.lost_at ? 'lost' : (laterRev > 0 ? 'superseded' : q.status);
     if (!['accepted', 'superseded', 'lost'].includes(status) && !complete) status = 'incomplete';
     return { id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number,
-      client: q.client_name, projectTitle: q.project_title,
+      client: q.client_name, projectTitle: q.project_title, address: q.address || '',
+      copiedFrom: q.copied_from || null,
       status, acceptedPackage: q.accepted_package,
       lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
       value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand: q.is_sample ? 'fresh' : ageBand, customerTier: q.customer_tier || 'Silver',
@@ -358,6 +407,9 @@ router.post('/:id/send', async (req, res) => {
   const ccRaw = String(b.cc || '').trim();
   if (ccRaw) { const badCc = validateEmail(ccRaw); if (badCc) return res.status(400).json({ error: 'Copy-to address: ' + badCc, field: 'cc' }); }
   if (q.lost_at) return res.status(400).json({ error: 'This quote is marked as lost. Reopen it before sending.' });
+  // A copied quote goes nowhere until every carried-over detail has been confirmed.
+  const cr = copyReview(q);
+  if (cr && !cr.complete) return res.status(400).json({ error: `This quote was copied from ${cr.source ? cr.source.quoteNumber : 'another quote'} — confirm the review list on the quote page before sending. Still to confirm: ${cr.outstanding.join('; ')}.`, copyReview: cr });
   // Two people pressing Send at the same moment would email the client twice.
   if (q.sent_at) {
     const since = Date.now() - new Date(q.sent_at.replace(' ', 'T') + 'Z').getTime();
@@ -631,6 +683,29 @@ router.post('/:id/make-sample', (req, res) => {
     .forEach(it => { const nid = newId(); idMap[it.id] = nid; ins.run(nid, id, ...cols.map(c => it[c])); });
   db.prepare('UPDATE quotes SET applied_surcharges=? WHERE id=?').run(remapSurchargeLines(src.applied_surcharges, idMap), id);
   res.json({ ok: true, id, quoteNumber: num });
+});
+
+// Duplicate this quote into a new job. Body: { client, clientEmail, address } (all optional).
+router.post('/:id/duplicate', (req, res) => {
+  const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!src) return res.status(404).json({ error: 'Not found' });
+  const q = copyQuote(src, req.body || {});
+  db.prepare('INSERT INTO audit_log (id,entity_type,entity_id,actor,action,detail) VALUES (?,?,?,?,?,?)')
+    .run(newId(), 'quote', q.id, req.user ? (req.user.name || req.user.username) : '', 'duplicate', `copied from ${src.quote_number}`);
+  res.status(201).json(fullQuote(q));
+});
+// Tick (or untick) one item on a copied quote's pre-send review list.
+router.put('/:id/copy-review', (req, res) => {
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'Not found' });
+  if (!q.copied_from) return res.status(400).json({ error: 'Not a copied quote' });
+  const b = req.body || {};
+  if (!COPY_REVIEW.some(r => r.key === b.key)) return res.status(400).json({ error: 'unknown review item' });
+  let done = {}; try { done = JSON.parse(q.copy_review || '{}') || {}; } catch (e) {}
+  if (b.done) done[b.key] = { by: req.user ? (req.user.name || req.user.username) : '', at: new Date().toISOString().slice(0, 19).replace('T', ' ') };
+  else delete done[b.key];
+  db.prepare('UPDATE quotes SET copy_review=? WHERE id=?').run(JSON.stringify(done), q.id);
+  res.json({ ok: true, copyReview: copyReview(db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id)) });
 });
 
 router.post('/:id/revision', (req, res) => {
@@ -995,6 +1070,7 @@ router.get('/:id/signed-preview', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.copyQuote = copyQuote;
 module.exports.supersedeQuote = supersedeQuote;
 module.exports.createQuote = createQuote;
 module.exports.fullQuote = fullQuote;

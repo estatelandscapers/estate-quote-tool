@@ -718,6 +718,52 @@ function phaseOfStage(id) {
   return STAGE_PHASE[id] || 1;
 }
 
+// Pick a quote to copy from: recent first, filtered as you type by number, client or address.
+function quotePicker({ title, intro, onPick, allowBlank }) {
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 6px;">${esc(title)}</h2><div class="sub">${intro}</div>
+    ${allowBlank ? `<button class="btn btn-blue" id="qp_blank" style="margin-bottom:12px;">Start with a blank quote</button><div class="alab">— or copy an existing quote —</div>` : ''}
+    <input type="search" id="qp_q" placeholder="Search by quote number, client or address" style="margin:6px 0 8px;" autofocus>
+    <div id="qp_list" class="muted" style="max-height:50vh;overflow:auto;">Loading…</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="qp_cancel">Cancel</button></div></div>`;
+  document.body.appendChild(bg);
+  $('#qp_cancel').addEventListener('click', () => bg.remove());
+  if (allowBlank) $('#qp_blank').addEventListener('click', () => { bg.remove(); onPick(null); });
+  // Superseded and lost quotes included: an old job is often exactly the one to copy.
+  api('/quotes?lost=1&superseded=1').then(res => {
+    const all = (Array.isArray(res) ? res : (res && res.quotes) || []).filter(r => !r.isSample).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    const paint = () => {
+      const t = $('#qp_q').value.trim().toLowerCase();
+      const hit = all.filter(r => !t || [r.quoteNumber, r.client, r.address, r.projectTitle].some(x => String(x || '').toLowerCase().includes(t))).slice(0, 40);
+      $('#qp_list').innerHTML = hit.map(r => `<div class="pc known" data-pick="${r.id}" style="cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center;color:var(--ink);">
+        <div><b>${esc(r.quoteNumber)}</b> · ${esc(r.client || '—')}<br><span class="muted" style="font-size:11px;">${esc(r.address || '')}${r.copiedFrom ? ' · itself a copy' : ''}</span></div>
+        <div style="text-align:right;white-space:nowrap;"><b>${money(r.value)}</b><br><span class="tag tag-${r.status === 'accepted' ? 'accepted' : 'draft'}">${esc(r.status)}</span></div></div>`).join('') || '<div class="muted">No quotes match.</div>';
+      $('#qp_list').querySelectorAll('[data-pick]').forEach(el => el.addEventListener('click', () => { bg.remove(); onPick(el.dataset.pick, all.find(r => r.id === el.dataset.pick)); }));
+    };
+    $('#qp_q').addEventListener('input', paint); paint();
+  });
+}
+function convertDialog(l, done) {
+  quotePicker({ title: 'Convert to quote — ' + (l.name || 'this enquiry'), allowBlank: true,
+    intro: 'Copying brings across the deliverables, surcharges, site notes and settings of another job. Client name, email and address come from this enquiry; drawings are never copied, and the copy cannot be sent until every carried-over detail is confirmed.',
+    onPick: id => done(id) });
+}
+// Duplicate from the quote page: asks who the new quote is for, then copies.
+function duplicateDialog(q) {
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 6px;">Duplicate quote ${esc(q.quoteNumber)}</h2>
+    <div class="sub">A new job built from this one: deliverables, surcharges, site notes and settings copy across. Drawings, signatures and the sent status do not. The copy cannot be sent until its review list is ticked off.</div>
+    <div class="grid2"><div class="field"><label>Client name</label><input id="dq_client" placeholder="who the new quote is for"></div><div class="field"><label>Client email</label><input id="dq_email"></div></div>
+    <div class="field"><label>Site address</label><input id="dq_address"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="dq_cancel">Cancel</button><button class="btn btn-blue" id="dq_ok">Create copy</button></div></div>`;
+  document.body.appendChild(bg);
+  $('#dq_cancel').addEventListener('click', () => bg.remove());
+  $('#dq_ok').addEventListener('click', async () => {
+    const r = await api('/quotes/' + q.id + '/duplicate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: $('#dq_client').value, clientEmail: $('#dq_email').value, address: $('#dq_address').value }) });
+    if (r.error) return toast(r.error);
+    bg.remove(); state.quoteId = r.id; state.scrollY = 0; toast('Quote ' + r.quoteNumber + ' created as a copy of ' + q.quoteNumber); route();
+  });
+}
 function editLead(l, v) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;">${l ? 'Edit' : 'New'} enquiry</h2>
@@ -1465,11 +1511,11 @@ async function leadConsole(v) {
   });
   const lb = $('#leadBehaviour'); if (lb) lb.addEventListener('click', () => openBehaviour(l.quoteId));
   const gq = $('#goQuote'); if (gq) gq.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = l.quoteId; state.leadId = null; shell(); });
-  const tq = $('#toQuote'); if (tq) tq.addEventListener('click', async () => {
-    const r = await api('/leads/' + l.id + '/convert', { method: 'POST' });
+  const tq = $('#toQuote'); if (tq) tq.addEventListener('click', () => convertDialog(l, async fromQuoteId => {
+    const r = await api('/leads/' + l.id + '/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fromQuoteId ? { fromQuoteId } : {}) });
     if (r.error) return toast(r.error);
-    state.leadId = null; state.tab = 'quotes'; state.quoteId = r.quoteId; toast('Quote ' + r.quoteNumber + ' created'); shell();
-  });
+    state.leadId = null; state.tab = 'quotes'; state.quoteId = r.quoteId; toast('Quote ' + r.quoteNumber + (fromQuoteId ? ' created as a copy — confirm the review list before sending' : ' created')); shell();
+  }));
   $('#ld_save').addEventListener('click', async () => {
     await api('/leads/' + l.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: $('#ld_name').value, phone: $('#ld_phone').value, email: $('#ld_email').value,
@@ -1823,6 +1869,7 @@ async function quoteEditor(v) {
   if (state.quoteId !== myQuoteId) return;
   if (!q || q.error) { state.quoteId = null; state.tab = 'quotes'; return quotesList(v); }
   const link = location.origin + '/q/' + q.token;
+  reviewOpen = !!(q.copyReview && !q.copyReview.complete);
   const applied = q.appliedSurcharges || [];
   const isApplied = id => applied.some(s => s.id === id);
   const uncheckedCritical = (checklist || []).filter(c => c.critical && !c.checked).length;
@@ -1838,16 +1885,20 @@ async function quoteEditor(v) {
         ${String(q.quoteNumber).includes('.') ? `<span class="muted" style="font-size:12px;font-weight:500;">rev ${esc(String(q.quoteNumber).split('.')[1])}</span>` : ''}
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && q.signedLive && !q.isSample ? `<button class="btn btn-danger" id="supersedeQ" title="Close this accepted quote because a newer revision replaced it">Close — superseded</button>` : ``}${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="dupQ" title="Start a new job from this quote — lines, surcharges, notes and settings copy; client, drawings and signatures do not">Duplicate</button>` : ''}${isAdmin() && q.signedLive && !q.isSample ? `<button class="btn btn-danger" id="supersedeQ" title="Close this accepted quote because a newer revision replaced it">Close — superseded</button>` : ``}${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
       ${isAdmin() ? `<button class="btn btn-ghost" id="linkTog">${q.linkOff ? '🔒 Link is OFF — turn on' : 'Turn link off'}</button>` : ''}
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
         : `<button class="btn btn-ghost" id="lostQuote">Mark lost</button>`) : ''}
       ${isAdmin() && q.status !== 'accepted' && !q.isSample && !q.lostAt ? `<button class="btn btn-ghost" id="markWon" style="border-color:var(--green);color:var(--green);">✓ Mark won — PO / contract</button>` : ''}
-      ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete || q.lostAt ? 'disabled title="' + (q.lostAt ? 'This quote is marked lost' : 'Finish the surcharge settings first') + '" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
+      ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete || q.lostAt || reviewOpen ? 'disabled title="' + (q.lostAt ? 'This quote is marked lost' : reviewOpen ? 'Confirm the copied-quote review list first' : 'Finish the surcharge settings first') + '" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
       <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
     </div>
     <div class="rule"></div>
+    ${q.copyReview ? `<div class="copybar ${q.copyReview.complete ? 'ok' : ''}" id="copyBar">
+      <div class="h"><b>${q.copyReview.complete ? '✓ Copied from' : 'Copied from'} ${esc(q.copyReview.source ? q.copyReview.source.quoteNumber + ' · ' + (q.copyReview.source.client || '') : 'another quote')}</b>
+        <span>${q.copyReview.complete ? 'Every carried-over detail has been confirmed — this quote can be sent.' : `Confirm each item before sending — ${q.copyReview.items.filter(i => !i.done).length} to go. Sending is blocked until the list is complete.`}</span></div>
+      <div class="list">${q.copyReview.items.map(i => `<label class="${i.done ? 'done' : ''}"><input type="checkbox" data-crev="${i.key}" ${i.done ? 'checked' : ''} ${i.auto ? 'disabled' : ''}> <span>${esc(i.label)}</span><em>${i.auto ? 'from the record' : i.done ? esc((i.by || '') + ' · ' + sydTime(i.at)) : ''}</em></label>`).join('')}</div></div>` : ''}
     ${q.linkOff && !q.lostAt ? `<div class="emailbar failed" style="background:#FFF8E8;border-color:#EAD9AC;color:#7a5e1a;">
       <b>The client link is switched off</b><br><span style="font-size:11px;">Anyone opening it sees a "please call us" page instead of the price. The quote is unchanged — turn it back on any time.</span></div>` : ''}
     ${q.lostAt ? `<div class="emailbar failed" style="background:#F6F6F6;border-color:#DDD;color:#666;">
@@ -2094,6 +2145,16 @@ async function quoteEditor(v) {
     if (r.error) return toast(r.error);
     state.quoteId = r.id; state.scrollY = 0; toast('Sample ' + r.quoteNumber + ' created'); route();
   });
+  const dq = $('#dupQ'); if (dq) dq.addEventListener('click', () => duplicateDialog(q));
+  // Copied-quote review: each tick is stored with who and when; the page repaints so the
+  // Send buttons unlock the moment the last one is confirmed.
+  v.querySelectorAll('[data-crev]').forEach(c => c.addEventListener('change', async () => {
+    state.scrollY = window.scrollY;
+    const r = await api('/quotes/' + q.id + '/copy-review', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: c.dataset.crev, done: c.checked }) });
+    if (r.error) { toast(r.error); c.checked = !c.checked; return; }
+    if (r.copyReview && r.copyReview.complete) toast('All confirmed — the quote can be sent');
+    reload();
+  }));
   $('#newRev').addEventListener('click', async () => { const r = await api('/quotes/' + q.id + '/revision', { method: 'POST' }); state.quoteId = r.id; state.scrollY = 0; toast('Revision ' + r.quoteNumber + ' created — old link superseded'); route(); });
   $('#saveDraft').addEventListener('click', async () => {
     const ok = await uploadPlan(true);          // flush a picked-but-not-uploaded drawing
@@ -2223,7 +2284,7 @@ async function quoteEditor(v) {
     bar.id = 'builderBar'; bar.className = 'builderbar';
     bar.innerHTML = `<span class="muted" id="barStatus">Auto-saves as you work</span>
       <button class="btn btn-ghost" id="barSave">Save</button>
-      <button class="btn btn-blue" id="barSend" ${q.surchargesIncomplete ? 'disabled title="Finish the surcharge settings first" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>`;
+      <button class="btn btn-blue" id="barSend" ${q.surchargesIncomplete || reviewOpen ? 'disabled title="' + (reviewOpen ? 'Confirm the copied-quote review list first' : 'Finish the surcharge settings first') + '" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>`;
     v.appendChild(bar);
     $('#barSave').addEventListener('click', async () => {
       await autosave(); $('#barStatus').textContent = 'Saved just now';

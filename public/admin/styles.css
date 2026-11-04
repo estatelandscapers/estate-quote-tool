@@ -550,3 +550,17 @@ table.qb .vo-tot{align-self:center;white-space:nowrap;}
 .stat.profit .bar i{background:#fff;}
 .stat.hero .pair .r .n{color:#cfe0ff;}
 @media(max-width:820px){.stat .trio .n{white-space:normal;}#leadBody .grid4{grid-template-columns:1fr;}#leadBody .stat{min-height:0;}}
+
+/* Copied-quote review list: blocks sending until every carried-over detail is confirmed. */
+.copybar{border:1.5px solid #E9C9C9;background:#FDF0EE;border-radius:10px;padding:10px 12px;margin:0 0 12px;}
+.copybar.ok{border-color:#CBE0D2;background:#F2F8F4;}
+:root[data-theme="dark"] .copybar{background:#2A1616;border-color:#6B3522;}
+:root[data-theme="dark"] .copybar.ok{background:#15281C;border-color:#2E7D46;}
+.copybar .h{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px;}
+.copybar .h b{font-size:12.5px;}
+.copybar .h span{font-size:11.5px;color:var(--grey);}
+.copybar .list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:4px 14px;}
+.copybar label{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;font-size:12px;cursor:pointer;padding:3px 0;}
+.copybar label input{width:16px;height:16px;min-height:0;margin:0;}
+.copybar label.done span{color:var(--grey);text-decoration:line-through;}
+.copybar label em{font-style:normal;font-size:10px;color:var(--grey);white-space:nowrap;}

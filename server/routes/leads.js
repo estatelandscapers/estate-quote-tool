@@ -162,8 +162,19 @@ router.post('/:id/convert', (req, res) => {
     if (existing) return res.status(400).json({ error: `Already linked to quote ${existing.quote_number}.`, quoteId: existing.id });
     db.prepare('UPDATE leads SET quote_id=NULL WHERE id=?').run(l.id);
   }
-  const { createQuote } = require('./quotes');
-  const q = createQuote({ client: l.name, clientEmail: l.email, address: l.address, projectTitle: 'Landscape Works', leadId: l.id });
+  const { createQuote, copyQuote } = require('./quotes');
+  const details = { client: l.name, clientEmail: l.email, address: l.address, projectTitle: 'Landscape Works', leadId: l.id };
+  // Start blank, or copy an existing quote's lines, surcharges, notes and settings onto
+  // this lead's details. The copy carries a review list that gates sending.
+  const fromId = (req.body || {}).fromQuoteId;
+  let q;
+  if (fromId) {
+    const src = db.prepare('SELECT * FROM quotes WHERE id=?').get(fromId);
+    if (!src) return res.status(404).json({ error: 'Source quote not found' });
+    q = copyQuote(src, details);
+    db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
+      .run(newId(), l.id, 'note', l.stage, req.user ? (req.user.name || req.user.username) : '', 'logged', `Quote ${q.quote_number} created as a copy of ${src.quote_number}`);
+  } else q = createQuote(details);
   // Converting means the site visit is behind you — move to Phase 3's end and
   // diarise building the quote.
   db.prepare("UPDATE leads SET quote_id=?, status='Quoted', stage='aftervisit', next_followup=?, updated_at=datetime('now') WHERE id=?")

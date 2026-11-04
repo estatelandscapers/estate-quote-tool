@@ -447,6 +447,8 @@ CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_emails(due_at, sent_at, ca
 // evidence file is stored and fingerprinted exactly like an e-signed contract.
 addColumn('quotes','won_method','TEXT');           // 'esign' | 'manual'
 addColumn('quotes','won_how','TEXT');              // po | contract | email
+addColumn('quotes','copied_from','TEXT');          // quote id this one was duplicated from
+addColumn('quotes','copy_review','TEXT');          // JSON {key:{by,at}} — pre-send confirmations on a copied quote
 addColumn('quotes','won_ref','TEXT');
 addColumn('quotes','won_approved_by','TEXT');
 addColumn('quotes','won_note','TEXT');
