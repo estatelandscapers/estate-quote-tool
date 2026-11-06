@@ -90,16 +90,17 @@ router.post('/start', async (req, res) => {
   }
 });
 
-// ---- 1b. the combined quote page: details in, questions straight away ----------------------
-// Creates (or reuses) the lead, hands out the code and the session token at once, and leaves
-// the intro email to the usual delayed schedule so the client has the code for later.
+// ---- 1b. the quote page: details in, code emailed straight away, then the questions -----------
+// Creates (or reuses) the lead and sends the code email now, not on the usual delay, because
+// the client is sitting on the page waiting to type it. The code is the gate: it proves the
+// email is real before any time is spent on the enquiry.
 router.post('/start-now', async (req, res) => {
   try {
     const b = req.body || {}, ip = ipOf(req);
-    if (clean(b.website)) return res.status(400).json({ error: 'Something went wrong. Please try again.' });   // honeypot
+    if (clean(b.website)) return res.json({ ok: true, email: mask(b.email) });     // honeypot
     if (limited(ip, 8)) return res.status(429).json({ error: 'Too many requests. Please try again later, or email enquiry@estatelandscapers.com.au.' });
     const name = clean(b.name, 120), email = clean(b.email, 160).toLowerCase(), phone = clean(b.phone, 40), suburb = clean(b.suburb, 80), address = clean(b.address, 200);
-    if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !phone || !suburb) return res.status(400).json({ error: 'Your name, phone, email and suburb are needed so we can save your answers and call you back.' });
+    if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !phone || !suburb) return res.status(400).json({ error: 'Your name, phone, a valid email and your suburb are needed so we can save your answers and call you back.' });
     let l = db.prepare("SELECT * FROM leads WHERE lower(email)=? AND status NOT IN ('Won','Lost') AND created_at > datetime('now','-30 days') ORDER BY created_at DESC LIMIT 1").get(email);
     if (!l) {
       const id = newId(), ref = nextRef();
@@ -114,15 +115,8 @@ router.post('/start-now', async (req, res) => {
       if (address && !l.address) db.prepare('UPDATE leads SET address=? WHERE id=?').run(address, l.id);
       if (suburb && !l.suburb) db.prepare('UPDATE leads SET suburb=? WHERE id=?').run(suburb, l.id);
     }
-    l = EST.issueNow(l.id);
-    if (!l.est_invited_at && !EST.pending(l.id)) EST.autoInvite(l.id, { reason: 'new' });
-    const vk = clean(b.vk, 64) || 'unknown';
-    try { LA.noteVisitor(vk, { ua: req.get('user-agent'), touch: !!b.touch }, ip); } catch (e) {}
-    EST.logEvent(l.id, vk, 'auth', { via: 'quote-page' });
-    const a = EST.answersOf(l);
-    res.json({ ok: true, token: l.est_token, first: String(l.name || '').split(' ')[0], ref: l.enquiry_ref || null, email: l.email,
-      expires: l.est_code_expires, steps: EST.onlineSteps(), sizes: EST.sizesFor(), answers: { ...EST.prefillFrom(l), ...(a.current || {}) }, saved: Object.keys(a.current || {}).length,
-      completed: !!a.completedAt, versions: a.versions.length, booked: l.est_status === 'booked', reactions: REACTIONS });
+    const r = await EST.invite(l.id, { reason: l.est_invited_at ? 'resend' : 'new' });
+    res.json({ ok: true, email: mask(email), sent: r.ok });
   } catch (e) {
     console.log('[estimator] start-now error:', e.message);
     res.status(500).json({ error: 'Something went wrong on our side. Please email enquiry@estatelandscapers.com.au.' });

@@ -267,8 +267,8 @@ async function invite(leadId, { reason = 'new', by = '' } = {}) {
     return { ok: false, error: 'no email address on the lead' };
   }
   if (!l.enquiry_ref) { const ref = nextRef(); db.prepare('UPDATE leads SET enquiry_ref=? WHERE id=?').run(ref, l.id); l.enquiry_ref = ref; }
-  // A code issued by the website flow (issueNow) is still live: keep it, so the client's open
-  // session and the email agree. Otherwise, or once expired, mint a fresh one.
+  // A live code is kept (a resend repeats the same code, and a client already in the
+  // estimator keeps their session). Otherwise, or once expired, mint a fresh one.
   const live = l.est_code && l.est_token && l.est_code_expires && l.est_code_expires > new Date().toISOString().slice(0, 19).replace('T', ' ');
   const code = live ? l.est_code : codeFor(), exp = live ? l.est_code_expires : expiryFor(), tok = live ? l.est_token : newToken();
   db.prepare("UPDATE leads SET est_code=?, est_code_expires=?, est_token=?, est_status=?, est_invited_at=datetime('now'), updated_at=datetime('now') WHERE id=?")
@@ -284,21 +284,6 @@ async function invite(leadId, { reason = 'new', by = '' } = {}) {
     .run(msgId, l.id, 'email', 'estinvite', mail.subject, mail.text, by || 'auto', outcome,
       `Online estimator ${reason === 'resend' ? 'code resent' : 'invitation'} · code ${code} · valid to ${exp.slice(0, 10)}${err ? ' · NOT SENT: ' + err : ''}`);
   return { ok: outcome === 'sent', code, expires: exp, error: err };
-}
-
-// The combined quote page (/residential/quote/) opens the estimator the moment the client has
-// typed their details: a code and a token now, the intro email on the usual delay so they can
-// come back. A live code is reused so a returning client keeps one code.
-function issueNow(leadId) {
-  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(leadId);
-  if (!l) return null;
-  if (!l.enquiry_ref) { const ref = nextRef(); db.prepare('UPDATE leads SET enquiry_ref=? WHERE id=?').run(ref, l.id); l.enquiry_ref = ref; }
-  const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
-  const live = l.est_code && l.est_token && l.est_code_expires && l.est_code_expires > now;
-  const code = live ? l.est_code : codeFor(), exp = live ? l.est_code_expires : expiryFor(), tok = live ? l.est_token : newToken();
-  db.prepare("UPDATE leads SET est_code=?, est_code_expires=?, est_token=?, est_status=COALESCE(NULLIF(est_status,''),'started'), updated_at=datetime('now') WHERE id=?")
-    .run(code, exp, tok, l.id);
-  return db.prepare('SELECT * FROM leads WHERE id=?').get(l.id);
 }
 
 // ---- the intro email -----------------------------------------------------------------------
@@ -766,5 +751,5 @@ function funnel(days = 30) {
 }
 
 module.exports = { reactionLabel, NOT_FIT_REACTIONS, funnel, schedule, pending, cancelPending, runScheduler, startScheduler, recordOpen, opensFor, introEmailStatus, isFit, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
-  invite, issueNow, canInvite, introEmail, verify, byToken, answersOf, prefillFrom, saveAnswers, complete, clientText, sendBallparkEmail,
+  invite, canInvite, introEmail, verify, byToken, answersOf, prefillFrom, saveAnswers, complete, clientText, sendBallparkEmail,
   fridaySlots, book, sendBookingEmail, logEvent, sessionsFor, signalFor, summary, quick, estimatorLink, sampleQuoteLink };

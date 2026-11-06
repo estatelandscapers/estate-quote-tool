@@ -29,6 +29,17 @@ same lead the rep would otherwise fill in by hand.
    an ETA. The rep gets a push notification.
 7. **Photos and drawings**, optional, straight to the ENQ folder on OneDrive like the quote form.
 
+## The quote page (Nov 2026)
+
+`/residential/quote/` on the website is the estimator's front door. The client types name, phone,
+email and suburb; `POST /api/public/estimate/start-now` creates (or reuses) the lead and sends the
+code email **straight away** (not on the `est_invite_delay_min` delay), the client types the code
+on the next screen (`/auth`), and the questions start on the same visit. The code is the gate: it
+proves the email is real before anyone spends time on the enquiry, and it keeps working for coming
+back. A resend repeats the same live code. `/estimate/` stays as the code-entry page the emails link
+to. The website refuses a scope of only "not sure" (`/answers` answers 400), so every run names at
+least one item.
+
 ## What the rep sees
 
 * **Lead console → Online estimator panel**: the code and expiry, status, questions answered,
@@ -83,7 +94,8 @@ New: `server/utils/estimator.js` (engine), `server/routes/publicEstimate.js` (pu
 ## Public API (no login; CORS = SITE_ORIGIN)
 
 ```
-POST /api/public/estimate/start        {name,email,phone,suburb}      → lead + code emailed
+POST /api/public/estimate/start        {name,email,phone,suburb}      → lead + code emailed (estimate page)
+POST /api/public/estimate/start-now    {name,email,phone,suburb,address} → lead + code emailed now (quote page)
 POST /api/public/estimate/resend       {email}                        → always ok
 POST /api/public/estimate/auth         {code,email,vk}                → {token, steps, sizes, answers,…}
 POST /api/public/estimate/auth-resume  (X-Est-Token)                  → same, no code
