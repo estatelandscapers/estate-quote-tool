@@ -117,6 +117,34 @@ function ensureDrawer() {
   s.addEventListener('click', close); $('#drawerX').addEventListener('click', close);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
 }
+// ---- Lead drawer: a lead opens over the board, half the screen, instead of its own page.
+// leadConsole() renders into the drawer body exactly as it rendered into the page; any
+// "back to leads" inside it (leadsTab / leadsSummary called with the drawer body) closes
+// the drawer and refreshes the page behind it.
+const LEAD_DRAWER = { body: null };
+function ensureLeadDrawer() {
+  if ($('#leadDrawer')) return;
+  if (!$('#leadScrim')) { const s = document.createElement('div'); s.className = 'scrim'; s.id = 'leadScrim'; document.body.appendChild(s); s.addEventListener('click', closeLeadDrawer); }
+  const d = document.createElement('aside'); d.className = 'drawer wide'; d.id = 'leadDrawer';
+  d.innerHTML = '<button class="x" id="leadDrawerX" aria-label="Close">×</button><div id="leadDrawerBody"></div>'; document.body.appendChild(d);
+  $('#leadDrawerX').addEventListener('click', closeLeadDrawer);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#leadDrawer').classList.contains('on')) closeLeadDrawer(); });
+}
+function openLeadDrawer(id) {
+  ensureLeadDrawer();
+  state.leadId = id;
+  LEAD_DRAWER.body = $('#leadDrawerBody');
+  LEAD_DRAWER.body.innerHTML = '<p class="muted">Loading…</p>';
+  $('#leadDrawer').classList.add('on'); $('#leadScrim').classList.add('on'); $('#leadDrawer').scrollTop = 0;
+  leadConsole(LEAD_DRAWER.body);
+}
+function closeLeadDrawer() {
+  const d = $('#leadDrawer'); if (!d || !d.classList.contains('on')) { LEAD_DRAWER.body = null; return; }
+  d.classList.remove('on'); $('#leadScrim').classList.remove('on');
+  LEAD_DRAWER.body = null; state.leadId = null; state.leadStage = null;
+  // The board behind may have changed (a call logged, a step moved) — repaint it.
+  if (state.tab === 'leads' && (state.leadsSub || 'summary') === 'summary' && $('#leadBody')) leadsSummary($('#view'));
+}
 function openDrawer(html) { ensureDrawer(); $('#drawerBody').innerHTML = html; $('#drawer').classList.add('on'); $('#scrim').classList.add('on'); $('#drawer').scrollTop = 0; }
 function closeDrawer() { const d = $('#drawer'); if (d) { d.classList.remove('on'); $('#scrim').classList.remove('on'); } }
 const SIG_LABEL = { hot: 'hot', warm: 'warm', cold: 'cold', unopened: 'not opened', unsent: 'not sent' };
@@ -154,7 +182,7 @@ async function openFigure(key) {
   $$('#drawerBody tr.row').forEach(r => r.addEventListener('click', () => {
     closeDrawer();
     if (r.dataset.q) { state.tab = 'quotes'; state.quoteId = r.dataset.q; state.leadId = null; state.scrollY = 0; shell(); }
-    else if (r.dataset.l) { state.tab = 'leads'; state.leadsSub = 'summary'; state.leadId = r.dataset.l; shell(); }
+    else if (r.dataset.l) { if (state.tab !== 'leads') { state.tab = 'leads'; state.leadsSub = 'summary'; state.leadId = r.dataset.l; shell(); } else openLeadDrawer(r.dataset.l); }
   }));
 }
 
@@ -163,13 +191,13 @@ function shell() {
   const pc = state.pendingCounts || {};
   const badge = t => (t === 'pricing' && pc.pricing) ? `<span class="navdot">${pc.pricing}</span>`
     : (t === 'recipes' && pc.recipes) ? `<span class="navdot">${pc.recipes}</span>` : '';
-  const all = [['leads', 'Leads'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
+  const all = [['marketing', 'Marketing'], ['leads', 'Leads'], ['costing', 'Costing'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
                ['recipes', 'Recipes'], ['vendors', 'Vendors'], ['editor', 'Editor'],
                ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders']];
   // Admin sees everything. Everyone else works the delivery side of the business:
   // Leads, Quotes, Costs, Projects, Selections and Purchase Orders — but not the
   // rate card, the recipes or the vendor terms, and no money in the delivery tabs.
-  const adminOnlyTabs = ['editor', 'pricing', 'recipes', 'vendors'];
+  const adminOnlyTabs = ['editor', 'pricing', 'recipes', 'vendors', 'marketing'];
   const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
   if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
   $('#app').innerHTML = `
@@ -183,7 +211,12 @@ function shell() {
       <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
     </div>
     <div class="wrap" id="view"></div>`;
-  document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; state.selQuoteId = null; route(); }));
+  document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => {
+    state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; state.selQuoteId = null;
+    // Leads from the top bar is always the Summary — never the lead or sub-view you left.
+    if (b.dataset.tab === 'leads') { state.leadId = null; state.leadsSub = 'summary'; state.leadPhase = null; closeLeadDrawer(); }
+    route();
+  }));
   $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
   // Night mode: explicit per-device choice (never the phone's system setting).
   const themeBtn = $('#themeBtn');
@@ -245,7 +278,9 @@ function route() {
       }
     }).catch(() => {});
   }
-  if (state.tab === 'leads') return state.leadId ? leadConsole(v) : leadsTab(v);
+  if (state.tab === 'marketing') return marketingTab(v);
+  if (state.tab === 'costing') return costingTab(v);
+  if (state.tab === 'leads') { const id = state.leadId; const p = leadsTab(v); if (id) Promise.resolve(p).then(() => openLeadDrawer(id)); return p; }
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
   if (state.tab === 'jobs') return jobsTab(v);
   if (state.tab === 'po') return state.poId ? poEditor(v) : poList(v);
@@ -262,6 +297,8 @@ const LEAD_STATUS = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
 
 const PHCOL = ['', '#1E5BFF', '#6A3E9C', '#B08D3E', '#2E7D46', '#888'];
 async function leadsTab(v) {
+  // "Back to leads" from inside the drawer: close it and refresh the summary behind it.
+  if (LEAD_DRAWER.body && v === LEAD_DRAWER.body) { closeLeadDrawer(); return leadsTab($('#view')); }
   const sub = state.leadsSub || 'summary';
   v.innerHTML = `<div class="card" style="padding:12px 16px;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -283,14 +320,105 @@ async function leadsTab(v) {
 }
 
 // ---------- TAB 1 · SUMMARY: figures on top, then the pipeline ----------
-async function leadsSummary(v) {
-  const [board, d, stageData, act, fc, hotFeed] = await Promise.all([api('/leads/board' + (state.showParked ? '?parked=1' : '')), api('/dashboard'), api('/leads/stages'), api('/leads/link-activity?limit=40'), api('/dashboard/forecast'), api('/leads/hot')]);
-  if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
-  const today = localYmd();
+// ---------------- MARKETING (v34 scaffold — structure; see MARKETING.md) ----------------
+async function marketingTab(v) {
+  v.innerHTML = '<p class="muted">Loading…</p>';
+  const days = state.mktDays || 30;
+  const [m, conn] = await Promise.all([api('/marketing/summary?days=' + days), api('/marketing/connections')]);
+  if (!m || m.error) { v.innerHTML = `<div class="card"><h2>Marketing</h2><p class="muted">${esc((m && m.error) || 'Could not load.')}</p></div>`; return; }
+  const connected = (m.connections || []).some(c => c.status === 'connected');
+  const tile = (key, label, value, note, cls) => `<div class="stat ${cls || ''} tap" data-mfig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
+  const pair = (key, label, a, an, b, bn, cls) => `<div class="stat ${cls || ''} tap" data-mfig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="pair"><div><div class="v">${a}</div><div class="n">${an}</div></div><div class="r"><div class="v">${b}</div><div class="n">${bn}</div></div></div></div>`;
+  const plat = p => `<span class="plat ${p}">${p === 'meta' ? 'Meta' : p === 'google' ? 'Google' : p === 'hipages' ? 'Hipages' : esc(p)}</span>`;
+  const dash = x => x == null ? '—' : x;
+  const ch = m.channels || {};
+  const c = m.connections.reduce((a, x) => (a[x.platform] = x, a), {});
+  v.innerHTML = `
+  <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div><h2>Marketing</h2><div class="sub">Spend and results from Meta and Google Ads, matched to the enquiries, quotes and wins in this tool. Meta refreshes at 6 am Sydney; Google when its script runs. Tap a tile for the list behind it.</div></div>
+      <div class="seg" id="mktDays">${[7, 30, 90].map(d => `<button data-d="${d}" class="${days === d ? 'on' : ''}">${d} days</button>`).join('')}</div></div>
+    <div class="rule"></div>
+    ${!connected ? `<div class="warnbox" style="margin-bottom:12px;"><b>Nothing connected yet.</b> The tiles fill in once Meta or Google is connected — the guide is at the bottom of this page. Lead counts by channel already work from the enquiries' sources.</div>` : ''}
+    <div class="grid4">
+      ${pair('spend', 'Spend, ' + days + ' d', money(m.spend.total), `Meta ${money(m.spend.meta)} · Google ${money(m.spend.google)}`, money(m.spend.perDay) + ' / day', m.spend.budgetPerDay ? `budget ${money(m.spend.budgetPerDay)} / day · ${Math.round(m.spend.perDay / m.spend.budgetPerDay * 100)}% pacing` : 'no budgets reported yet', 'hero')}
+      ${pair('ads', 'Live ads', m.ads.live, `in ${m.ads.campaigns} campaign${m.ads.campaigns === 1 ? '' : 's'}`, `${m.ads.paused} paused`, `${m.ads.inReview} in review`)}
+      ${pair('leads', 'Leads from ads, ' + days + ' d', m.leads.tool, `in this tool · Meta ${m.leads.meta} · Google ${m.leads.google}`, m.leads.platformReported, 'platforms report')}
+      ${pair('cpl', 'Cost per lead', m.cost.perLead != null ? money(m.cost.perLead) : '—', `blended · Meta ${m.cost.perLeadMeta != null ? money(m.cost.perLeadMeta) : '—'} · Google ${m.cost.perLeadGoogle != null ? money(m.cost.perLeadGoogle) : '—'}`, m.spend.prev ? (m.spend.total >= m.spend.prev ? '↑' : '↓') + ' ' + Math.round(Math.abs(m.spend.total - m.spend.prev) / Math.max(1, m.spend.prev) * 100) + '%' : '—', 'spend vs previous ' + days + ' d', m.cost.perLead != null ? 'goodbox' : '')}
+    </div>
+    <div class="grid4" style="margin-top:10px;">
+      ${tile('cpq', 'Cost per quote', m.cost.perQuote != null ? money(m.cost.perQuote) : '—', `${m.leads.quoted} of ${m.leads.tool} ad leads quoted${m.leads.tool ? ' (' + Math.round(m.leads.quoted / m.leads.tool * 100) + '%)' : ''}`)}
+      ${tile('cpw', 'Cost per won job', m.cost.perWon != null ? money(m.cost.perWon) : '—', `${m.leads.won} win${m.leads.won === 1 ? '' : 's'} from ad leads · ${money(m.leads.wonValue)} secured`)}
+      ${tile('roas', 'Return on ad spend', m.cost.roas != null ? m.cost.roas + '×' : '—', `${money(m.leads.wonValue)} won ÷ ${money(m.spend.total)} spent`, m.cost.roas ? 'goodbox' : '')}
+      ${tile('slow', 'Ad leads not called within 2 h', `${m.leads.slow} of ${m.leads.tool}`, 'speed is the cheapest lever — ad leads called inside 2 h quote far more often', m.leads.slow ? 'warnbox' : '')}
+    </div>
+    <h3 style="margin:16px 0 6px;font-size:12px;letter-spacing:.5px;text-transform:uppercase;color:var(--grey);">Where enquiries come from, ${days} d</h3>
+    <div class="grid4">${['meta', 'google', 'hipages', 'direct'].map(k => `<div class="stat tap" data-mfig="ch_${k}" role="button" tabindex="0"><div class="k">${plat(k)}</div><div class="v">${(ch[k] || {}).n || 0}</div><div class="n">${(ch[k] || {}).q || 0} quoted · ${(ch[k] || {}).w || 0} won</div></div>`).join('')}</div>
+    ${(ch.referral && ch.referral.n) || (ch.other && ch.other.n) ? `<div class="muted" style="font-size:11px;margin-top:6px;">Also: referral ${(ch.referral || {}).n || 0} · other ${(ch.other || {}).n || 0}</div>` : ''}
+  </div>
+
+  <div class="card"><h2>Campaigns</h2><div class="sub">Every campaign the platforms report, ${days} days. "Leads here" are enquiries in this tool attributed to the campaign; "platform" is the platform's own count.</div><div class="rule"></div>
+    ${m.campaigns.length ? `<div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>Campaign</th><th>Status</th><th class="right">Spend</th><th class="right">Clicks</th><th class="right">Leads here</th><th class="right">Platform</th><th class="right">CPL</th><th class="right">Quoted</th><th class="right">Ads live</th></tr></thead><tbody>
+      ${m.campaigns.map(k => `<tr><td>${plat(k.platform)} ${esc(k.name)}</td><td><span class="tag tag-${k.status === 'ACTIVE' ? 'accepted' : 'draft'}">${esc(k.status || '')}</span></td><td class="right">${money(k.spend)}</td><td class="right">${k.clicks}</td><td class="right">${k.toolLeads}</td><td class="right muted">${k.platformLeads}</td><td class="right">${k.cpl != null ? money(k.cpl) : '—'}</td><td class="right">${k.toolQuoted}</td><td class="right">${dash(k.adsLive)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No campaign data yet.</p>'}
+  </div>
+
+  <div class="card"><h2>Levers this week</h2><div class="sub">What to change, worked out from the numbers above. (Rules to be finished — see MARKETING.md.)</div><div class="rule"></div>
+    ${(m.levers || []).length ? m.levers.map(l => `<div class="lever"><span class="dot ${l.level}"></span><div><b>${esc(l.title)}</b>${esc(l.body)}</div>${l.url ? `<a class="btn btn-ghost btn-sm" href="${esc(l.url)}" target="_blank">${esc(l.action || 'Open')}</a>` : ''}</div>`).join('') : '<p class="muted">Nothing to suggest yet — levers appear once there is spend and lead data to compare.</p>'}
+  </div>
+
+  <div class="card"><h2>Connections</h2><div class="sub">Both read-only: the tool never changes a campaign, bid or budget.</div><div class="rule"></div>
+    <div class="conn">${plat('meta')}<span class="st ${c.meta && c.meta.status === 'connected' ? 'ok' : 'no'}">${c.meta && c.meta.status === 'connected' ? 'Connected' : c.meta && c.meta.status === 'error' ? 'Error' : 'Not connected'}</span>
+      <span class="muted" style="flex:1 1 240px;">${c.meta && c.meta.status === 'connected' ? `${esc(c.meta.accountName || '')} · ${esc(c.meta.accountId || '')} · last pull ${c.meta.lastPullAt ? esc(sydTime(c.meta.lastPullAt)) : 'never'}` : c.meta && c.meta.lastError ? esc(c.meta.lastError) : 'Paste a system-user token (guide below).'}</span>
+      ${c.meta && c.meta.status !== 'disconnected' ? `<button class="btn btn-ghost btn-sm" id="metaPull">Pull now</button><button class="btn btn-ghost btn-sm" id="metaOff">Disconnect</button>` : `<input id="metaToken" placeholder="paste the Meta system-user token" style="flex:1 1 260px;"><button class="btn btn-blue btn-sm" id="metaGo">Connect</button>`}</div>
+    <div id="metaAccounts"></div>
+    <div class="conn">${plat('google')}<span class="st ${c.google && c.google.status === 'connected' ? 'ok' : 'no'}">${c.google && c.google.status === 'connected' ? 'Connected' : 'Not connected'}</span>
+      <span class="muted" style="flex:1 1 240px;">${c.google && c.google.status === 'connected' ? `${esc(c.google.accountName || '')} · ${esc(c.google.accountId || '')} · last push ${c.google.lastPullAt ? esc(sydTime(c.google.lastPullAt)) : 'never'}` : 'Paste the key into a Google Ads script (guide below). No Google API approval needed.'}</span>
+      <input id="gKey" value="${esc(conn.googleKey || '')}" readonly style="flex:1 1 200px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"><button class="btn btn-ghost btn-sm" id="gCopy">Copy key</button><a class="btn btn-ghost btn-sm" href="/api/marketing/google/script" target="_blank">Show script</a></div>
+  </div>
+
+  <div class="card"><h2>How to connect — step by step</h2><div class="rule"></div>
+    <div class="grid2">
+      <div><div style="font-size:12px;font-weight:800;margin-bottom:6px;">${plat('meta')} Facebook &amp; Instagram ads — about 10 minutes, once</div><div class="steps">
+        <div class="step"><div><b>Open Meta Business Suite → Settings → Business settings</b><p>Sign in as an admin of the Estate Landscapers business portfolio (business.facebook.com/settings).</p></div></div>
+        <div class="step"><div><b>Users → System users → Add</b><p>Name it <code>quote-tool</code>, role <b>Admin</b>. A system user is a login for software — its key does not expire when you change your password.</p></div></div>
+        <div class="step"><div><b>Assign assets</b><p>Add assets → <b>Ad accounts</b> → tick the Estate Landscapers ad account → <b>View performance</b>. For lead ads, also add the <b>Page</b> with <b>Leads access</b>.</p></div></div>
+        <div class="step"><div><b>Generate token</b><p>Pick your app (create one at developers.facebook.com → My apps → Create app → "Other" → "Business" if there is none), expiry <b>Never</b>, permissions <code>ads_read</code>, <code>leads_retrieval</code>, <code>pages_read_engagement</code>. Copy the token.</p></div></div>
+        <div class="step"><div><b>Paste it above and press Connect</b><p>The tool lists the ad accounts the token can see; pick one. It pulls the last 90 days straight away, then daily at 6 am.</p></div></div>
+      </div></div>
+      <div><div style="font-size:12px;font-weight:800;margin-bottom:6px;">${plat('google')} Google Ads — about 5 minutes, once</div><div class="steps">
+        <div class="step"><div><b>Copy your key above</b><p>The key lets the script into this tool and nothing else. "Show script" opens the script with the key already filled in.</p></div></div>
+        <div class="step"><div><b>Google Ads → Tools → Bulk actions → Scripts → +</b><p>Name it <code>Estate quote tool sync</code>, paste the script.</p></div></div>
+        <div class="step"><div><b>Authorise, then Preview</b><p>Accept Google's prompt, press <b>Preview</b>. The Google row above turns green within a minute.</p></div></div>
+        <div class="step"><div><b>Schedule it daily, 5:30 am</b><p>That is the whole setup — the script runs inside your own Google Ads account, so there is no developer token or approval wait.</p></div></div>
+        <div class="step"><div><b>Make leads traceable</b><p>Turn on auto-tagging and add <code>?utm_source=google&amp;utm_medium=cpc&amp;utm_campaign={campaignid}</code> to ad URLs. The website form already passes UTM tags into the enquiry.</p></div></div>
+      </div></div>
+    </div></div>`;
+  $('#mktDays').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.mktDays = parseInt(b.dataset.d, 10); marketingTab(v); }));
+  $$('[data-mfig]').forEach(el => el.addEventListener('click', () => toast('Figure lists for Marketing are next on the build list'))); // TODO (Opus): GET /marketing/figure/:key
+  const gc = $('#gCopy'); if (gc) gc.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#gKey').value); toast('Key copied'); } catch (e) { $('#gKey').select(); } });
+  const mg = $('#metaGo'); if (mg) mg.addEventListener('click', async () => {
+    const token = $('#metaToken').value.trim(); if (!token) return toast('Paste the token first');
+    mg.disabled = true; const r = await api('/marketing/meta/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) }); mg.disabled = false;
+    if (r.error) return toast(r.error);
+    $('#metaAccounts').innerHTML = `<div class="conn" style="flex-direction:column;align-items:stretch;"><b style="font-size:12px;">Which ad account?</b>${(r.accounts || []).map(a => `<button class="btn btn-ghost btn-sm" data-acct="${esc(a.id)}" data-name="${esc(a.name)}" data-cur="${esc(a.currency || '')}" style="text-align:left;">${esc(a.name)} · ${esc(a.accountId)} · ${esc(a.currency || '')}</button>`).join('') || '<span class="muted">The token can see no ad accounts — check the asset assignment (step 3).</span>'}</div>`;
+    $$('#metaAccounts [data-acct]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true; const rr = await api('/marketing/meta/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, accountId: b.dataset.acct, accountName: b.dataset.name, currency: b.dataset.cur }) });
+      toast(rr.ok ? 'Meta connected — pulled the last 90 days' : 'Connected, but the first pull failed: ' + ((rr.pull || {}).error || '')); marketingTab(v);
+    }));
+  });
+  const mp = $('#metaPull'); if (mp) mp.addEventListener('click', async () => { mp.disabled = true; const r = await api('/marketing/meta/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 7 }) }); toast(r.ok ? `Pulled ${r.rows} day-rows` : 'Pull failed: ' + r.error); marketingTab(v); });
+  const mo = $('#metaOff'); if (mo) mo.addEventListener('click', async () => { await api('/marketing/meta/disconnect', { method: 'POST' }); toast('Meta disconnected'); marketingTab(v); });
+}
+
+// ---------------- COSTING (Current + Forecast — moved here from Leads) ----------------
+async function costingTab(v) {
+  v.innerHTML = '<p class="muted">Loading…</p>';
+  const [d, fc] = await Promise.all([api('/dashboard'), api('/dashboard/forecast')]);
   const tile = (key, label, value, note, hero) => `<div class="stat ${hero ? 'hero' : ''} tap" data-fig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
-  const open = board.cards.length;
-  const byPhase = {}; board.cards.forEach(c => byPhase[c.phase] = (byPhase[c.phase] || 0) + 1);
-  $('#leadBody').innerHTML = `
+  // Open enquiries tile needs the board's phase counts
+  const board = await api('/leads/board');
+  const open = (board.cards || []).length;
+  const byPhase = {}; (board.cards || []).forEach(c => byPhase[c.phase] = (byPhase[c.phase] || 0) + 1);
+  v.innerHTML = `<div id="costBody">
     <div class="card"><h2>Current</h2><div class="sub">All values exclude GST. Only the current revision of each quote is counted. Tap a tile to see exactly which quotes are in it.</div><div class="rule"></div>
       ${(() => {
         const isAdmin = USER && USER.role === 'admin';
@@ -355,6 +483,25 @@ async function leadsSummary(v) {
       })()}
     </div>
 
+  </div>`;
+  $$('#costBody [data-fig]').forEach(el => { const go = () => openFigure(el.dataset.fig); el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
+  // FY target: typed straight on the tile (admin), saved on blur.
+  const tgt = $('#fyTarget'); if (tgt) {
+    tgt.addEventListener('click', e => e.stopPropagation()); tgt.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') tgt.blur(); });
+    tgt.addEventListener('change', async () => { const v = String(tgt.value).replace(/[^0-9.]/g, ''); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fy_target: v }) }); toast(v ? 'FY target saved' : 'FY target cleared'); costingTab(v); });
+  }
+
+}
+
+async function leadsSummary(v) {
+  if (LEAD_DRAWER.body && v === LEAD_DRAWER.body) { closeLeadDrawer(); return leadsSummary($('#view')); }
+  const [board, stageData, act, hotFeed] = await Promise.all([api('/leads/board' + (state.showParked ? '?parked=1' : '')), api('/leads/stages'), api('/leads/link-activity?limit=40'), api('/leads/hot')]);
+  if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
+  const today = localYmd();
+  const tile = (key, label, value, note, hero) => `<div class="stat ${hero ? 'hero' : ''} tap" data-fig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
+  const open = board.cards.length;
+  const byPhase = {}; board.cards.forEach(c => byPhase[c.phase] = (byPhase[c.phase] || 0) + 1);
+  $('#leadBody').innerHTML = `
     <div class="card"><h2>Lead pipeline</h2><div class="sub">Drag a card to move it a step — it holds there until new evidence (a quote, drawings, a discovery call) moves it on. Each column scrolls, searches and sorts on its own. Won needs a signed quote or a PO, from the quote page.</div><div class="rule"></div>
       <div class="hstrip" id="hotStrip"></div>
       <div class="tstrip" id="todayStrip"></div>
@@ -392,12 +539,6 @@ async function leadsSummary(v) {
   $$('#leadBody .feedtbl tr.row').forEach(r => r.addEventListener('click', () => openBehaviour(r.dataset.q)));
   $$('[data-unpark]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); await api('/leads/' + a.dataset.unpark + '/unpark', { method: 'POST' }); toast('Back on the board'); leadsSummary(v); }));
 
-  // FY target: typed straight on the tile (admin), saved on blur.
-  const tgt = $('#fyTarget'); if (tgt) {
-    tgt.addEventListener('click', e => e.stopPropagation()); tgt.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') tgt.blur(); });
-    tgt.addEventListener('change', async () => { const v = String(tgt.value).replace(/[^0-9.]/g, ''); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fy_target: v }) }); toast(v ? 'FY target saved' : 'FY target cleared'); leadsSummary(v); });
-  }
-
   // ---- Hot right now: hot first, then warm, latest activity first ----
   const paintHot = () => {
     const el = $('#hotStrip'); if (!el) return;
@@ -407,11 +548,11 @@ async function leadsSummary(v) {
     const agoOf = v => { if (!v) return ''; const ms = Date.now() - new Date(String(v).replace(' ', 'T') + 'Z').getTime(); const m = Math.round(ms / 6e4);
       if (m < 60) return `${Math.max(1, m)} min ago`; const h = Math.round(m / 60); if (h < 24) return `${h} h ago`; const d = Math.round(h / 24); return d === 1 ? 'yesterday' : `${d} d ago`; };
     const row = l => `<div class="hrow ${l.signal}" style="--sc:var(--s${l.phase || 1})">
-      <div class="who" data-open="${l.id}">${esc(l.name || '—')}${l.suburb ? ` <span>· ${esc(l.suburb)}</span>` : ''}</div>
-      <div class="q">${l.quoteNumber ? `<b>${esc(l.quoteNumber)}</b>${l.value != null && USER.role === 'admin' ? ` <span>· ${money(l.value)}</span>` : ''}` : '<b>No quote yet</b>'}</div>
-      <div class="st"><span class="pill">${l.phase || ''} · ${esc(l.stageLabel || '')}</span></div>
-      <div class="why" title="${esc(l.why || '')}"><i>${l.via === 'estimate' ? 'Estimator' : 'Quote link'}</i>${l.called ? `<em>✓ Called ${agoOf(l.called.at)}${l.called.by ? ' (' + esc(l.called.by) + ')' : ''}</em> · ` : ''}${esc(l.why || '')}</div>
-      <div class="when">${agoOf(l.lastAt)}</div>
+      <div class="who" data-open="${l.id}">${esc(l.name || '—')}<small>${esc(l.suburb || '')}</small></div>
+      <div class="q">${l.quoteNumber ? `<b>${esc(l.quoteNumber)}</b><small>${l.value != null && USER.role === 'admin' ? money(l.value) : ''}${l.revisionOf ? (l.value != null && USER.role === 'admin' ? ' · ' : '') + 'rev of ' + esc(l.revisionOf) : ''}</small>` : `<b>No quote yet</b><small>${l.estRange ? esc(l.estRange) : ''}</small>`}</div>
+      <div class="st"><span class="pill">${l.phase || ''} · ${esc(l.stageLabel || '')}</span><small>${l.via === 'estimate' ? 'Estimator' : 'Quote link'}</small></div>
+      <div class="why" title="${esc(l.why || '')}">${l.called ? `<em>✓ Called ${agoOf(l.called.at)}${l.called.by ? ' (' + esc(l.called.by) + ')' : ''}</em> · ` : ''}${l.visit && !/Site visit/.test(l.why || '') ? `<em>${esc(l.visit.text)}</em> · ` : ''}${esc(l.why || '')}</div>
+      <div class="when">${agoOf(l.lastAt)}<small>${l.via === 'link' ? 'last opened' : 'last activity'}</small></div>
       <div class="btns">${l.phone ? `<a class="btn-call ${l.called ? 'called' : ''}" href="tel:${esc(String(l.phone).replace(/\s+/g, ''))}" data-call="${l.id}" title="${esc(l.phone)} — dials and logs the call">${l.called ? '✓ Called' : '📞 Call'}</a>` : '<span class="muted" style="font-size:11px;">no number</span>'}${l.quoteId ? `<button data-q="${l.quoteId}">Quote</button><button data-bh="${l.quoteId}">Record</button>` : `<button data-open="${l.id}">Lead</button>`}</div></div>`;
     if (!hot.length && !warm.length) {
       el.innerHTML = `<div class="head"><span class="lbl">Hot right now</span><span class="cnt">nothing hot — ${board.cards.filter(c => c.quoteNumber).length} quote${board.cards.filter(c => c.quoteNumber).length === 1 ? '' : 's'} out, none opened in the last 48 h</span></div>`;
@@ -423,7 +564,7 @@ async function leadsSummary(v) {
       ${warm.length ? `<div class="sect">Warm <a id="hotWarmToggle">${showWarm ? 'hide' : 'show ' + warm.length}</a></div>${showWarm ? `<div class="rows">${warm.map(row).join('')}</div>` : ''}` : ''}
       <div class="more"><span>Call dials the number and logs "Called" on the lead. A lead drops off when its signal fades or once it is won, lost or parked.</span></div>`;
     const wt = $('#hotWarmToggle'); if (wt) wt.addEventListener('click', () => { state.hotWarm = state.hotWarm === false; paintHot(); });
-    $$('#hotStrip [data-open]').forEach(x => x.addEventListener('click', () => { state.leadId = x.dataset.open; leadConsole(v); }));
+    $$('#hotStrip [data-open]').forEach(x => x.addEventListener('click', () => openLeadDrawer(x.dataset.open)));
     $$('#hotStrip [data-q]').forEach(b => b.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = b.dataset.q; state.leadId = null; state.scrollY = 0; shell(); }));
     $$('#hotStrip [data-bh]').forEach(b => b.addEventListener('click', () => openBehaviour(b.dataset.bh)));
     $$('#hotStrip [data-call]').forEach(a => a.addEventListener('click', async () => {
@@ -447,7 +588,7 @@ async function leadsSummary(v) {
     const tm = $('#todayMore'); if (tm) tm.addEventListener('click', () => { state.todayAll = !state.todayAll; paintToday(); });
     $$('[data-done]').forEach(b => b.addEventListener('click', async () => { const r = await api('/leads/' + b.dataset.done + '/done', { method: 'POST' }); toast(r.error || ('Done — next: ' + (r.nextAction || 'review'))); leadsSummary(v); }));
     $$('[data-snooze]').forEach(b => b.addEventListener('click', async () => { await api('/leads/' + b.dataset.snooze + '/snooze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 1 }) }); toast('Moved to tomorrow'); leadsSummary(v); }));
-    $$('#todayStrip [data-open]').forEach(s => s.addEventListener('click', () => { state.leadId = s.dataset.open; leadConsole(v); }));
+    $$('#todayStrip [data-open]').forEach(s => s.addEventListener('click', () => openLeadDrawer(s.dataset.open)));
   };
   paintToday();
 
@@ -477,7 +618,7 @@ async function leadsSummary(v) {
       $(`[data-csort="${p}"]`).classList.toggle('on', srt !== 'next'); $(`[data-csort="${p}"]`).title = 'Sort: ' + { next: 'next action soonest', newest: 'newest first', oldest: 'oldest first', value: 'highest value', az: 'A–Z' }[srt];
     });
     $$('#board .lead').forEach(el => {
-      el.addEventListener('click', e => { if (e.target.closest('[data-bh]')) return; if (el.dataset.kind === 'won') { state.tab = 'quotes'; state.quoteId = el.dataset.q; state.leadId = null; state.scrollY = 0; shell(); } else { state.leadId = el.dataset.id; leadConsole(v); } });
+      el.addEventListener('click', e => { if (e.target.closest('[data-bh]')) return; if (el.dataset.kind === 'won') { state.tab = 'quotes'; state.quoteId = el.dataset.q; state.leadId = null; state.scrollY = 0; shell(); } else { openLeadDrawer(el.dataset.id); } });
       if (el.dataset.kind !== 'lead') return;
       el.addEventListener('dragstart', e => { dragId = el.dataset.id; el.classList.add('drag'); $('#dropbar').classList.add('on'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', dragId); } catch (x) {} });
       el.addEventListener('dragend', () => { el.classList.remove('drag'); $('#dropbar').classList.remove('on'); $$('.col.over, .dropbar div.over').forEach(x => x.classList.remove('over')); });
@@ -590,14 +731,14 @@ async function leadsEnquiries(v) {
       toast(`Deleted ${r.deleted}` + (r.skipped && r.skipped.length ? ` — kept ${r.skipped.length} with quotes` : ''));
       leadsEnquiries(v);
     });
-    v.querySelectorAll('[data-lopen2]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen2; leadConsole(v); }));
+    v.querySelectorAll('[data-lopen2]').forEach(b => b.addEventListener('click', () => openLeadDrawer(b.dataset.lopen2)));
     v.querySelectorAll('[data-ld]').forEach(b => b.addEventListener('click', async () => {
       if (confirm('Delete this enquiry?')) { await api('/leads/' + b.dataset.ld, { method: 'DELETE' }); leadsEnquiries(v); } }));
   };
   $('#hideClosed').addEventListener('change', e => { state.hideClosed = e.target.checked; paint(); });
   $('#smallFilter').addEventListener('change', e => { state.smallFilter = e.target.value; paint(); });
   paint();
-  v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => { state.leadId = b.dataset.lopen; leadConsole(v); }));
+  v.querySelectorAll('[data-lopen]').forEach(b => b.addEventListener('click', () => openLeadDrawer(b.dataset.lopen)));
   v.querySelectorAll('[data-snooze]').forEach(b => b.addEventListener('click', async () => {
     const r = await api(`/leads/${b.dataset.snooze}/snooze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 3 }) });
     toast('Snoozed until ' + r.until); leadsEnquiries(v);
@@ -708,7 +849,7 @@ function visitDialog(v, visit) {
   $('#vd_done').addEventListener('click', () => { toast('Visit done — quote due within 48 hours'); put({ status: 'done' }); });
   $('#vd_move').addEventListener('click', () => put({ date: $('#vd_date').value, time: $('#vd_time').value }));
   $('#vd_cancel').addEventListener('click', () => { if (confirm('Cancel this visit?')) put({ status: 'cancelled' }); });
-  $('#vd_open').addEventListener('click', () => { bg.remove(); state.leadId = visit.leadId; leadConsole($('#view')); });
+  $('#vd_open').addEventListener('click', () => { bg.remove(); openLeadDrawer(visit.leadId); });
   $('#vd_close').addEventListener('click', () => bg.remove());
 }
 

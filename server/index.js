@@ -47,6 +47,8 @@ app.use('/api/public/quote', require('./routes/publicQuote'));
 app.use('/api/public/estimate', require('./routes/publicEstimate')); // website online estimator
 app.use('/api/public', require('./routes/publicEnquiry')); // website enquiry form
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/marketing', require('./routes/marketing'));          // Meta / Google Ads performance (admin)
+app.use('/api/public/marketing', require('./routes/publicMarketing')); // Google Ads script push + Meta webhooks (key-guarded)
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
 // Machine-to-machine API for the Site Management Tool (keyed, no session).
 app.use('/api/service', require('./routes/service'));
@@ -278,4 +280,5 @@ app.listen(PORT, () => {
   // Each deploy archives its own source zip to OneDrive (version + ISO date).
   try { require('./utils/linkAnalytics').start(); } catch (e) { console.error('[links] failed to start:', e.message); }
   try { require('./utils/releaseArchive').start(); } catch (e) { console.error('[release] failed to start:', e.message); }
+  try { require('./utils/marketing').start(); } catch (e) { console.error('[marketing] failed to start:', e.message); }
 });

@@ -25,7 +25,7 @@ function requireAuth(req, res, next) {
   // before its key was even looked at. The namespace enforces SERVICE_API_KEY itself.
   if (p.startsWith('/api/public/') || p.startsWith('/api/auth/') || p.startsWith('/api/backup')
     || p.startsWith('/api/restore') || p.startsWith('/api/maintenance/')
-    || p.startsWith('/api/service/')) return next();
+    || p.startsWith('/api/service/') || p.startsWith('/api/public/marketing/')) return next();
   if (!p.startsWith('/api/')) return next();
   const u = getUser(req);
   if (!u) return res.status(401).json({ error: 'auth required' });

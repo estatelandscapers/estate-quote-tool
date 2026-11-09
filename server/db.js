@@ -421,6 +421,36 @@ addColumn('leads','est_code_expires','TEXT');
 addColumn('leads','est_token','TEXT');
 addColumn('leads','est_answers','TEXT');
 addColumn('leads','est_status','TEXT');
+// ---- Marketing (v34 scaffold): ad platform connections and daily campaign stats ----------
+db.exec(`
+CREATE TABLE IF NOT EXISTS ad_connections (
+  platform TEXT PRIMARY KEY,                 -- 'meta' | 'google'
+  status TEXT DEFAULT 'disconnected',        -- disconnected | connected | error
+  account_id TEXT, account_name TEXT, currency TEXT,
+  secret TEXT,                               -- meta: system-user token; google: the key the Ads script presents
+  config TEXT,                               -- JSON: extra settings (lead form ids, time zone, etc.)
+  last_pull_at TEXT, last_error TEXT,
+  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS ad_campaigns (
+  id TEXT PRIMARY KEY,                       -- platform:campaign_id
+  platform TEXT, campaign_id TEXT, name TEXT, status TEXT,   -- ACTIVE | PAUSED | ENDED | REMOVED
+  daily_budget REAL, objective TEXT, ads_live INTEGER, ads_paused INTEGER, ads_in_review INTEGER,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS ad_daily (
+  platform TEXT, day TEXT, campaign_id TEXT,
+  spend REAL DEFAULT 0, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0,
+  leads INTEGER DEFAULT 0,                   -- the platform's own lead/conversion count
+  reach INTEGER, frequency REAL, impression_share REAL,
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (platform, day, campaign_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ad_daily_day ON ad_daily(day);
+`);
+addColumn('leads','channel','TEXT');          // meta | google | hipages | direct | referral | other — set by marketing.attribution
+addColumn('leads','campaign_ref','TEXT');     // platform campaign id or UTM campaign the enquiry arrived with
+addColumn('leads','click_id','TEXT');         // gclid / fbclid when the website form passed one
 addColumn('leads','est_invited_at','TEXT');
 db.exec(`CREATE TABLE IF NOT EXISTS estimate_events (
   id TEXT PRIMARY KEY, lead_id TEXT, visitor_key TEXT, event_type TEXT, payload TEXT,

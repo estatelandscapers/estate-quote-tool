@@ -206,15 +206,15 @@ router.get('/board', (req, res) => {
     const s = stageById(stage);
     let value = null, link = null, fullQ = null;
     if (quote) {
-      fullQ = db.prepare('SELECT * FROM quotes WHERE id=?').get(quote.id);
-      try { value = require('./quotes').cachedTotals(fullQ).ex; } catch (e) {}
-      try { link = LA.quick(fullQ); } catch (e) {}
+      fullQ = latestRevision(quote);
+      if (fullQ) try { value = require('./quotes').cachedTotals(fullQ).ex; } catch (e) {}
+      if (fullQ) try { link = LA.quick(fullQ.sent_at ? fullQ : (db.prepare("SELECT * FROM quotes WHERE parent_number=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(fullQ.parent_number) || fullQ)); } catch (e) {}
     }
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '', source: l.source || '',
       phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase, overridden: !!l.stage_override,
       nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup, small: !!l.small_project, createdAt: l.created_at,
       quoteMissing: !!(l.quote_id && !quote),
-      quoteId: quote ? quote.id : null, quoteNumber: quote ? quote.quote_number : null, quoteStatus: quote ? quote.status : null,
+      quoteId: fullQ ? fullQ.id : null, quoteNumber: fullQ ? fullQ.quote_number : null, quoteStatus: fullQ ? fullQ.status : null,
       value: value != null ? Math.round(value) : null,
       link: link ? { signal: link.signal, why: link.signalWhy, opens: link.opens, lastOpened: link.lastOpened } : null,
       est: (() => { try { return require('../utils/estimator').quick(l); } catch (e) { return null; } })() };
@@ -251,6 +251,25 @@ router.get('/board', (req, res) => {
 // one list, latest activity first. The same signals the cards carry, pulled out of the
 // five columns so nobody has to hunt for them. A lead drops off when the signal fades
 // (the sig_*/est_* fade days), or once it is won, lost or parked.
+// The lead's quote, at its LATEST revision — the board and the hot strip read value and
+// number from there, not from the original the lead row happens to point at.
+function latestRevision(quote) {
+  if (!quote) return null;
+  const full = db.prepare('SELECT * FROM quotes WHERE id=?').get(quote.id);   // syncLeadStage hands back a partial row
+  if (!full) return null;
+  return db.prepare('SELECT * FROM quotes WHERE parent_number=? ORDER BY created_at DESC, quote_number DESC LIMIT 1').get(full.parent_number) || full;
+}
+// Next booked site visit for a lead, with the countdown the strip shows.
+function nextVisit(leadId) {
+  const today = require('../utils/refs').sydneyParts().ymd;
+  const v = db.prepare("SELECT * FROM site_visits WHERE lead_id=? AND status='booked' AND visit_date >= ? ORDER BY visit_date, visit_time LIMIT 1").get(leadId, today);
+  if (!v) return null;
+  const days = Math.round((new Date(v.visit_date + 'T00:00:00') - new Date(today + 'T00:00:00')) / 864e5);
+  const label = new Date(v.visit_date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
+  const moved = db.prepare("SELECT COUNT(*) n FROM site_visits WHERE lead_id=? AND status='cancelled'").get(leadId).n > 0;
+  return { id: v.id, date: v.visit_date, time: v.visit_time || null, inDays: days, label, moved,
+    text: `Site visit ${label}${v.visit_time ? ' ' + v.visit_time : ''} · ${days === 0 ? 'today' : days === 1 ? 'tomorrow' : 'in ' + days + ' days'}${moved ? ' · rescheduled' : ''}` };
+}
 router.get('/hot', (req, res) => {
   const LA = require('../utils/linkAnalytics'); const EST = require('../utils/estimator');
   const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') AND COALESCE(parked,0)=0").all();
@@ -259,8 +278,17 @@ router.get('/hot', (req, res) => {
     const { stage, quote } = syncLeadStage(l);
     const s = stageById(stage);
     let link = null, est = null, fullQ = null, value = null;
-    if (quote) { fullQ = db.prepare('SELECT * FROM quotes WHERE id=?').get(quote.id); try { link = LA.quick(fullQ); } catch (e) {} try { value = require('./quotes').cachedTotals(fullQ).ex; } catch (e) {} }
+    if (quote) {
+      fullQ = latestRevision(quote);
+      // Signal from the revision the client actually has (the latest one sent); value from the latest revision.
+      const sentQ = !fullQ ? null : fullQ.sent_at ? fullQ : (db.prepare("SELECT * FROM quotes WHERE parent_number=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(fullQ.parent_number) || fullQ);
+      if (sentQ) { try { link = LA.quick(sentQ); } catch (e) {} }
+      if (fullQ) { try { value = require('./quotes').cachedTotals(fullQ).ex; } catch (e) {} }
+    }
     try { est = EST.quick(l); } catch (e) {}
+    const visit = nextVisit(l.id);
+    // A booked visit shows its real date and countdown, in place of "booked a Friday site visit".
+    if (est && visit && /booked a Friday/i.test(est.why || '')) est.why = visit.text;
     const rank = x => x === 'hot' ? 2 : x === 'warm' ? 1 : 0;
     const pick = [link && { src: 'link', sig: link.signal, why: link.signalWhy, at: link.lastOpened }, est && { src: 'estimate', sig: est.signal, why: est.why, at: est.lastSession }]
       .filter(Boolean).filter(x => rank(x.sig) > 0).sort((a, b) => rank(b.sig) - rank(a.sig) || String(b.at || '').localeCompare(String(a.at || '')))[0];
@@ -274,6 +302,8 @@ router.get('/hot', (req, res) => {
       stage: s.id, stageLabel: s.label, phase: s.phase,
       quoteId: fullQ ? fullQ.id : null, quoteNumber: fullQ ? fullQ.quote_number : null, value: value != null ? Math.round(value) : null,
       estRange: !fullQ && est && est.status ? est.status : null,
+      revisionOf: fullQ && fullQ.quote_number !== fullQ.parent_number ? fullQ.parent_number : null,
+      visit,
       signal: pick.sig, via: pick.src, why: [pick.why, extra].filter(Boolean).join(' · '), lastAt: pick.at,
       called: call ? { at: call.created_at, by: call.sent_by } : null });
   });
