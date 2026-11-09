@@ -16,13 +16,15 @@ const KEYS = ['company_name','company_abn','company_lic','company_address','comp
   'close_small_under','close_large_over',
   // forecast card
   'fy_target','fc_stale_days','fc_stale_rate',
+  // marketing
+  'mkt_budget_month','meta_verify_token','meta_app_secret',
   'est_enabled','est_invite_delay_min','est_warm_email_opens','pixel_url','est_url','tool_url','est_code_days','est_lockout_tries','est_lockout_min','est_slots_per_half','est_hot_sessions','est_hot_window_h','est_hot_toggles','est_warm_active_sec','est_warm_answer_pct','est_hot_fade_days','est_warm_fade_days','est_intro_subject'];
 
 // Company details are needed by the client-facing pages, but margin targets and
 // labour rates are not for general viewing.
 const SENSITIVE = ['tier_bronze','tier_silver','tier_gold','crew_day_rate','crew_people',
   'extra_person_rate','hours_per_day','work_days_per_month','quote_number_start',
-  'default_crew_size','default_customer_tier','age_flag','age_chase','age_dead']; // SENSITIVE KEYS
+  'default_crew_size','default_customer_tier','age_flag','age_chase','age_dead', 'meta_app_secret']; // SENSITIVE KEYS
 router.get('/', (req, res) => {
   const out = {}; KEYS.forEach(k => out[k] = settingGet(k));
   out.smtpConfigured = configured();

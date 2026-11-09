@@ -124,6 +124,10 @@ router.put('/:id', (req, res) => {
       b.source ?? l.source, b.notes ?? l.notes, b.status ?? l.status,
       b.stage ?? l.stage, b.nextFollowup !== undefined ? b.nextFollowup : l.next_followup,
       b.jobType ?? l.job_type, (b.suburb ?? l.suburb) || suburbFromAddress(b.address ?? l.address), l.id);
+  // A street address typed into Suburb (and nothing better in Address) belongs in Address.
+  const now = db.prepare('SELECT address, suburb FROM leads WHERE id=?').get(l.id);
+  if (/^\s*\d+[a-z]?[\s/-]/i.test(now.suburb || '') && !/\d/.test(now.address || ''))
+    db.prepare('UPDATE leads SET address=?, suburb=? WHERE id=?').run(now.suburb, suburbFromAddress(now.suburb) || now.address || '', l.id);
   res.json({ ok: true });
 });
 router.delete('/:id', (req, res) => { db.prepare('DELETE FROM leads WHERE id=?').run(req.params.id); res.status(204).end(); });

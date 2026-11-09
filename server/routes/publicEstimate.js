@@ -79,6 +79,7 @@ router.post('/start', async (req, res) => {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(id, name, phone, email, '', 'Our website', `${ref} · RESIDENTIAL enquiry via the online estimator`, 'New', 'call1',
           sydneyParts().ymd, '', suburb, JSON.stringify({ _prefill: { source: 'Our website', name, phone, email, suburb, enquiry_ref: ref, audience: 'residential', confirmed: {} } }), 'website', ref);
+      try { require('../utils/marketing').captureAttribution(id, { utm: b.utm, gclid: b.gclid, fbclid: b.fbclid }); } catch (e) {}
       l = db.prepare('SELECT * FROM leads WHERE id=?').get(id);
       try { require('../utils/push').notify({ title: `New estimator enquiry: ${name}`, body: [suburb, phone].filter(Boolean).join(' · ') + ` · ${ref}`, url: '/admin/?lead=' + id, tag: 'lead-' + id }).catch(() => {}); } catch (e) {}
     } else if (phone && !l.phone) db.prepare('UPDATE leads SET phone=? WHERE id=?').run(phone, l.id);
@@ -108,6 +109,7 @@ router.post('/start-now', async (req, res) => {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(id, name, phone, email, address, 'Our website', `${ref} · RESIDENTIAL enquiry via the online estimate page`, 'New', 'call1',
           sydneyParts().ymd, '', suburb, JSON.stringify({ _prefill: { source: 'Our website', name, phone, email, suburb, address, enquiry_ref: ref, audience: 'residential', confirmed: {} } }), 'website', ref);
+      try { require('../utils/marketing').captureAttribution(id, { utm: b.utm, gclid: b.gclid, fbclid: b.fbclid }); } catch (e) {}
       l = db.prepare('SELECT * FROM leads WHERE id=?').get(id);
       try { require('../utils/push').notify({ title: `New website enquiry: ${name}`, body: [suburb, phone].filter(Boolean).join(' · ') + ` · ${ref} · started the online estimate`, url: '/admin/?lead=' + id, tag: 'lead-' + id }).catch(() => {}); } catch (e) {}
     } else {

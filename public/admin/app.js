@@ -126,8 +126,13 @@ function ensureLeadDrawer() {
   if ($('#leadDrawer')) return;
   if (!$('#leadScrim')) { const s = document.createElement('div'); s.className = 'scrim'; s.id = 'leadScrim'; document.body.appendChild(s); s.addEventListener('click', closeLeadDrawer); }
   const d = document.createElement('aside'); d.className = 'drawer wide'; d.id = 'leadDrawer';
-  d.innerHTML = '<button class="x" id="leadDrawerX" aria-label="Close">×</button><div id="leadDrawerBody"></div>'; document.body.appendChild(d);
+  d.innerHTML = '<button class="x" id="leadDrawerX" aria-label="Close">×</button><button class="btn btn-ghost btn-sm" id="leadDrawerFull" style="position:absolute;right:52px;top:calc(12px + env(safe-area-inset-top,0px));" title="Open this lead as a full page — handy for the call script on a phone">⤢ Full page</button><div id="leadDrawerBody"></div>'; document.body.appendChild(d);
   $('#leadDrawerX').addEventListener('click', closeLeadDrawer);
+  $('#leadDrawerFull').addEventListener('click', () => {
+    const id = state.leadId; const dd = $('#leadDrawer');
+    dd.classList.remove('on'); $('#leadScrim').classList.remove('on'); LEAD_DRAWER.body = null;
+    state.leadId = id; state.leadFull = true; window.scrollTo(0, 0); leadConsole($('#view'));
+  });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#leadDrawer').classList.contains('on')) closeLeadDrawer(); });
 }
 function openLeadDrawer(id) {
@@ -171,9 +176,9 @@ async function openBehaviour(quoteId) {
   $('#bhQuote').addEventListener('click', () => { closeDrawer(); state.tab = 'quotes'; state.quoteId = a.quoteId; state.leadId = null; state.scrollY = 0; shell(); });
   $('#bhClose').addEventListener('click', closeDrawer);
 }
-async function openFigure(key) {
+async function openFigure(key, url) {
   openDrawer('<div class="muted">Loading…</div>');
-  const f = await api('/dashboard/figure/' + key);
+  const f = await api(url || ('/dashboard/figure/' + key));
   if (f.error) return openDrawer(`<h3>Figure</h3><p class="muted">${esc(f.error)}</p>`);
   const hasM = USER && USER.role === 'admin' && f.rows.some(r => r.margin != null);
   openDrawer(`<h3>${esc(f.title)}${f.total != null ? ' · ' + money(f.total) : ''}</h3><div class="muted" style="font-size:12px;margin:4px 0 10px;">${esc(f.note || '')} ${f.rows.length} row${f.rows.length === 1 ? '' : 's'}.</div>
@@ -214,7 +219,7 @@ function shell() {
   document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => {
     state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; state.selQuoteId = null;
     // Leads from the top bar is always the Summary — never the lead or sub-view you left.
-    if (b.dataset.tab === 'leads') { state.leadId = null; state.leadsSub = 'summary'; state.leadPhase = null; closeLeadDrawer(); }
+    if (b.dataset.tab === 'leads') { state.leadId = null; state.leadFull = false; state.leadsSub = 'summary'; state.leadPhase = null; closeLeadDrawer(); }
     route();
   }));
   $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
@@ -280,7 +285,7 @@ function route() {
   }
   if (state.tab === 'marketing') return marketingTab(v);
   if (state.tab === 'costing') return costingTab(v);
-  if (state.tab === 'leads') { const id = state.leadId; const p = leadsTab(v); if (id) Promise.resolve(p).then(() => openLeadDrawer(id)); return p; }
+  if (state.tab === 'leads') { const id = state.leadId; if (id && state.leadFull) return leadConsole(v); const p = leadsTab(v); if (id) Promise.resolve(p).then(() => openLeadDrawer(id)); return p; }
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
   if (state.tab === 'jobs') return jobsTab(v);
   if (state.tab === 'po') return state.poId ? poEditor(v) : poList(v);
@@ -299,6 +304,7 @@ const PHCOL = ['', '#1E5BFF', '#6A3E9C', '#B08D3E', '#2E7D46', '#888'];
 async function leadsTab(v) {
   // "Back to leads" from inside the drawer: close it and refresh the summary behind it.
   if (LEAD_DRAWER.body && v === LEAD_DRAWER.body) { closeLeadDrawer(); return leadsTab($('#view')); }
+  state.leadFull = false;
   const sub = state.leadsSub || 'summary';
   v.innerHTML = `<div class="card" style="padding:12px 16px;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -329,7 +335,7 @@ async function marketingTab(v) {
   const connected = (m.connections || []).some(c => c.status === 'connected');
   const tile = (key, label, value, note, cls) => `<div class="stat ${cls || ''} tap" data-mfig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
   const pair = (key, label, a, an, b, bn, cls) => `<div class="stat ${cls || ''} tap" data-mfig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="pair"><div><div class="v">${a}</div><div class="n">${an}</div></div><div class="r"><div class="v">${b}</div><div class="n">${bn}</div></div></div></div>`;
-  const plat = p => `<span class="plat ${p}">${p === 'meta' ? 'Meta' : p === 'google' ? 'Google' : p === 'hipages' ? 'Hipages' : esc(p)}</span>`;
+  const plat = p => `<span class="plat ${p}">${{ meta: 'Meta', google: 'Google', hipages: 'Hipages', direct: 'Direct', leadsite: 'Lead sites', referral: 'Referral' }[p] || esc(p)}</span>`;
   const dash = x => x == null ? '—' : x;
   const ch = m.channels || {};
   const c = m.connections.reduce((a, x) => (a[x.platform] = x, a), {});
@@ -343,7 +349,7 @@ async function marketingTab(v) {
       ${pair('spend', 'Spend, ' + days + ' d', money(m.spend.total), `Meta ${money(m.spend.meta)} · Google ${money(m.spend.google)}`, money(m.spend.perDay) + ' / day', m.spend.budgetPerDay ? `budget ${money(m.spend.budgetPerDay)} / day · ${Math.round(m.spend.perDay / m.spend.budgetPerDay * 100)}% pacing` : 'no budgets reported yet', 'hero')}
       ${pair('ads', 'Live ads', m.ads.live, `in ${m.ads.campaigns} campaign${m.ads.campaigns === 1 ? '' : 's'}`, `${m.ads.paused} paused`, `${m.ads.inReview} in review`)}
       ${pair('leads', 'Leads from ads, ' + days + ' d', m.leads.tool, `in this tool · Meta ${m.leads.meta} · Google ${m.leads.google}`, m.leads.platformReported, 'platforms report')}
-      ${pair('cpl', 'Cost per lead', m.cost.perLead != null ? money(m.cost.perLead) : '—', `blended · Meta ${m.cost.perLeadMeta != null ? money(m.cost.perLeadMeta) : '—'} · Google ${m.cost.perLeadGoogle != null ? money(m.cost.perLeadGoogle) : '—'}`, m.spend.prev ? (m.spend.total >= m.spend.prev ? '↑' : '↓') + ' ' + Math.round(Math.abs(m.spend.total - m.spend.prev) / Math.max(1, m.spend.prev) * 100) + '%' : '—', 'spend vs previous ' + days + ' d', m.cost.perLead != null ? 'goodbox' : '')}
+      ${pair('cpl', 'Cost per lead', m.cost.perLead != null ? money(m.cost.perLead) : '—', `${m.cost.perLeadBasis === 'platform' ? 'on the platforms\' lead count' : 'on leads in this tool'} · Meta ${m.cost.perLeadMeta != null ? money(m.cost.perLeadMeta) : '—'} · Google ${m.cost.perLeadGoogle != null ? money(m.cost.perLeadGoogle) : '—'}`, m.spend.prev ? (m.spend.total >= m.spend.prev ? '↑' : '↓') + ' ' + Math.round(Math.abs(m.spend.total - m.spend.prev) / Math.max(1, m.spend.prev) * 100) + '%' : '—', 'spend vs previous ' + days + ' d', m.cost.perLead != null ? 'goodbox' : '')}
     </div>
     <div class="grid4" style="margin-top:10px;">
       ${tile('cpq', 'Cost per quote', m.cost.perQuote != null ? money(m.cost.perQuote) : '—', `${m.leads.quoted} of ${m.leads.tool} ad leads quoted${m.leads.tool ? ' (' + Math.round(m.leads.quoted / m.leads.tool * 100) + '%)' : ''}`)}
@@ -353,7 +359,8 @@ async function marketingTab(v) {
     </div>
     <h3 style="margin:16px 0 6px;font-size:12px;letter-spacing:.5px;text-transform:uppercase;color:var(--grey);">Where enquiries come from, ${days} d</h3>
     <div class="grid4">${['meta', 'google', 'hipages', 'direct'].map(k => `<div class="stat tap" data-mfig="ch_${k}" role="button" tabindex="0"><div class="k">${plat(k)}</div><div class="v">${(ch[k] || {}).n || 0}</div><div class="n">${(ch[k] || {}).q || 0} quoted · ${(ch[k] || {}).w || 0} won</div></div>`).join('')}</div>
-    ${(ch.referral && ch.referral.n) || (ch.other && ch.other.n) ? `<div class="muted" style="font-size:11px;margin-top:6px;">Also: referral ${(ch.referral || {}).n || 0} · other ${(ch.other || {}).n || 0}</div>` : ''}
+    <div class="muted" style="font-size:11px;margin-top:6px;">Also: other lead sites ${(ch.leadsite || {}).n || 0} · referral ${(ch.referral || {}).n || 0} · other ${(ch.other || {}).n || 0}. Channel comes from the enquiry's source, its campaign tags and any ad click id.</div>
+    ${m.budget ? `<div style="margin-top:10px;font-size:12px;"><b>This month:</b> ${money(m.budget.spent)} of ${money(m.budget.month)} budget (${m.budget.pct}%) with ${m.budget.monthPct}% of the month gone · heading for ${money(m.budget.projected)}<div class="bar" style="height:6px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:4px;"><i style="display:block;height:100%;width:${Math.min(100, m.budget.pct)}%;background:${m.budget.pct > m.budget.monthPct + 15 ? '#C8441C' : 'var(--blue)'};"></i></div></div>` : ''}
   </div>
 
   <div class="card"><h2>Campaigns</h2><div class="sub">Every campaign the platforms report, ${days} days. "Leads here" are enquiries in this tool attributed to the campaign; "platform" is the platform's own count.</div><div class="rule"></div>
@@ -361,8 +368,8 @@ async function marketingTab(v) {
       ${m.campaigns.map(k => `<tr><td>${plat(k.platform)} ${esc(k.name)}</td><td><span class="tag tag-${k.status === 'ACTIVE' ? 'accepted' : 'draft'}">${esc(k.status || '')}</span></td><td class="right">${money(k.spend)}</td><td class="right">${k.clicks}</td><td class="right">${k.toolLeads}</td><td class="right muted">${k.platformLeads}</td><td class="right">${k.cpl != null ? money(k.cpl) : '—'}</td><td class="right">${k.toolQuoted}</td><td class="right">${dash(k.adsLive)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No campaign data yet.</p>'}
   </div>
 
-  <div class="card"><h2>Levers this week</h2><div class="sub">What to change, worked out from the numbers above. (Rules to be finished — see MARKETING.md.)</div><div class="rule"></div>
-    ${(m.levers || []).length ? m.levers.map(l => `<div class="lever"><span class="dot ${l.level}"></span><div><b>${esc(l.title)}</b>${esc(l.body)}</div>${l.url ? `<a class="btn btn-ghost btn-sm" href="${esc(l.url)}" target="_blank">${esc(l.action || 'Open')}</a>` : ''}</div>`).join('') : '<p class="muted">Nothing to suggest yet — levers appear once there is spend and lead data to compare.</p>'}
+  <div class="card"><h2>Levers this week</h2><div class="sub">What to change, worked out from the numbers above. Red first, then amber; green is where to put more.</div><div class="rule"></div>
+    ${(m.levers || []).length ? m.levers.map(l => `<div class="lever"><span class="dot ${l.level}"></span><div><b>${esc(l.title)}</b>${esc(l.body)}</div>${l.url ? `<a class="btn btn-ghost btn-sm" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.action || 'Open')}</a>` : l.fig ? `<button class="btn btn-ghost btn-sm" data-lfig="${esc(l.fig)}">${esc(l.action || 'See')}</button>` : '<span></span>'}</div>`).join('') : '<p class="muted">Nothing to suggest yet — levers appear once there is spend and lead data to compare.</p>'}
   </div>
 
   <div class="card"><h2>Connections</h2><div class="sub">Both read-only: the tool never changes a campaign, bid or budget.</div><div class="rule"></div>
@@ -373,6 +380,10 @@ async function marketingTab(v) {
     <div class="conn">${plat('google')}<span class="st ${c.google && c.google.status === 'connected' ? 'ok' : 'no'}">${c.google && c.google.status === 'connected' ? 'Connected' : 'Not connected'}</span>
       <span class="muted" style="flex:1 1 240px;">${c.google && c.google.status === 'connected' ? `${esc(c.google.accountName || '')} · ${esc(c.google.accountId || '')} · last push ${c.google.lastPullAt ? esc(sydTime(c.google.lastPullAt)) : 'never'}` : 'Paste the key into a Google Ads script (guide below). No Google API approval needed.'}</span>
       <input id="gKey" value="${esc(conn.googleKey || '')}" readonly style="flex:1 1 200px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"><button class="btn btn-ghost btn-sm" id="gCopy">Copy key</button><a class="btn btn-ghost btn-sm" href="/api/marketing/google/script" target="_blank">Show script</a></div>
+    ${!conn.toolUrlSet ? `<div class="warnbox" style="margin-bottom:8px;font-size:11.5px;"><b>Set the tool's address first.</b> Editor → Online estimator → "This tool's public URL". The Google script and the Meta lead-ads callback are built from it.</div>` : ''}
+    <div class="conn">${plat('meta')}<span class="st ${conn.metaVerifySet ? 'ok' : 'no'}">Lead ads ${conn.metaVerifySet ? 'ready' : 'not set up'}</span>
+      <span class="muted" style="flex:1 1 240px;">Optional. Each Meta lead-form submission becomes an enquiry here within a minute. Callback URL:</span>
+      <input id="whUrl" value="${esc(conn.metaWebhook || '')}" readonly style="flex:1 1 260px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"><button class="btn btn-ghost btn-sm" id="whCopy">Copy</button></div>
   </div>
 
   <div class="card"><h2>How to connect — step by step</h2><div class="rule"></div>
@@ -383,6 +394,8 @@ async function marketingTab(v) {
         <div class="step"><div><b>Assign assets</b><p>Add assets → <b>Ad accounts</b> → tick the Estate Landscapers ad account → <b>View performance</b>. For lead ads, also add the <b>Page</b> with <b>Leads access</b>.</p></div></div>
         <div class="step"><div><b>Generate token</b><p>Pick your app (create one at developers.facebook.com → My apps → Create app → "Other" → "Business" if there is none), expiry <b>Never</b>, permissions <code>ads_read</code>, <code>leads_retrieval</code>, <code>pages_read_engagement</code>. Copy the token.</p></div></div>
         <div class="step"><div><b>Paste it above and press Connect</b><p>The tool lists the ad accounts the token can see; pick one. It pulls the last 90 days straight away, then daily at 6 am.</p></div></div>
+        <div class="step"><div><b>Tag your ad URLs</b><p>In each ad's URL parameters add <code>utm_source=facebook&amp;utm_medium=paid&amp;utm_campaign={{campaign.id}}</code>. Website enquiries then land here matched to the campaign.</p></div></div>
+        <div class="step"><div><b>Lead ads (only if you run lead forms)</b><p>Editor → Marketing: type any word as the verify token and paste the app secret (app dashboard → Settings → Basic). Then in the app: Webhooks → Page → subscribe to <code>leadgen</code> with the callback URL above and the same verify token. Finally Business settings → Integrations → Leads access → allow the app.</p></div></div>
       </div></div>
       <div><div style="font-size:12px;font-weight:800;margin-bottom:6px;">${plat('google')} Google Ads — about 5 minutes, once</div><div class="steps">
         <div class="step"><div><b>Copy your key above</b><p>The key lets the script into this tool and nothing else. "Show script" opens the script with the key already filled in.</p></div></div>
@@ -393,7 +406,10 @@ async function marketingTab(v) {
       </div></div>
     </div></div>`;
   $('#mktDays').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.mktDays = parseInt(b.dataset.d, 10); marketingTab(v); }));
-  $$('[data-mfig]').forEach(el => el.addEventListener('click', () => toast('Figure lists for Marketing are next on the build list'))); // TODO (Opus): GET /marketing/figure/:key
+  $$('[data-mfig]').forEach(el => { const go = () => openFigure(el.dataset.mfig, `/marketing/figure/${el.dataset.mfig}?days=${days}`);
+    el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
+  $$('[data-lfig]').forEach(b => b.addEventListener('click', () => openFigure(b.dataset.lfig, `/marketing/figure/${b.dataset.lfig}?days=${days}`)));
+  const wc = $('#whCopy'); if (wc) wc.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#whUrl').value); toast('Callback URL copied'); } catch (e) { $('#whUrl').select(); } });
   const gc = $('#gCopy'); if (gc) gc.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#gKey').value); toast('Key copied'); } catch (e) { $('#gKey').select(); } });
   const mg = $('#metaGo'); if (mg) mg.addEventListener('click', async () => {
     const token = $('#metaToken').value.trim(); if (!token) return toast('Paste the token first');
@@ -3595,6 +3611,13 @@ async function settingsTab(v) {
   <div class="card"><h2>Forecast</h2><div class="sub">The three inputs behind the Forecast card on the Leads tab. Everything else there is worked from the quotes and leads themselves.</div><div class="rule"></div>
     <div class="grid3">${[['fy_target', 'FY target, ex GST ($)', 'e.g. 1600000'], ['fc_stale_days', 'Stale after (days since sending)', '14'], ['fc_stale_rate', 'Win rate assumed for stale quotes (%)', '5']].map(([k, l, ph]) => `<div class="field"><label>${l}</label><input id="set_${k}" type="number" value="${esc(s[k] || '')}" placeholder="${ph}"></div>`).join('')}</div>
     <button class="btn btn-blue" id="saveFc">Save forecast settings</button></div>
+  <div class="card"><h2>Marketing</h2><div class="sub">Optional settings for the Marketing tab. Connections themselves are made on that tab.</div><div class="rule"></div>
+    <div class="grid3">
+      <div class="field"><label>Monthly ad budget, ex GST ($)</label><input id="set_mkt_budget_month" type="number" value="${esc(s.mkt_budget_month || '')}" placeholder="e.g. 5000"></div>
+      <div class="field"><label>Meta lead ads — verify token</label><input id="set_meta_verify_token" value="${esc(s.meta_verify_token || '')}" placeholder="any word you choose"></div>
+      <div class="field"><label>Meta app secret (checks webhook signatures)</label><input id="set_meta_app_secret" type="password" value="${esc(s.meta_app_secret || '')}" placeholder="from the app's Settings → Basic"></div>
+    </div>
+    <button class="btn btn-blue" id="saveMkt">Save marketing settings</button></div>
   <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;"><h2>Online estimator</h2>
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;cursor:pointer;"><input type="checkbox" id="set_est_enabled_cb" ${s.est_enabled !== '0' ? 'checked' : ''} style="width:auto;"> Auto lead processing <span class="tag ${s.est_enabled !== '0' ? 'tag-accepted' : 'tag-superseded'}" id="estOnTag">${s.est_enabled !== '0' ? 'ON' : 'OFF'}</span></label></div>
     <div class="muted" style="font-size:11px;margin:4px 0 8px;">Off = no automatic code emails to new leads, the website estimator shows "paused", and the Send code button is disabled. Leads keep arriving exactly as before. Nothing is lost when it comes back on.</div>
@@ -3671,6 +3694,7 @@ async function settingsTab(v) {
   $('#saveClose').addEventListener('click', save(['close_small_under', 'close_large_over'], 'Saved'));
   $('#saveTiers').addEventListener('click', save(['tier_bronze', 'tier_silver', 'tier_gold'], 'Tiers saved'));
   $('#saveAge').addEventListener('click', save(['age_flag', 'age_chase', 'age_dead'], 'Ageing saved'));
+  $('#saveMkt').addEventListener('click', save(['mkt_budget_month', 'meta_verify_token', 'meta_app_secret'], 'Marketing settings saved'));
   $('#saveFc').addEventListener('click', save(['fy_target', 'fc_stale_days', 'fc_stale_rate'], 'Forecast settings saved'));
   $('#saveSig').addEventListener('click', save(['sig_hot_opens', 'sig_hot_window_h', 'sig_hot_active_min', 'sig_hot_toggles', 'sig_warm_days', 'sig_warm_active_sec', 'sig_warm_opens', 'sig_hot_fade_days', 'sig_warm_fade_days', 'events_rollup_days'], 'Signal rules saved'));
   ['set_crew_day_rate', 'set_crew_people', 'set_hours_per_day'].forEach(id => {

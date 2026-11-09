@@ -133,6 +133,7 @@ router.post('/enquiry', async (req, res) => {
       .run(id, name, phone, email, address, 'Our website', noteLines, 'New', 'call1',
         sydneyParts().ymd, jobType, suburb, JSON.stringify(prefill), 'website');   // call them today, Sydney date
     if (smallProject) db.prepare('UPDATE leads SET small_project=1 WHERE id=?').run(id);
+    try { require('../utils/marketing').captureAttribution(id, { utm, gclid: b.gclid || utm.gclid, fbclid: b.fbclid || utm.fbclid }); } catch (e) {}
     try {
       require('../utils/push').notify({
         title: `New website enquiry${smallProject ? ' (small project)' : ''}: ${name}`,

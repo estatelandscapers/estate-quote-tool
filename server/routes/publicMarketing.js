@@ -13,8 +13,25 @@ router.post('/google', express.json({ limit: '2mb' }), (req, res) => {
 // Connectivity check for the script's Preview run.
 router.get('/google/ping', (req, res) => res.json({ ok: M.checkGoogleKey(req.get('x-marketing-key') || req.query.key) }));
 
-// TODO (Opus): Meta lead-form webhook — GET verify (hub.challenge) + POST leadgen → create enquiry.
-router.get('/meta/webhook', (req, res) => res.status(501).send('not yet'));
-router.post('/meta/webhook', (req, res) => res.status(501).json({ error: 'not yet' }));
+// Meta lead ads webhook. GET = subscription handshake; POST = a new form submission.
+router.get('/meta/webhook', (req, res) => {
+  const { settingGet } = require('../db');
+  const want = settingGet('meta_verify_token');
+  if (want && req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === want) return res.type('text/plain').send(String(req.query['hub.challenge'] || ''));
+  res.status(403).send('verify token mismatch');
+});
+router.post('/meta/webhook', async (req, res) => {
+  if (!M.verifyMetaSignature(req.rawBody, req.get('x-hub-signature-256'))) return res.status(401).json({ error: 'bad signature' });
+  // Answer Meta at once; it retries anything slower than a few seconds.
+  res.json({ ok: true });
+  const jobs = [];
+  ((req.body || {}).entry || []).forEach(e => (e.changes || []).forEach(c => {
+    if (c.field === 'leadgen' && c.value && c.value.leadgen_id) jobs.push([c.value.leadgen_id, c.value.page_id]);
+  }));
+  for (const [id, page] of jobs) {
+    try { const r = await M.handleMetaLead(id, page); console.log('[marketing] meta lead', id, r); }
+    catch (e) { console.error('[marketing] meta lead', id, e.message); }
+  }
+});
 
 module.exports = router;

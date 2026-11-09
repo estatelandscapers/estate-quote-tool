@@ -3,6 +3,9 @@ const express = require('express');
 const { db, settingGet } = require('../db');
 const M = require('../utils/marketing');
 const router = express.Router();
+// The tool's own origin. tool_url is sometimes saved as a full page link (a sample quote) —
+// only scheme + host are wanted here.
+const baseOf = req => { const raw = settingGet('tool_url') || `${req.protocol}://${req.get('host')}`; try { return new URL(raw).origin; } catch (e) { return raw.replace(/\/$/, ''); } };
 
 const adminOnly = (req, res, next) => (!req.user || req.user.role !== 'admin') ? res.status(403).json({ error: 'admin only' }) : next();
 router.use(adminOnly);
@@ -12,12 +15,19 @@ router.get('/summary', (req, res) => {
   try { res.json(M.summary(Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30)))); }
   catch (e) { console.error('[marketing] summary', e); res.status(500).json({ error: e.message }); }
 });
-router.get('/connections', (req, res) => res.json({ connections: M.connections(), googleKey: M.googleKey() }));
+router.get('/figure/:key', (req, res) => {
+  const f = M.figure(req.params.key, Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30)));
+  if (!f) return res.status(404).json({ error: 'unknown figure' });
+  res.json({ ...f, total: ['spend', 'cpl', 'ads'].includes(req.params.key) ? Math.round(f.rows.reduce((a, r) => a + (r.value || 0), 0)) : null });
+});
+router.get('/connections', (req, res) => {
+  res.json({ connections: M.connections(), googleKey: M.googleKey(), toolUrlSet: !!settingGet('tool_url'),
+    metaWebhook: baseOf(req) + '/api/public/marketing/meta/webhook', metaVerifySet: !!settingGet('meta_verify_token') });
+});
 
 // The Google Ads script, with this tool's key and URL filled in.
 router.get('/google/script', (req, res) => {
-  const base = settingGet('tool_url') || `${req.protocol}://${req.get('host')}`;
-  res.type('text/plain').send(M.googleScript(base));
+  res.type('text/plain').send(M.googleScript(baseOf(req)));
 });
 router.post('/google/reset-key', (req, res) => { M.setConnection('google', { secret: null }); res.json({ googleKey: M.googleKey() }); });
 

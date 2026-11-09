@@ -540,6 +540,19 @@ try {
     console.log(`[db] ${n} site-specific line(s) now carry their figure on every package`);
   }
 } catch (e) { console.error('[db] site-specific tiers migration failed:', e.message); }
+// Leads typed in before the lead page had an address field often carry the full street
+// address in Suburb and just the suburb in Address. Swap those once: suburb holds a street
+// number, address holds none.
+try {
+  if (settingGet2('lead_addr_swap') !== '1') {
+    const rows = db.prepare("SELECT id, address, suburb FROM leads WHERE suburb GLOB '*[0-9]*' AND COALESCE(address,'') NOT GLOB '*[0-9]*'").all()
+      .filter(r => /^\s*\d+[a-z]?[\s/-]/i.test(r.suburb || '') && String(r.suburb).length > 10);
+    const up = db.prepare('UPDATE leads SET address=?, suburb=? WHERE id=?');
+    rows.forEach(r => up.run(r.suburb, r.address || '', r.id));
+    settingSet2('lead_addr_swap', '1');
+    if (rows.length) console.log(`[db] ${rows.length} lead(s): street address moved from Suburb to Address`);
+  }
+} catch (e) { console.error('[db] address swap migration failed:', e.message); }
 // for databases created before these columns existed
 addColumn('materials','default_vendor_id','TEXT');
 addColumn('materials','monthly_cost','REAL DEFAULT 0');

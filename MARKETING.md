@@ -1,4 +1,4 @@
-# Marketing · Leads · Costing split — handover (v34 scaffold)
+# Marketing · Leads · Costing split — handover (v34 scaffold, v35 finished)
 
 Built on commit `2d943ae` (v33). Mockup approved by Smit on 9 Nov 2026:
 https://claude.ai/artifact/MQQsg4y5SkFW53LRkpJwPb
@@ -66,43 +66,48 @@ campaigns table, levers card (empty), connections (Meta token → account picker
 Google key copy + "Show script"), the step-by-step guide. Styles `.plat .conn .steps .step
 .lever` appended to `styles.css`.
 
-## Left to build (in order)
+## v35 — finished on top of the scaffold
 
-1. **Test Meta end to end** with Smit's real system-user token: `metaAccounts`, `pullMeta`
-   (field names, `actions` types for his lead objective, `daily_budget` units — cents), the
-   6 am scheduler. Add `GET /marketing/meta/campaign/:id` if the table needs a drill-down.
-2. **Test the Google script** in his Google Ads account: `getStatsFor` date format, search
-   impression share method name (`getSearchImpressionShare` exists on campaign stats in
-   current AdsApp; guard it), MCC vs single account. Confirm `tool_url` setting is set so the
-   script URL is right.
-3. **Attribution** — `channelOf` is a first cut. Check it against the real `source` values in
-   `sources.js` groups; capture `gclid`/`fbclid` and `utm_campaign` into `leads.click_id` /
-   `leads.campaign_ref` at insert time in `publicEnquiry.js` and `publicEstimate.js`
-   (currently only the UTM line in notes is parsed). Match `campaign_ref` to
-   `ad_campaigns.campaign_id` (Google `{campaignid}` gives the id; Meta needs
-   `utm_campaign={{campaign.id}}` in the ad URL — add to the guide).
-4. **Figure lists** — `GET /marketing/figure/:key` for every tile (`spend`, `ads`, `leads`,
-   `cpl`, `cpq`, `cpw`, `roas`, `slow`, `ch_meta`…) returning the same row shape
-   `openFigure()` renders (lead rows with `leadId`, campaign rows). Replace the toast in
-   `marketingTab`.
-5. **Levers** — rules in `summary()`: CPL > 2× blended average; Meta frequency > 3.5; ad
-   leads not contacted within 2 h (list them); best-CPL campaign pacing < 95% of budget;
-   platform-reported vs tool lead gap > 20%; a campaign with spend and zero leads in 14 days.
-   Each: `{ level: 'r'|'a'|'g', title, body, url, action }` with deep links to Meta Ads
-   Manager / Google Ads campaign pages.
-6. **Meta lead-form webhook** (if Smit runs lead ads): GET verify with `hub.challenge` and a
-   `meta_verify_token` setting; POST `leadgen` → fetch the lead via Graph → create an enquiry
-   with `channel='meta'`, `campaign_ref`, source 'Facebook'. Needs the app subscribed to the
-   Page's `leadgen` field.
-7. **Settings** — Editor card for `tool_url` check, `meta_verify_token`, optional monthly
-   marketing budget.
-8. **Drawer polish** — the call script's screens are tall; check them in the drawer on a
-   phone. Consider "Open full page" in the drawer header. `closeLeadDrawer()` repaints the
-   whole summary; a lighter refresh (hot + today + board) would feel quicker.
-9. **Data noticed while testing** — some hipages-ingested leads have `address` and `suburb`
-   swapped (e.g. Peter Tan: address "Hornsby", suburb "8 Emu Place…"). Worth a one-off fix in
-   `mailIngest.js` parsing plus a migration.
-10. Bump `public/admin/sw.js` VERSION on every deploy; update `HANDOVER`/`ESTIMATOR.md` cross-refs.
+- **Attribution at insert**: `captureAttribution(leadId, {utm, gclid, fbclid})` runs after
+  every website enquiry and estimator lead; stores `click_id` (`g:…`, `fb:…`, `fbl:…` for lead
+  ads), `campaign_ref` (utm_campaign — use the campaign **id**), and the channel. `channelOf`
+  tuned to the real source list: paid signals first; "Local Facebook group" = referral;
+  ServiceSeeking / Airtasker / Bark / Houzz = `leadsite`; Google search / Maps / phone /
+  signage = direct.
+- **Figure lists**: `GET /marketing/figure/:key?days` for spend, ads, leads, cpl, cpq, cpw,
+  roas, slow, `ch_<channel>`; every tile opens its list in the same drawer as Costing.
+- **Levers**: campaign CPL > 2× average (≥ $200 spent); campaign with ≥ $250 and no leads;
+  Meta frequency > 3.5; ad leads not contacted within 2 h (with the fast-vs-slow quote rate);
+  cheapest campaign spending ≥ 90 % of budget; platform-vs-tool lead gap > 20 %; monthly
+  budget running ahead of the month; ≥ 5 untagged website enquiries while ads run. Each links
+  to Ads Manager / Google Ads or opens its figure list.
+- **Cost per lead** divides by the larger of the tool's and the platforms' lead counts (labelled).
+- **Monthly budget** (Editor → Settings → Marketing, `mkt_budget_month`): progress line on the
+  tab and a lever when spend runs > 15 points ahead of the month.
+- **Meta lead ads**: `GET/POST /api/public/marketing/meta/webhook` — handshake with
+  `meta_verify_token`, `X-Hub-Signature-256` checked against `meta_app_secret` (raw body kept
+  by the `express.json` verify hook), each `leadgen` fetched from Graph and created as an
+  enquiry (source Facebook/Instagram, channel meta, campaign id, push notification, estimator
+  invite if there is an email; duplicates ignored).
+- **Script / webhook URLs** built from the origin of `tool_url` only.
+- **Lead drawer**: "⤢ Full page" button (for the call script on a phone); Back returns to Summary.
+- **Data fix**: one-time migration moves street addresses typed into Suburb over to Address
+  (2 leads on the 31 Oct backup); lead saves normalise the same way.
+
+Tested on the 31 Oct backup with a mocked Graph API (accounts, campaign + ads + insights pull,
+lead-ad intake, duplicate), a simulated Google script push (56 day-rows), a tagged website
+enquiry (attributed to Google campaign 222), webhook handshake and signature, every figure
+list, and a Playwright pass over Marketing, Leads (drawer + full page) and Editor.
+
+## Still needs the real accounts
+
+1. Connect Meta with the real system-user token; check `actions` types match the lead
+   objective actually used (the code sums `lead`, `onsite_conversion.lead_grouped`,
+   `offsite_conversion.fb_pixel_lead`).
+2. Install the Google script; confirm the Preview run turns the row green. If the account is
+   under a manager (MCC) account, run the script in the client account, not the MCC.
+3. Add UTM parameters to every ad URL (guide on the tab) so website leads match campaigns.
+4. Lead ads only: subscribe the app to the Page's `leadgen` field.
 
 ## Testing notes
 

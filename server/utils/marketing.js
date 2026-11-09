@@ -36,12 +36,14 @@ function connections() {
 }
 function setConnection(platform, fields) {
   const cur = connection(platform);
-  const row = { ...cur, ...fields, platform, updated_at: new Date().toISOString().slice(0, 19).replace('T', ' ') };
+  const KEYS = ['status', 'account_id', 'account_name', 'currency', 'secret', 'config', 'last_pull_at', 'last_error'];
+  const row = { platform, updated_at: new Date().toISOString().slice(0, 19).replace('T', ' ') };
+  KEYS.forEach(k => { row[k] = fields[k] !== undefined ? fields[k] : (cur[k] !== undefined ? cur[k] : null); });
   db.prepare(`INSERT INTO ad_connections (platform,status,account_id,account_name,currency,secret,config,last_pull_at,last_error,updated_at)
     VALUES (@platform,@status,@account_id,@account_name,@currency,@secret,@config,@last_pull_at,@last_error,@updated_at)
     ON CONFLICT(platform) DO UPDATE SET status=excluded.status, account_id=excluded.account_id, account_name=excluded.account_name, currency=excluded.currency,
       secret=excluded.secret, config=excluded.config, last_pull_at=excluded.last_pull_at, last_error=excluded.last_error, updated_at=excluded.updated_at`)
-    .run({ status: 'disconnected', account_id: null, account_name: null, currency: null, secret: null, config: null, last_pull_at: null, last_error: null, ...row });
+    .run({ ...row, status: row.status || 'disconnected' });
   return connection(platform);
 }
 // The key the Google Ads script presents. Created on first request, shown on the tab.
@@ -87,7 +89,6 @@ var URL = "${baseUrl.replace(/\/$/, '')}/api/public/marketing/google";
 function main() {
   var acct = AdsApp.currentAccount();
   var out = { account: { id: acct.getCustomerId(), name: acct.getName(), currency: acct.getCurrencyCode() }, days: [] };
-  var days = ['YESTERDAY'];
   var d2 = new Date(); d2.setDate(d2.getDate() - 2);
   var ymd = function (d) { return Utilities.formatDate(d, acct.getTimeZone(), 'yyyy-MM-dd'); };
   var y1 = new Date(); y1.setDate(y1.getDate() - 1);
@@ -159,15 +160,41 @@ async function pullMeta(days = 3) {
 // Which channel an enquiry came from. Source wins; UTM / click ids on a website enquiry
 // refine it; anything else is direct. Stored on the lead so the figures are stable.
 function channelOf(l) {
-  const src = String(l.source || '').toLowerCase();
+  const src = String(l.source || '').toLowerCase().trim();
   const notes = String(l.notes || '');
   const utm = (notes.match(/Campaign:\s*([^\n]+)/) || [])[1] || '';
+  const ck = String(l.click_id || '');
+  // Paid signals first: a click id or a paid UTM beats whatever source was typed.
+  if (/^fbl?:/.test(ck) || /source=(facebook|instagram|meta|fb|ig)\b/i.test(utm)) return 'meta';
+  if (/^g:/.test(ck) || /medium=(cpc|ppc|paid)/i.test(utm)) return 'google';
   if (/hipages/.test(src)) return 'hipages';
-  if (/facebook|instagram|meta/.test(src) || /source=(facebook|instagram|meta|fb|ig)\b/i.test(utm) || l.click_id && /^fb/.test(l.click_id)) return 'meta';
-  if (/google|adwords|search ad/.test(src) || /source=google\b.*medium=(cpc|ppc|paid)/i.test(utm) || /medium=cpc/i.test(utm) || l.click_id && !/^fb/.test(l.click_id)) return 'google';
-  if (/referr|word of mouth|friend|repeat|existing/.test(src)) return 'referral';
-  if (/website|our website|google search|organic|direct/.test(src)) return 'direct';
+  if (/local facebook group/.test(src)) return 'referral';            // a community post, not an ad
+  if (/^(facebook|instagram)$|meta|facebook ad|instagram ad/.test(src)) return 'meta';
+  if (/google ads|adwords|search ad|google \(paid\)|google ppc/.test(src)) return 'google';
+  if (/serviceseeking|airtasker|bark|houzz|yellow pages|oneflare/.test(src)) return 'leadsite';
+  if (/referr|past client|builder|architect|designer|friend|family|trade|supplier|nursery|real estate|repeat/.test(src)) return 'referral';
+  if (/google search|google maps|website|organic|phone|walk-in|signage|site sign|street|flyer|letterbox|paper|expo|home show|tiktok/.test(src)) return 'direct';
   return src ? 'other' : 'direct';
+}
+// Called right after a website / estimator enquiry is inserted, with whatever the page
+// passed: { utm: {utm_source,…} | JSON string, gclid, fbclid }. Stores the click id and
+// campaign, and sets the channel straight away so the lead counts from minute one.
+function captureAttribution(leadId, b = {}) {
+  let utm = {};
+  try { utm = typeof b.utm === 'string' ? JSON.parse(b.utm || '{}') : (b.utm || {}); } catch (e) {}
+  const clip = (x, n) => x == null ? null : String(x).trim().slice(0, n) || null;
+  const gclid = clip(b.gclid || utm.gclid || utm.gbraid || utm.wbraid, 200);
+  const fbclid = clip(b.fbclid || utm.fbclid, 200);
+  const clickId = fbclid ? 'fb:' + fbclid : gclid ? 'g:' + gclid : null;
+  const campaign = clip(utm.utm_campaign || utm.campaign || b.utm_campaign, 120);
+  const src = String(utm.utm_source || '').toLowerCase(), med = String(utm.utm_medium || '').toLowerCase();
+  let channel = null;
+  if (fbclid || /facebook|instagram|meta|^fb$|^ig$/.test(src)) channel = 'meta';
+  else if (gclid || (/google/.test(src) && /cpc|ppc|paid|ads/.test(med))) channel = 'google';
+  if (!clickId && !campaign && !channel) return null;
+  db.prepare('UPDATE leads SET click_id=COALESCE(click_id, ?), campaign_ref=COALESCE(campaign_ref, ?), channel=COALESCE(?, channel) WHERE id=?')
+    .run(clickId, campaign, channel, leadId);
+  return { channel, campaign, clickId };
 }
 function campaignRefOf(l) {
   const m = String(l.notes || '').match(/Campaign:\s*([^\n]+)/);
@@ -183,8 +210,75 @@ function attributeLeads() {
   return rows.length;
 }
 
+// Ad leads (Meta/Google) older than 2 h whose first human contact took longer than 2 h, or
+// never happened. The cheapest lever there is: a lead called inside 2 h quotes far more often.
+function slowLeads(since) {
+  return db.prepare(`SELECT l.* FROM leads l WHERE l.channel IN ('meta','google') AND l.created_at>=?
+      AND (julianday('now')-julianday(l.created_at))*24 > 2 AND NOT EXISTS (
+      SELECT 1 FROM lead_messages m WHERE m.lead_id=l.id AND m.channel IN ('call','whatsapp','sms','email')
+        AND COALESCE(m.sent_by,'') NOT IN ('client','','auto') AND (julianday(m.created_at)-julianday(l.created_at))*24 <= 2)
+    ORDER BY l.created_at DESC`).all(since);
+}
+// Quote-to-lead rate for ad leads called inside 2 h vs later — the number the "speed" lever quotes.
+function speedSplit(since) {
+  const ads = db.prepare("SELECT * FROM leads WHERE channel IN ('meta','google') AND created_at>=? AND (julianday('now')-julianday(created_at))*24 > 2").all(since);
+  const slowIds = new Set(slowLeads(since).map(l => l.id));
+  const fast = ads.filter(l => !slowIds.has(l.id)), slow = ads.filter(l => slowIds.has(l.id));
+  const rate = l => l.length ? Math.round(l.filter(x => x.quote_id).length / l.length * 100) : null;
+  return { fast: rate(fast), fastN: fast.length, slow: rate(slow), slowN: slow.length };
+}
+
+// ---- levers: what to change, worked out from the numbers ------------------------------------
+const ADS_URL = {
+  meta: (acct, cid) => `https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${String(acct || '').replace(/^act_/, '')}${cid ? '&selected_campaign_ids=' + cid : ''}`,
+  google: (acct, cid) => `https://ads.google.com/aw/campaigns${cid ? '?campaignId=' + cid : ''}`,
+};
+function levers(S) {
+  const out = [];
+  const conn = { meta: connection('meta'), google: connection('google') };
+  const url = (p, cid) => ADS_URL[p] ? ADS_URL[p](conn[p].account_id, cid) : null;
+  const money = n => '$' + Math.round(n || 0).toLocaleString('en-AU');
+  const withLeads = S.campaigns.filter(c => c.spend > 0);
+  const totalSpend = withLeads.reduce((a, c) => a + c.spend, 0);
+  const totalLeads = withLeads.reduce((a, c) => a + Math.max(c.toolLeads || 0, c.platformLeads || 0), 0);
+  const avgCpl = totalLeads ? totalSpend / totalLeads : null;
+  // 1. A campaign buying clicks, not leads
+  withLeads.forEach(c => {
+    const leads = Math.max(c.toolLeads || 0, c.platformLeads || 0);
+    if (avgCpl && leads > 0 && c.spend / leads > 2 * avgCpl && c.spend >= 200)
+      out.push({ level: 'r', title: `"${c.name}" costs ${Math.round(c.spend / leads / avgCpl * 10) / 10}× the average per lead`, body: `${money(c.spend)} for ${leads} lead${leads === 1 ? '' : 's'} (${money(c.spend / leads)} each, average ${money(avgCpl)}). Pause it or move its budget to a cheaper campaign.`, url: url(c.platform, c.campaignId), action: 'Open in ' + (c.platform === 'meta' ? 'Meta' : 'Google'), key: 'camp:' + c.id });
+    else if (leads === 0 && c.spend >= 250 && c.status === 'ACTIVE')
+      out.push({ level: 'r', title: `"${c.name}" has spent ${money(c.spend)} with no leads`, body: `Nothing has come through from it in ${S.days} days. Check the landing page and targeting, or pause it.`, url: url(c.platform, c.campaignId), action: 'Open in ' + (c.platform === 'meta' ? 'Meta' : 'Google'), key: 'camp:' + c.id });
+  });
+  // 2. Ad fatigue
+  S.campaigns.filter(c => c.platform === 'meta' && c.frequency && c.frequency > 3.5 && c.status === 'ACTIVE').forEach(c =>
+    out.push({ level: 'a', title: `"${c.name}" frequency is ${Math.round(c.frequency * 10) / 10}`, body: 'The same people are seeing this ad over and over. Refresh the creative or cap frequency around 2.5.', url: url('meta', c.campaignId), action: 'Open in Meta', key: 'freq:' + c.id }));
+  // 3. Speed to lead
+  if (S.leads.slow > 0) {
+    const sp = S.speed || {};
+    out.push({ level: 'a', title: `${S.leads.slow} ad lead${S.leads.slow === 1 ? '' : 's'} waited more than 2 hours`, body: (sp.fast != null && sp.slow != null ? `Ad leads called inside 2 h quoted at ${sp.fast}%; after 2 h, ${sp.slow}%. ` : '') + 'Every one of these was paid for. Check who is on the phone when the ads run.', fig: 'slow', action: 'See them', key: 'slow' });
+  }
+  // 4. Best campaign with room to grow
+  const best = withLeads.filter(c => c.status === 'ACTIVE' && (c.toolLeads || 0) >= 2).sort((a, b) => a.spend / a.toolLeads - b.spend / b.toolLeads)[0];
+  if (best && best.dailyBudget) {
+    const perDay = best.spend / S.days, pace = perDay / best.dailyBudget;
+    if (pace >= 0.9) out.push({ level: 'g', title: `"${best.name}" is your cheapest leads — and it is using its whole budget`, body: `${money(best.spend / best.toolLeads)} per lead, ${best.toolQuoted} of ${best.toolLeads} quoted. It is spending ${Math.round(pace * 100)}% of its ${money(best.dailyBudget)}/day; it can likely take more.`, url: url(best.platform, best.campaignId), action: 'Open in ' + (best.platform === 'meta' ? 'Meta' : 'Google'), key: 'best' });
+  }
+  // 5. Platform says more leads than reached the tool
+  if (S.leads.platformReported >= 4 && S.leads.platformReported > S.leads.tool * 1.2)
+    out.push({ level: 'a', title: `${S.leads.platformReported - S.leads.tool} leads the platforms count never reached the tool`, body: `Platforms report ${S.leads.platformReported}, the tool logged ${S.leads.tool} from ads. Either the lead form is not connected, enquiries came by phone, or ad URLs are missing their UTM tags.`, action: 'Check', fig: 'leads', key: 'gap' });
+  // 6. Monthly budget
+  if (S.budget && S.budget.month > 0 && S.budget.pct > S.budget.monthPct + 15)
+    out.push({ level: 'a', title: `${S.budget.pct}% of this month's marketing budget spent, ${S.budget.monthPct}% of the month gone`, body: `${money(S.budget.spent)} of ${money(S.budget.month)}. At this pace the month ends near ${money(S.budget.projected)}.`, key: 'budget' });
+  // 7. Untagged traffic
+  const webNoUtm = db.prepare("SELECT COUNT(*) n FROM leads WHERE source='Our website' AND created_at>=? AND COALESCE(campaign_ref,'')='' AND COALESCE(click_id,'')=''").get(S.since).n;
+  if (S.spend.total > 0 && webNoUtm >= 5)
+    out.push({ level: 'a', title: `${webNoUtm} website enquiries arrived with no campaign tag`, body: 'If any came from ads, they are being counted as direct. Add utm_source / utm_campaign to every ad URL (see the guide below).', key: 'utm' });
+  const order = { r: 0, a: 1, g: 2 };
+  return out.sort((a, b) => order[a.level] - order[b.level]);
+}
+
 // ---- summary for the tab -------------------------------------------------------------------
-// TODO (Opus): finish — this returns the shape the tab needs; several figures are stubs.
 function summary(days = 30) {
   attributeLeads();
   const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
@@ -196,11 +290,11 @@ function summary(days = 30) {
     const d = db.prepare('SELECT COALESCE(SUM(spend),0) s, COALESCE(SUM(leads),0) l, COALESCE(SUM(clicks),0) k, COALESCE(SUM(impressions),0) i, AVG(frequency) f, AVG(impression_share) sh FROM ad_daily WHERE platform=? AND campaign_id=? AND day>=?').get(c.platform, c.campaign_id, since);
     const toolLeads = db.prepare('SELECT COUNT(*) n, SUM(quote_id IS NOT NULL) q FROM leads WHERE channel=? AND campaign_ref=? AND created_at>=?').get(c.platform, c.campaign_id, since);
     return { id: c.id, platform: c.platform, campaignId: c.campaign_id, name: c.name, status: c.status, dailyBudget: c.daily_budget, adsLive: c.ads_live, adsPaused: c.ads_paused, adsInReview: c.ads_in_review,
-      spend: Math.round(d.s), platformLeads: d.l, clicks: d.k, impressions: d.i, frequency: d.f, impressionShare: d.sh, toolLeads: toolLeads.n, toolQuoted: toolLeads.q || 0,
-      cpl: d.l ? Math.round(d.s / d.l) : null };
+      spend: Math.round(d.s), platformLeads: Math.round(d.l || 0), clicks: d.k, impressions: d.i, frequency: d.f, impressionShare: d.sh, toolLeads: toolLeads.n, toolQuoted: toolLeads.q || 0,
+      cpl: Math.max(toolLeads.n || 0, Math.round(d.l || 0)) ? Math.round(d.s / Math.max(toolLeads.n || 0, Math.round(d.l || 0))) : null };
   });
   const leadsBy = ch => db.prepare("SELECT COUNT(*) n, SUM(quote_id IS NOT NULL) q, SUM(status='Won') w FROM leads WHERE channel=? AND created_at>=?").get(ch, since);
-  const channels = {}; ['meta', 'google', 'hipages', 'direct', 'referral', 'other'].forEach(ch => channels[ch] = leadsBy(ch));
+  const channels = {}; ['meta', 'google', 'hipages', 'leadsite', 'direct', 'referral', 'other'].forEach(ch => channels[ch] = leadsBy(ch));
   const adLeads = (channels.meta.n || 0) + (channels.google.n || 0);
   const adQuoted = (channels.meta.q || 0) + (channels.google.q || 0);
   const adWon = (channels.meta.w || 0) + (channels.google.w || 0);
@@ -209,20 +303,107 @@ function summary(days = 30) {
   const wonValue = db.prepare("SELECT COALESCE(SUM(COALESCE(q.quoted_sell, q.cached_value_ex, 0)),0) v FROM quotes q JOIN leads l ON l.id=q.lead_id WHERE q.status='accepted' AND l.channel IN ('meta','google') AND l.created_at>=?").get(since).v;
   const budgetDaily = db.prepare("SELECT COALESCE(SUM(daily_budget),0) b FROM ad_campaigns WHERE status='ACTIVE'").get().b;
   // Speed to lead: ad leads first contacted within 2 h (first call/message after creation)
-  const slow = db.prepare(`SELECT COUNT(*) n FROM leads l WHERE l.channel IN ('meta','google') AND l.created_at>=? AND NOT EXISTS (
-      SELECT 1 FROM lead_messages m WHERE m.lead_id=l.id AND m.channel IN ('call','whatsapp','sms','email') AND m.sent_by<>'client' AND m.sent_by<>'' AND (julianday(m.created_at)-julianday(l.created_at))*24 <= 2)`).get(since).n;
-  return {
+  const slowRows = slowLeads(since);
+  const slow = slowRows.length;
+  const out = {
     days, since, connections: connections(),
     spend: { total: Math.round(spend), meta: Math.round(meta.s), google: Math.round(google.s), perDay: Math.round(spend / days), budgetPerDay: Math.round(budgetDaily), prev: Math.round(prevSpend) },
     ads: { live: campaigns.filter(c => c.status === 'ACTIVE').reduce((a, c) => a + (c.adsLive || 0), 0), paused: campaigns.reduce((a, c) => a + (c.adsPaused || 0), 0), inReview: campaigns.reduce((a, c) => a + (c.adsInReview || 0), 0),
       campaigns: campaigns.filter(c => c.status === 'ACTIVE').length, byPlatform: { meta: { ads: campaigns.filter(c => c.platform === 'meta' && c.status === 'ACTIVE').reduce((a, c) => a + (c.adsLive || 0), 0), campaigns: campaigns.filter(c => c.platform === 'meta' && c.status === 'ACTIVE').length },
         google: { ads: campaigns.filter(c => c.platform === 'google' && c.status === 'ACTIVE').reduce((a, c) => a + (c.adsLive || 0), 0), campaigns: campaigns.filter(c => c.platform === 'google' && c.status === 'ACTIVE').length } } },
-    leads: { tool: adLeads, meta: channels.meta.n || 0, google: channels.google.n || 0, platformReported: (meta.l || 0) + (google.l || 0), quoted: adQuoted, won: adWon, wonValue: Math.round(wonValue), slow },
-    cost: { perLead: adLeads ? Math.round(spend / adLeads) : null, perLeadMeta: channels.meta.n ? Math.round(meta.s / channels.meta.n) : null, perLeadGoogle: channels.google.n ? Math.round(google.s / channels.google.n) : null,
+    leads: { tool: adLeads, meta: channels.meta.n || 0, google: channels.google.n || 0, platformReported: Math.round((meta.l || 0) + (google.l || 0)), quoted: adQuoted, won: adWon, wonValue: Math.round(wonValue), slow },
+    // Cost per lead divides by the larger of the two counts: early on, untagged ad leads are
+    // missing from the tool's count and dividing by it alone overstates the cost badly.
+    cost: { perLead: Math.max(adLeads, Math.round(meta.l + google.l)) ? Math.round(spend / Math.max(adLeads, Math.round(meta.l + google.l))) : null,
+      perLeadBasis: adLeads >= Math.round(meta.l + google.l) ? 'tool' : 'platform',
+      perLeadMeta: Math.max(channels.meta.n || 0, Math.round(meta.l)) ? Math.round(meta.s / Math.max(channels.meta.n || 0, Math.round(meta.l))) : null,
+      perLeadGoogle: Math.max(channels.google.n || 0, Math.round(google.l)) ? Math.round(google.s / Math.max(channels.google.n || 0, Math.round(google.l))) : null,
       perQuote: adQuoted ? Math.round(spend / adQuoted) : null, perWon: adWon ? Math.round(spend / adWon) : null, roas: spend > 0 ? Math.round(wonValue / spend * 10) / 10 : null },
     channels, campaigns: campaigns.sort((a, b) => b.spend - a.spend),
-    levers: [],   // TODO (Opus): rules — CPL > 2× average; frequency > 3.5; slow leads; best campaign pacing < 95%; platform vs tool lead gap
   };
+  // Monthly budget (optional, Editor → Marketing): spent this calendar month vs the budget.
+  const month = parseFloat(settingGet('mkt_budget_month') || '0') || 0;
+  if (month > 0) {
+    const { year, month: mm, day } = require('./refs').sydneyParts();
+    const first = `${year}-${mm}-01`;
+    const spent = db.prepare('SELECT COALESCE(SUM(spend),0) s FROM ad_daily WHERE day>=?').get(first).s;
+    const dim = new Date(Number(year), Number(mm), 0).getDate();
+    out.budget = { month, spent: Math.round(spent), pct: Math.round(spent / month * 100), monthPct: Math.round(Number(day) / dim * 100), projected: Math.round(spent / Number(day) * dim) };
+  }
+  out.speed = speedSplit(since);
+  out.levers = levers(out);
+  return out;
+}
+
+// ---- figure lists: what is behind each tile ---------------------------------------------------
+// Same row shape as the Costing figures (openFigure renders both): { quoteId, leadId,
+// quoteNumber, client, package, note, value }.
+function figure(key, days = 30) {
+  attributeLeads();
+  const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+  const money = n => '$' + Math.round(n || 0).toLocaleString('en-AU');
+  const leadRow = (l, note) => {
+    const q = l.quote_id ? db.prepare('SELECT id, quote_number, cached_value_ex, quoted_sell FROM quotes WHERE id=?').get(l.quote_id) : null;
+    return { leadId: l.id, quoteId: q ? q.id : null, quoteNumber: q ? q.quote_number : '—', client: l.name, package: [l.suburb, l.source].filter(Boolean).join(' · '), note, value: q ? Math.round(q.quoted_sell || q.cached_value_ex || 0) : null };
+  };
+  const campRows = (filter) => {
+    const S = summary(days);
+    return S.campaigns.filter(filter || (() => true)).map(c => ({ quoteNumber: c.platform === 'meta' ? 'Meta' : 'Google', client: c.name,
+      package: `${c.status || ''} · ${c.adsLive != null ? c.adsLive + ' live ads' : ''}`, note: `${c.clicks} clicks · ${c.toolLeads} leads here / ${c.platformLeads} platform${c.cpl ? ' · CPL ' + money(c.cpl) : ''}`, value: c.spend }));
+  };
+  const adLeads = () => db.prepare("SELECT * FROM leads WHERE channel IN ('meta','google') AND created_at>=? ORDER BY created_at DESC").all(since);
+  const status = l => l.status === 'Won' ? 'won' : l.quote_id ? 'quoted' : l.status === 'Lost' ? 'lost' : 'open';
+  const M = {
+    spend: () => ({ title: `Spend, ${days} days`, rows: campRows(c => c.spend > 0), note: 'Spend by campaign, as the platforms report it (ex GST).' }),
+    ads: () => ({ title: 'Live ads', rows: campRows(c => c.status === 'ACTIVE'), note: 'Active campaigns and how many ads each is running.' }),
+    leads: () => ({ title: `Leads from ads, ${days} days`, rows: adLeads().map(l => leadRow(l, `${l.channel} · ${String(l.created_at).slice(0, 10)} · ${status(l)}${l.campaign_ref ? ' · ' + l.campaign_ref : ''}`)), note: 'Enquiries in this tool attributed to Meta or Google. The platforms\' own count is on the tile.' }),
+    cpl: () => ({ title: 'Cost per lead, by campaign', rows: campRows(c => c.spend > 0), note: 'Campaign spend ÷ leads.' }),
+    cpq: () => ({ title: 'Ad leads that were quoted', rows: adLeads().filter(l => l.quote_id).map(l => leadRow(l, l.channel)), note: 'Spend ÷ these = cost per quote.' }),
+    cpw: () => ({ title: 'Won jobs from ad leads', rows: adLeads().filter(l => db.prepare("SELECT 1 FROM quotes WHERE lead_id=? AND status='accepted'").get(l.id)).map(l => leadRow(l, l.channel + ' · won')), note: 'Spend ÷ these = cost per won job.' }),
+    roas: () => ({ title: 'Return on ad spend', rows: adLeads().filter(l => db.prepare("SELECT 1 FROM quotes WHERE lead_id=? AND status='accepted'").get(l.id)).map(l => leadRow(l, l.channel + ' · won')), note: 'Won value from ad leads ÷ ad spend.' }),
+    slow: () => ({ title: 'Ad leads not contacted within 2 hours', rows: slowLeads(since).map(l => { const m = db.prepare("SELECT created_at FROM lead_messages WHERE lead_id=? AND channel IN ('call','whatsapp','sms','email') AND COALESCE(sent_by,'') NOT IN ('client','','auto') ORDER BY created_at LIMIT 1").get(l.id);
+      const h = m ? Math.round((new Date(m.created_at.replace(' ', 'T') + 'Z') - new Date(l.created_at.replace(' ', 'T') + 'Z')) / 36e5 * 10) / 10 : null;
+      return leadRow(l, m ? `first contact after ${h} h` : 'never contacted'); }), note: 'Paid-for enquiries that waited. Open one to call.' }),
+  };
+  if (key.startsWith('ch_')) {
+    const ch = key.slice(3);
+    const rows = db.prepare('SELECT * FROM leads WHERE channel=? AND created_at>=? ORDER BY created_at DESC').all(ch, since);
+    return { title: `${ch[0].toUpperCase() + ch.slice(1)} enquiries, ${days} days`, rows: rows.map(l => leadRow(l, `${String(l.created_at).slice(0, 10)} · ${status(l)}`)), note: 'Every enquiry attributed to this channel.' };
+  }
+  return M[key] ? M[key]() : null;
+}
+
+// ---- Meta lead ads: each form submission becomes an enquiry -----------------------------------
+// The app must be subscribed to the Page's `leadgen` field with this callback URL and the
+// verify token from Editor → Marketing. Signature (X-Hub-Signature-256) is checked when an
+// app secret is set.
+function verifyMetaSignature(raw, header) {
+  const secret = settingGet('meta_app_secret');
+  if (!secret) return true;
+  if (!raw || !header) return false;
+  const want = 'sha256=' + crypto.createHmac('sha256', secret).update(raw).digest('hex');
+  try { return crypto.timingSafeEqual(Buffer.from(want), Buffer.from(String(header))); } catch (e) { return false; }
+}
+async function handleMetaLead(leadgenId, pageId) {
+  const c = connection('meta');
+  if (!c.secret) throw new Error('Meta not connected');
+  if (db.prepare('SELECT id FROM leads WHERE click_id=?').get('fbl:' + leadgenId)) return { duplicate: true };
+  const L = await metaFetch('/' + leadgenId, c.secret, { fields: 'created_time,field_data,ad_id,ad_name,campaign_id,campaign_name,form_id,platform' });
+  const f = {}; (L.field_data || []).forEach(x => { f[String(x.name).toLowerCase()] = (x.values || [])[0] || ''; });
+  const pick = (...keys) => { for (const k of keys) { const hit = Object.keys(f).find(n => n === k || n.includes(k)); if (hit && f[hit]) return String(f[hit]).trim(); } return ''; };
+  const name = pick('full_name', 'name') || [pick('first_name'), pick('last_name')].filter(Boolean).join(' ') || '(Meta lead)';
+  const phone = pick('phone_number', 'phone', 'mobile'), email = pick('email').toLowerCase();
+  const suburb = pick('city', 'suburb', 'post_code', 'postcode', 'zip'), address = pick('street_address', 'address');
+  const other = Object.entries(f).filter(([k]) => !/full_name|first_name|last_name|phone|email|city|suburb|post|zip|street|address/.test(k)).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`);
+  const { newId } = require('./ids'); const { nextRef, sydneyParts } = require('./refs');
+  const id = newId(), ref = nextRef();
+  const notes = [`${ref} · Meta lead ad${L.campaign_name ? ' · ' + L.campaign_name : ''}${L.ad_name ? ' · ad "' + L.ad_name + '"' : ''}`, ...other].join('\n');
+  db.prepare(`INSERT INTO leads (id,name,phone,email,address,source,notes,status,stage,next_followup,job_type,suburb,call_answers,enquiry_ref,channel,campaign_ref,click_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, name, phone, email, address, L.platform === 'ig' ? 'Instagram' : 'Facebook', notes, 'New', 'call1', sydneyParts().ymd, '', suburb,
+    JSON.stringify({ _prefill: { source: 'Facebook', name, phone, email, suburb, address, enquiry_ref: ref, confirmed: {} } }), ref, 'meta', L.campaign_id || null, 'fbl:' + leadgenId);
+  try { require('./push').notify({ title: `New Meta lead: ${name}`, body: [suburb, phone].filter(Boolean).join(' · ') + ` · ${ref}`, url: '/admin/?lead=' + id, tag: 'lead-' + id }).catch(() => {}); } catch (e) {}
+  if (email) { try { require('./estimator').autoInvite(id, { reason: 'new', by: 'meta' }).catch(() => {}); } catch (e) {} }
+  return { id, ref };
 }
 
 // ---- scheduler: Meta pull at 6 am Sydney, attribution sweep hourly --------------------------
@@ -240,4 +421,4 @@ function start() {
   setInterval(tick, 15 * 60e3).unref();
 }
 
-module.exports = { PLATFORMS, connection, connections, setConnection, googleKey, checkGoogleKey, ingestGoogle, googleScript, metaAccounts, pullMeta, channelOf, attributeLeads, summary, start };
+module.exports = { captureAttribution, figure, slowLeads, verifyMetaSignature, handleMetaLead, PLATFORMS, connection, connections, setConnection, googleKey, checkGoogleKey, ingestGoogle, googleScript, metaAccounts, pullMeta, channelOf, attributeLeads, summary, start };

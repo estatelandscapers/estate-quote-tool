@@ -18,7 +18,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.json({ limit: '15mb' })); // large limit so base64 site-plan drawings upload cleanly
+app.use(express.json({ limit: '15mb', verify: (req, res, buf) => { if (req.originalUrl.startsWith('/api/public/marketing/')) req.rawBody = buf; } })); // large limit so base64 site-plan drawings upload cleanly
 
 // simple request logger (helps a developer see traffic in dev; swap for pino/morgan later)
 app.use((req, res, next) => {
