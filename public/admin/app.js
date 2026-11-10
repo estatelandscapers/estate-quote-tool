@@ -195,14 +195,15 @@ function shell() {
   // Order: Leads | Quotes Pricing Recipes Vendors Editor | Projects Purchase Orders
   const pc = state.pendingCounts || {};
   const badge = t => (t === 'pricing' && pc.pricing) ? `<span class="navdot">${pc.pricing}</span>`
-    : (t === 'recipes' && pc.recipes) ? `<span class="navdot">${pc.recipes}</span>` : '';
-  const all = [['marketing', 'Marketing'], ['leads', 'Leads'], ['costing', 'Costing'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
+    : (t === 'recipes' && pc.recipes) ? `<span class="navdot">${pc.recipes}</span>`
+    : (t === 'timeline' && pc.timeline) ? `<span class="navdot" title="Month-end actuals to confirm">${pc.timeline}</span>` : '';
+  const all = [['marketing', 'Marketing'], ['leads', 'Leads'], ['costing', 'Costing'], ['timeline', 'Timeline'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
                ['recipes', 'Recipes'], ['vendors', 'Vendors'], ['editor', 'Editor'],
                ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders']];
   // Admin sees everything. Everyone else works the delivery side of the business:
   // Leads, Quotes, Costs, Projects, Selections and Purchase Orders — but not the
   // rate card, the recipes or the vendor terms, and no money in the delivery tabs.
-  const adminOnlyTabs = ['editor', 'pricing', 'recipes', 'vendors', 'marketing'];
+  const adminOnlyTabs = ['editor', 'pricing', 'recipes', 'vendors', 'marketing', 'timeline'];
   const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
   if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
   $('#app').innerHTML = `
@@ -260,23 +261,26 @@ function shell() {
   // A notification opens straight into its lead: /admin/?lead=<id>
   const qp = new URLSearchParams(location.search);
   if (qp.get('lead')) { state.tab = 'leads'; state.leadId = qp.get('lead'); history.replaceState(null, '', '/admin/'); }
+  else if (qp.get('tab') && isAdmin()) { state.tab = qp.get('tab'); history.replaceState(null, '', '/admin/'); }
   route();
 }
 function route() {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   const v = $('#view');
+  v.classList.toggle('wide', state.tab === 'timeline');
   // Pending counts refresh at most once a minute. They were previously fetched on every
   // single render — two extra round-trips per click, which is what made the tool feel laggy.
   const PENDING_TTL = 60000;
   if (isAdmin() && Date.now() - (state.pendingCheckedAt || 0) > PENDING_TTL) {
     state.pendingCheckedAt = Date.now();
-    Promise.all([api('/quotes/pending/price-items'), api('/recipes/pending')]).then(([p, r]) => {
-      const next = { pricing: (p || []).length, recipes: (r || []).length };
-      if (next.pricing !== (state.pendingCounts || {}).pricing || next.recipes !== (state.pendingCounts || {}).recipes) {
+    Promise.all([api('/quotes/pending/price-items'), api('/recipes/pending'), api('/timeline/pending-count')]).then(([p, r, tl]) => {
+      const next = { pricing: (p || []).length, recipes: (r || []).length, timeline: (tl && tl.count) || 0 };
+      const pc0 = state.pendingCounts || {};
+      if (next.pricing !== pc0.pricing || next.recipes !== pc0.recipes || next.timeline !== pc0.timeline) {
         state.pendingCounts = next;
         const nav = document.querySelector('.nav');
         if (nav) nav.querySelectorAll('button').forEach(b => {
-          const t = b.dataset.tab; const n = t === 'pricing' ? next.pricing : t === 'recipes' ? next.recipes : 0;
+          const t = b.dataset.tab; const n = t === 'pricing' ? next.pricing : t === 'recipes' ? next.recipes : t === 'timeline' ? next.timeline : 0;
           b.querySelectorAll('.navdot').forEach(d => d.remove());
           if (n) b.insertAdjacentHTML('beforeend', `<span class="navdot">${n}</span>`);
         });
@@ -285,6 +289,7 @@ function route() {
   }
   if (state.tab === 'marketing') return marketingTab(v);
   if (state.tab === 'costing') return costingTab(v);
+  if (state.tab === 'timeline') return timelineTab(v);
   if (state.tab === 'leads') { const id = state.leadId; if (id && state.leadFull) return leadConsole(v); const p = leadsTab(v); if (id) Promise.resolve(p).then(() => openLeadDrawer(id)); return p; }
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
   if (state.tab === 'jobs') return jobsTab(v);
@@ -425,6 +430,198 @@ async function marketingTab(v) {
   const mo = $('#metaOff'); if (mo) mo.addEventListener('click', async () => { await api('/marketing/meta/disconnect', { method: 'POST' }); toast('Meta disconnected'); marketingTab(v); });
 }
 
+// ---------------- TIMELINE (works by month → forecast cashflow) ----------------
+const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const ymLabel = (ym, long) => { const [y, m] = ym.split('-').map(Number); return long ? new Date(y, m - 1, 1).toLocaleString('en-AU', { month: 'long' }) + ' ' + y : MON3[m - 1] + '-' + String(y).slice(2); };
+const kMoney = n => n == null ? '—' : Math.abs(n) >= 1000 ? (n < 0 ? '−' : '') + '$' + (Math.round(Math.abs(n) / 100) / 10).toLocaleString('en-AU') + 'k' : money(n);
+async function paintCashflow() {
+  const el = $('#cfBody'); if (!el) return;
+  const cf = await api('/timeline/cashflow');
+  if (!cf || cf.error) { el.textContent = 'Could not load the timeline.'; return; }
+  const t = cf.tiles, max = Math.max(1, ...cf.months.filter(m => m.month >= cf.now).map(m => m.revenue));
+  el.className = '';
+  el.innerHTML = `<div class="grid4">
+      <div class="stat hero tap" data-go="timeline"><div class="k">Works revenue, next 12 months</div><div class="v">${money(t.next12.revenue)}</div><div class="n">${t.peak && t.peak.revenue ? 'busiest ' + ymLabel(t.peak.month) + ' · ' + kMoney(t.peak.revenue) : 'nothing scheduled yet'}</div></div>
+      <div class="stat profit tap" data-go="timeline"><div class="k">Profit, next 12 months</div><div class="v">${money(t.next12.profit)}</div><div class="n">${t.next12.revenue ? Math.round(t.next12.profit / t.next12.revenue * 100) + '% blended' : ''}${t.noMargin ? ` · ${t.noMargin} item${t.noMargin === 1 ? '' : 's'} without a margin not counted` : ''}</div></div>
+      <div class="stat tap" data-go="timeline"><div class="k">${esc(t.fy.label)} works revenue</div><div class="v">${money(t.fy.revenue)}</div><div class="n">actuals to date + plan to 30 June${t.fy.target ? ` · ${Math.round(t.fy.revenue / t.fy.target * 100)}% of the ${kMoney(t.fy.target)} target` : ''}</div></div>
+      <div class="stat tap ${t.unscheduled.count ? 'warnbox' : ''}" data-go="timeline"><div class="k">Signed, not scheduled</div><div class="v">${t.unscheduled.count} · ${money(t.unscheduled.value)}</div><div class="n">${t.unscheduled.count ? 'not in any month yet — give them months on the Timeline' : 'every signed job has months'}</div></div>
+    </div>
+    ${cf.pendingMonths.length ? `<div class="warnbox" style="margin-top:10px;font-size:12px;"><b>Actuals to confirm:</b> ${cf.pendingMonths.map(m => ymLabel(m, true)).join(', ')} — the figures for ${cf.pendingMonths.length === 1 ? 'that month use' : 'those months use'} the plan until confirmed. <a href="#" data-go="timeline">Open the Timeline</a></div>` : ''}
+    <div class="cfstrip">${cf.months.map(m => `<div class="${m.month === cf.now ? 'now' : ''} ${m.month < cf.now ? 'past' : ''}"><div class="barv"><i style="height:${Math.round(m.revenue / max * 36)}px"></i></div><span class="ml">${ymLabel(m.month)}</span><b>${m.revenue ? kMoney(m.revenue) : '—'}</b><span class="pr">${m.profit ? kMoney(m.profit) : ''}</span></div>`).join('')}</div>`;
+  el.querySelectorAll('[data-go]').forEach(x => x.addEventListener('click', e => { e.preventDefault(); state.tab = 'timeline'; route(); }));
+}
+
+async function timelineTab(v) {
+  if (!state.tlMonths) state.tlMonths = 15;
+  v.innerHTML = '<p class="muted">Loading…</p>';
+  const T = await api('/timeline' + (state.tlArchived ? '?archived=1' : ''));
+  if (!T || T.error) { v.innerHTML = `<div class="card"><h2>Timeline</h2><p class="muted">${esc((T && T.error) || 'Could not load.')}</p></div>`; return; }
+  const t = T.tiles, now = T.now;
+  const hideDone = !!state.tlHideDone;
+  const items = T.items.filter(i => !(hideDone && i.finished && !i.parentId && !T.items.some(k => k.parentId === i.id && !k.finished)));
+  const jobs = items.filter(i => !i.parentId);
+  const share = b => b ? (b.actual != null ? b.actual : b.planned) : 0;
+  const mcls = m => m < now ? 'past' : m === now ? 'now' : '';
+  const srcPill = i => i.parentId ? '<span class="pill var">item</span>' : i.source === 'tool' ? `<span class="pill">signed in tool</span>${i.quoteStatus && i.quoteStatus !== 'accepted' ? ` <span class="pill uns">quote now ${esc(i.quoteStatus)}</span>` : ''}` : '<span class="pill man">added by hand</span>';
+  const valTitle = i => i.valueSource === 'quote' ? 'From the signed quote — type to override' : i.valueSource === 'override' ? `Overrides the quote's ${money(i.quoteValue)} — clear to go back` : 'Entered by hand';
+  const mgTitle = i => i.marginSource === 'costing' ? 'From the job\'s own costing — type to override' : i.marginSource === 'override' ? `Overrides the costing's ${i.quoteMargin}% — clear to go back` : i.marginSource === 'entered' ? 'Entered by hand' : 'No margin yet — profit is not counted until you enter one';
+  const row = (i, n) => {
+    const scheduled = Object.keys(i.blocks).length;
+    const bad = scheduled && !i.finished && Math.abs(i.plan - 100) > 0.5;
+    return `<tr class="${i.parentId ? 'kid' : 'job'} ${i.finished ? 'fin' : ''}" data-row="${i.id}">
+      <td class="f f1 muted">${i.parentId ? '' : n}</td>
+      <td class="f f2"><b>${i.parentId ? '↳ ' + esc(i.label) : esc(i.client || '—')}</b><small>${i.parentId ? '' : esc(i.quoteNumber || 'no quote no.') + ' · '}${srcPill(i)}${!scheduled && !i.finished ? ' <span class="pill uns">not scheduled</span>' : ''}</small>
+        <span class="rowact">${!i.parentId ? `<button data-up="${i.id}" title="Move up">▲</button><button data-dn="${i.id}" title="Move down">▼</button><button data-additem="${i.id}" title="Add a variation or separate item under this job">+ item</button>` : ''}<button data-edit="${i.id}" title="Edit">Edit</button></span></td>
+      <td class="f f3"><input data-val="${i.id}" value="${i.value != null ? '$' + Number(i.value).toLocaleString('en-AU') : ''}" placeholder="value" title="${esc(valTitle(i))}" class="${i.valueSource === 'quote' ? 'fromq' : ''}"></td>
+      <td class="f f4 num" title="Sum of the actuals entered">${i.done}%</td>
+      <td class="f f5"><input data-mg="${i.id}" value="${i.margin != null ? i.margin : ''}" placeholder="—" title="${esc(mgTitle(i))}" class="${i.marginSource === 'costing' ? 'fromq' : ''} ${i.margin == null && i.value ? 'need' : ''}">%</td>
+      <td class="f f6 num ${bad ? 'bad' : ''}" title="Done + planned months still to come — should be 100%">${scheduled ? i.plan + '%' : '—'}</td>
+      ${T.months.map(m => { const b = i.blocks[m];
+        if (!b) return `<td class="m ${mcls(m)}" data-i="${i.id}" data-m="${m}"></td>`;
+        const late = b.actual == null && m < now && b.planned > 0;
+        const rev = i.value != null ? i.value * share(b) / 100 : null;
+        return `<td class="m ${mcls(m)} has" data-i="${i.id}" data-m="${m}"><div class="blk ${b.actual != null ? 'act' : ''} ${late ? 'late' : ''} ${state.tlSel && state.tlSel.i === i.id && state.tlSel.m === m ? 'sel' : ''}" title="Planned ${b.planned}%${b.plannedLock ? ' (locked)' : ''}${b.actual != null ? ` · actual ${b.actual}%${b.actualLock ? ' (confirmed)' : ''}` : late ? ' · actual not entered' : ''}">
+          <span class="pp">${b.actual != null ? `<s>${b.planned}</s> ${b.actual}%` : b.planned + '%'}${b.plannedLock ? '<i class="lk">P</i>' : ''}${b.actualLock ? '<i class="lk a">A</i>' : ''}</span><small>${rev != null ? kMoney(rev) : ''}</small></div></td>`; }).join('')}</tr>`;
+  };
+  let body = '', n = 0;
+  jobs.forEach(j => { n++; body += row(j, n); items.filter(k => k.parentId === j.id).forEach(k => body += row(k, n)); });
+  const per = T.perMonth; let cum = 0;
+  const totRow = (cls, label, f) => `<tr class="tot ${cls}"><td class="f f1"></td><td class="f f2">${label}</td><td class="f f3"></td><td class="f f4"></td><td class="f f5"></td><td class="f f6"></td>${T.months.map(m => `<td class="m ${mcls(m)}">${f(m)}</td>`).join('')}</tr>`;
+  const pend = T.pending;
+  v.innerHTML = `
+  ${pend.rows.length ? `<div class="card eom" id="eom"><h2>Month end — what was actually done</h2><div class="sub">For each job worked in ${pend.months.map(m => ymLabel(m, true)).join(' and ')}, enter the share of its works actually completed that month. It starts at the plan; change it where reality differed. Confirming locks each figure (unlock it on the grid if it needs correcting) and the unlocked months still to come re-share what is left.</div><div class="rule"></div>
+    ${pend.months.map(m => `<div class="eomm"><b>${ymLabel(m, true)}</b><table class="feedtbl"><thead><tr><th>Job</th><th class="right">Planned</th><th class="right">Done before</th><th class="right">Actual this month</th></tr></thead><tbody>
+      ${pend.rows.filter(r => r.month === m).map(r => `<tr><td>${esc(r.client)}${r.label ? ' · ' + esc(r.label) : ''} <span class="muted">${esc(r.quoteNumber || '')}</span></td><td class="right">${r.planned}%</td><td class="right">${r.done}%</td><td class="right"><input class="eomin" data-eom="${r.itemId}" data-month="${m}" value="${r.planned}" inputmode="decimal"> %</td></tr>`).join('')}
+      </tbody></table><button class="btn btn-blue btn-sm" data-confirm="${m}">Confirm ${ymLabel(m, true)}</button></div>`).join('')}</div>` : ''}
+  <div class="card"><h2>Timeline</h2><div class="sub">Every contracted job and when its works happen. Each month block holds a <b>planned</b> % and, once the month is done, an <b>actual</b> %. Revenue = value × actual (or planned, until the actual is in); profit = revenue × margin. Signed jobs arrive on their own; add older jobs and variations by hand. Admin only · ex GST.</div><div class="rule"></div>
+    <div class="grid4 tl5">
+      <div class="stat hero"><div class="k">Revenue, next 12 months</div><div class="v">${money(t.next12.revenue)}</div><div class="n">${t.peak && t.peak.revenue ? 'busiest ' + ymLabel(t.peak.month) + ' · ' + kMoney(t.peak.revenue) : 'nothing scheduled yet'}</div></div>
+      <div class="stat profit"><div class="k">Profit, next 12 months</div><div class="v">${money(t.next12.profit)}</div><div class="n">${t.next12.revenue ? Math.round(t.next12.profit / t.next12.revenue * 100) + '% blended' : '—'}</div></div>
+      <div class="stat"><div class="k">Works remaining</div><div class="v">${money(t.remaining)}</div><div class="n">value × (100% − done), all jobs</div></div>
+      <div class="stat ${t.unscheduled.count ? 'warnbox' : ''}"><div class="k">Signed, not scheduled</div><div class="v">${t.unscheduled.count} · ${money(t.unscheduled.value)}</div><div class="n">give these months so they count</div></div>
+      <div class="stat ${t.behind || t.noMargin || t.offPlan ? 'warnbox' : ''}"><div class="k">Needs attention</div><div class="v">${t.behind + t.noMargin + t.offPlan}</div><div class="n">${t.behind} awaiting actuals · ${t.noMargin} no margin · ${t.offPlan} plan ≠ 100%</div></div>
+    </div>
+    <div class="tlbar">
+      <button class="btn btn-blue btn-sm" id="tlAdd">+ Add job</button>
+      <button class="btn btn-ghost btn-sm" id="tlToday">Today</button>
+      <div class="seg" id="tlRange">${[12, 15, 24].map(x => `<button data-n="${x}" class="${state.tlMonths === x ? 'on' : ''}">${x} months</button>`).join('')}</div>
+      <label class="chk"><input type="checkbox" id="tlHide" ${hideDone ? 'checked' : ''}> Hide finished</label>
+      <label class="chk"><input type="checkbox" id="tlArch" ${state.tlArchived ? 'checked' : ''}> Show archived</label>
+      <span style="flex:1"></span>
+      <span class="tlleg"><i class="b"></i>planned <i class="a"></i>actual <i class="l"></i>month passed, actual missing · <b>P</b>/<b>A</b> locked</span>
+    </div>
+    <div class="tledit" id="tlEdit"></div>
+    <div class="tlwrap"><button class="tlnav l" id="tlPrev" aria-label="Earlier">‹</button><button class="tlnav r" id="tlNext" aria-label="Later">›</button>
+      <div class="tlsc" id="tlSc"><table class="tl">
+        <thead><tr><th class="f f1">#</th><th class="f f2">Client · quote</th><th class="f f3">Value</th><th class="f f4">Done</th><th class="f f5">Margin</th><th class="f f6">Plan</th>${T.months.map(m => `<th class="m ${mcls(m)}">${ymLabel(m)}</th>`).join('')}</tr></thead>
+        <tbody>${body || `<tr><td class="f f2" colspan="6" style="padding:14px 8px;" class="muted">No jobs yet — signed quotes appear here on their own; add older jobs with "+ Add job".</td>${T.months.map(() => '<td class="m"></td>').join('')}</tr>`}
+        ${totRow('rev', 'Works revenue', m => per[m] && per[m].revenue ? kMoney(per[m].revenue) : '<span class="muted">—</span>')}
+        ${totRow('pro', 'Profit', m => per[m] && per[m].profit ? kMoney(per[m].profit) + (per[m].noMargin ? '<sup title="Some items this month have no margin">*</sup>' : '') : '<span class="muted">—</span>')}
+        ${totRow('cum', 'Cumulative from now', m => { if (m < now) return ''; cum += per[m] ? per[m].revenue : 0; return cum ? kMoney(cum) : ''; })}
+        </tbody></table></div></div>
+    <div class="muted" style="font-size:11px;margin-top:6px;">Click an empty month to add a block (unlocked months share the job's remaining %). Click a block to set its planned and actual %. Value and margin from a signed quote are shown in grey — type to override, clear to go back. <b>Plan</b> = done + months still to come; red when it is not 100%.</div>
+  </div>`;
+
+  // --- column width: fit N months in the visible strip
+  const sc = $('#tlSc');
+  // Fixed table layout: every column's width is set, so nothing can soak up spare width.
+  const fit = () => { const frozen = window.innerWidth <= 820 ? 414 : 464; const w = Math.max(54, Math.floor((sc.clientWidth - frozen) / state.tlMonths)); v.style.setProperty('--tlw', w + 'px'); const tb = sc.querySelector('table.tl'); if (tb) tb.style.width = (frozen + T.months.length * w) + 'px'; return w; };
+  let colW = fit();
+  const goNow = () => { const i = T.months.indexOf(now); sc.scrollLeft = Math.max(0, (i - 2) * colW); };
+  if (state.tlScroll != null) sc.scrollLeft = state.tlScroll; else goNow();
+  sc.addEventListener('scroll', () => { state.tlScroll = sc.scrollLeft; });
+  $('#tlPrev').addEventListener('click', () => { sc.scrollBy({ left: -colW * 3, behavior: 'smooth' }); });
+  $('#tlNext').addEventListener('click', () => { sc.scrollBy({ left: colW * 3, behavior: 'smooth' }); });
+  $('#tlToday').addEventListener('click', () => { colW = fit(); goNow(); });
+  $('#tlRange').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.tlMonths = +b.dataset.n; $('#tlRange').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); colW = fit(); goNow(); }));
+  $('#tlHide').addEventListener('change', e => { state.tlHideDone = e.target.checked; timelineTab(v); });
+  $('#tlArch').addEventListener('change', e => { state.tlArchived = e.target.checked; timelineTab(v); });
+  const reload = () => { state.pendingCheckedAt = 0; timelineTab(v); };
+  const J = (url, method, body) => api(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+
+  // --- block editor
+  const paintEdit = () => {
+    const e = $('#tlEdit'); const sel = state.tlSel;
+    const it = sel && T.items.find(x => x.id === sel.i); const b = it && it.blocks[sel.m];
+    if (!b) { e.classList.remove('on'); e.innerHTML = ''; return; }
+    const rev = x => it.value != null ? money(it.value * x / 100) : '—';
+    e.classList.add('on');
+    e.innerHTML = `<b>${esc(it.parentId ? it.label : it.client)} · ${ymLabel(sel.m, true)}</b>
+      <span class="grp">Planned <input id="tePl" value="${b.planned}" inputmode="decimal">% <button id="tePlLk" class="${b.plannedLock ? 'on' : ''}" title="Locked: keeps this %. Unlocked: shares what is left evenly.">${b.plannedLock ? '🔒 locked' : 'unlocked'}</button><span class="muted">${rev(b.planned)}</span></span>
+      <span class="grp">Actual <input id="teAc" value="${b.actual != null ? b.actual : ''}" placeholder="—" inputmode="decimal" ${b.actualLock ? 'disabled' : ''}>% <button id="teAcLk" class="${b.actualLock ? 'on' : ''}" title="Locked = confirmed for the month.">${b.actualLock ? '🔒 confirmed' : 'unlocked'}</button><span class="muted">${b.actual != null ? rev(b.actual) : sel.m < now ? 'not entered' : ''}</span></span>
+      <span class="muted">${it.margin != null && it.value != null ? 'profit ' + money(it.value * share(b) / 100 * it.margin / 100) : it.margin == null ? 'no margin — profit not counted' : ''}</span>
+      <span style="flex:1"></span><button id="teDel">Remove block</button><button id="teX">Close</button>`;
+    const put = body => J(`/timeline/items/${it.id}/blocks/${sel.m}`, 'PUT', body).then(r => { if (r.error) toast(r.error); reload(); });
+    $('#tePl').addEventListener('change', ev => put({ planned: ev.target.value }));
+    $('#tePlLk').addEventListener('click', () => put({ plannedLock: !b.plannedLock }));
+    $('#teAc').addEventListener('change', ev => put({ actual: ev.target.value }));
+    $('#teAcLk').addEventListener('click', () => put({ actualLock: !b.actualLock }));
+    $('#teDel').addEventListener('click', () => { state.tlSel = null; put({ remove: true }); });
+    $('#teX').addEventListener('click', () => { state.tlSel = null; paintEdit(); v.querySelectorAll('.blk.sel').forEach(x => x.classList.remove('sel')); });
+  };
+  paintEdit();
+  v.querySelectorAll('td.m[data-i]').forEach(td => td.addEventListener('click', async () => {
+    const it = T.items.find(x => x.id === td.dataset.i), m = td.dataset.m;
+    state.tlSel = { i: it.id, m };
+    if (!it.blocks[m]) { const r = await J(`/timeline/items/${it.id}/blocks/${m}`, 'PUT', {}); if (r.error) return toast(r.error); return reload(); }
+    v.querySelectorAll('.blk.sel').forEach(x => x.classList.remove('sel')); const bk = td.querySelector('.blk'); if (bk) bk.classList.add('sel');
+    paintEdit();
+  }));
+
+  // --- row edits
+  v.querySelectorAll('[data-val]').forEach(i => i.addEventListener('change', async () => { await J('/timeline/items/' + i.dataset.val, 'PUT', { value: i.value.replace(/[^0-9.]/g, '') }); reload(); }));
+  v.querySelectorAll('[data-mg]').forEach(i => i.addEventListener('change', async () => { await J('/timeline/items/' + i.dataset.mg, 'PUT', { margin: i.value.replace(/[^0-9.\-]/g, '') }); reload(); }));
+  const order = jobs.map(j => j.id);
+  const move = async (id, d) => { const k = order.indexOf(id), to = k + d; if (to < 0 || to >= order.length) return; [order[k], order[to]] = [order[to], order[k]]; await J('/timeline/order', 'PUT', { ids: order }); reload(); };
+  v.querySelectorAll('[data-up]').forEach(b => b.addEventListener('click', () => move(b.dataset.up, -1)));
+  v.querySelectorAll('[data-dn]').forEach(b => b.addEventListener('click', () => move(b.dataset.dn, 1)));
+
+  // --- dialogs
+  const dialog = (title, fields, okLabel, onOk, extra) => {
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal"><h2 style="margin:0 0 10px;">${esc(title)}</h2>
+      <div class="grid2">${fields.map(f => `<div class="field" ${f.wide ? 'style="grid-column:1/-1"' : ''}><label>${esc(f.label)}</label>${f.type === 'textarea' ? `<textarea id="dl_${f.k}" rows="2">${esc(f.v || '')}</textarea>` : `<input id="dl_${f.k}" value="${esc(f.v != null ? f.v : '')}" placeholder="${esc(f.ph || '')}" ${f.ro ? 'readonly' : ''}>`}${f.help ? `<span class="muted" style="font-size:10px;">${esc(f.help)}</span>` : ''}</div>`).join('')}</div>
+      <div style="display:flex;gap:8px;justify-content:space-between;margin-top:10px;">${extra || '<span></span>'}<div style="display:flex;gap:8px;"><button class="btn btn-ghost" id="dl_x">Cancel</button><button class="btn btn-blue" id="dl_ok">${esc(okLabel)}</button></div></div></div>`;
+    document.body.appendChild(bg);
+    $('#dl_x').addEventListener('click', () => bg.remove());
+    $('#dl_ok').addEventListener('click', async () => { const o = {}; fields.forEach(f => o[f.k] = $('#dl_' + f.k).value); const r = await onOk(o); if (r && r.error) return toast(r.error); bg.remove(); reload(); });
+    return bg;
+  };
+  $('#tlAdd').addEventListener('click', () => dialog('Add a job', [
+    { k: 'client', label: 'Client', ph: 'e.g. Kaushik Ajmera' }, { k: 'quoteNumber', label: 'Quote number', ph: 'e.g. 1387' },
+    { k: 'address', label: 'Site address', wide: true },
+    { k: 'value', label: 'Contract value, ex GST ($)', ph: 'e.g. 66074' }, { k: 'margin', label: 'Gross margin (%)', ph: 'leave blank if unknown', help: 'Blank = no profit counted for this job until you enter it.' },
+    { k: 'notes', label: 'Notes', type: 'textarea', wide: true }], 'Add job', o => J('/timeline/jobs', 'POST', { ...o, value: o.value.replace(/[^0-9.]/g, ''), margin: o.margin.replace(/[^0-9.\-]/g, '') })));
+  v.querySelectorAll('[data-additem]').forEach(b => b.addEventListener('click', () => { const j = T.items.find(x => x.id === b.dataset.additem);
+    dialog('Add an item under ' + (j.client || j.quoteNumber), [
+      { k: 'label', label: 'Item', ph: 'e.g. Variation 1 — extra retaining wall', wide: true },
+      { k: 'value', label: 'Value, ex GST ($)' }, { k: 'margin', label: 'Gross margin (%)', ph: 'leave blank if unknown' },
+      { k: 'notes', label: 'Notes', type: 'textarea', wide: true }], 'Add item', o => J(`/timeline/jobs/${j.id}/items`, 'POST', { ...o, value: o.value.replace(/[^0-9.]/g, ''), margin: o.margin.replace(/[^0-9.\-]/g, '') })); }));
+  v.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { const it = T.items.find(x => x.id === b.dataset.edit);
+    const canDelete = it.parentId || it.source === 'manual';
+    const fields = it.parentId
+      ? [{ k: 'label', label: 'Item', v: it.label, wide: true }, { k: 'notes', label: 'Notes', type: 'textarea', v: it.notes, wide: true }]
+      : [{ k: 'client', label: 'Client', v: it.client }, { k: 'quoteNumber', label: 'Quote number', v: it.quoteNumber, ro: it.source === 'tool' }, { k: 'address', label: 'Site address', v: it.address, wide: true }, { k: 'notes', label: 'Notes', type: 'textarea', v: it.notes, wide: true }];
+    const bg = dialog('Edit ' + (it.parentId ? 'item' : 'job'), fields, 'Save', o => J('/timeline/items/' + it.id, 'PUT', o),
+      `<div style="display:flex;gap:8px;">${canDelete ? '<button class="btn btn-danger" id="dl_del">Delete</button>' : ''}<button class="btn btn-ghost" id="dl_arch">${it.archived ? 'Unarchive' : 'Archive'}</button>${it.quoteId ? `<button class="btn btn-ghost" id="dl_q">Open quote</button>` : ''}</div>`);
+    const del = bg.querySelector('#dl_del'); if (del) del.addEventListener('click', async () => {
+      if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = 'Click again to delete'; return; }
+      const r = await api('/timeline/items/' + it.id, { method: 'DELETE' }); if (r && r.error) return toast(r.error); bg.remove(); toast('Deleted'); reload(); });
+    bg.querySelector('#dl_arch').addEventListener('click', async () => { await J('/timeline/items/' + it.id, 'PUT', { archived: !it.archived }); bg.remove(); toast(it.archived ? 'Back on the timeline' : 'Archived — tick "Show archived" to see it'); reload(); });
+    const oq = bg.querySelector('#dl_q'); if (oq) oq.addEventListener('click', () => { bg.remove(); state.tab = 'quotes'; state.quoteId = it.quoteId; shell(); });
+  }));
+
+  // --- month end
+  v.querySelectorAll('[data-confirm]').forEach(b => b.addEventListener('click', async () => {
+    const m = b.dataset.confirm;
+    const entries = [...v.querySelectorAll(`[data-eom][data-month="${m}"]`)].map(i => ({ itemId: i.dataset.eom, actual: i.value }));
+    const r = await J('/timeline/confirm', 'POST', { month: m, entries });
+    if (r.error) return toast(r.error);
+    toast(`${ymLabel(m, true)} confirmed — ${r.confirmed} job${r.confirmed === 1 ? '' : 's'}`); reload();
+  }));
+  window.addEventListener('resize', () => { if ($('#tlSc')) colW = fit(); }, { once: true });
+}
+
 // ---------------- COSTING (Current + Forecast — moved here from Leads) ----------------
 async function costingTab(v) {
   v.innerHTML = '<p class="muted">Loading…</p>';
@@ -498,8 +695,9 @@ async function costingTab(v) {
         <div class="legend" style="margin-top:10px;">Margin is each quote's own gross margin (sell − materials, labour, subcontract, plant); overheads come off at year end on Projects. Forecast profit = FY target × average margin on won jobs this FY. Expected = each open quote × the win rate for its age band (fresh and not-yet-sent at the FY rate by value, stale at ${fc.staleRate}%). Run rate = secured in the last 90 days ÷ 3. Needed = (target − secured) ÷ months left, then ÷ average won job, ÷ win rate by count, ÷ lead-to-quote. Stale cut-off and stale rate are in Editor → Forecast.</div>`;
       })()}
     </div>
-
+    ${USER && USER.role === 'admin' ? '<div class="card" id="cfCard"><h2>Forecast cashflow</h2><div class="sub">Works revenue and profit by month, straight from the Timeline: actuals where they have been entered, the plan everywhere else. Ex GST.</div><div class="rule"></div><div id="cfBody" class="muted">Loading…</div></div>' : ''}
   </div>`;
+  if (USER && USER.role === 'admin') paintCashflow();
   $$('#costBody [data-fig]').forEach(el => { const go = () => openFigure(el.dataset.fig); el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
   // FY target: typed straight on the tile (admin), saved on blur.
   const tgt = $('#fyTarget'); if (tgt) {

@@ -448,6 +448,28 @@ CREATE TABLE IF NOT EXISTS ad_daily (
 );
 CREATE INDEX IF NOT EXISTS idx_ad_daily_day ON ad_daily(day);
 `);
+// ---- Works timeline (v36): contracted jobs, their variations, and works % by month -----
+db.exec(`
+CREATE TABLE IF NOT EXISTS timeline_items (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT,                            -- NULL = a job; set = a separate item under that job (variation)
+  quote_id TEXT,                             -- signed quote in this tool (jobs only); NULL for jobs added by hand
+  source TEXT DEFAULT 'manual',              -- tool | manual
+  quote_number TEXT, client TEXT, address TEXT, label TEXT,
+  value REAL,                                -- hand-entered value (manual jobs, variations) or an override of the quote's
+  margin_pct REAL,                           -- hand-entered margin or an override; NULL on a tool job = use its costing
+  notes TEXT, sort_order INTEGER DEFAULT 0, archived INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS timeline_blocks (
+  item_id TEXT, month TEXT,                  -- 'YYYY-MM'
+  planned_pct REAL DEFAULT 0, planned_lock INTEGER DEFAULT 0,
+  actual_pct REAL, actual_lock INTEGER DEFAULT 0,
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (item_id, month)
+);
+CREATE INDEX IF NOT EXISTS idx_tl_items_quote ON timeline_items(quote_id);
+`);
 addColumn('leads','channel','TEXT');          // meta | google | hipages | direct | referral | other — set by marketing.attribution
 addColumn('leads','campaign_ref','TEXT');     // platform campaign id or UTM campaign the enquiry arrived with
 addColumn('leads','click_id','TEXT');         // gclid / fbclid when the website form passed one
