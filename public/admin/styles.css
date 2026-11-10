@@ -581,10 +581,10 @@ table.qb .vo-tot{align-self:center;white-space:nowrap;}
 .conn .st{font-weight:800;}.conn .ok{color:var(--green);}.conn .no{color:#C8441C;}
 .conn input{border:1px solid var(--line);border-radius:6px;padding:5px 8px;font:inherit;font-size:12px;background:var(--bg);color:inherit;min-width:0;min-height:0;}
 .steps{counter-reset:s;display:flex;flex-direction:column;gap:8px;}
-.step{display:grid;grid-template-columns:28px 1fr;gap:10px;align-items:start;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);}
-.step::before{counter-increment:s;content:counter(s);width:24px;height:24px;border-radius:50%;background:var(--ink);color:var(--card);font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;}
-.step b{display:block;font-size:12.5px;}.step p{margin:3px 0 0;font-size:12px;color:var(--grey);}
-.step code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--ink);}
+.steps .step{margin:0;cursor:default;font-size:inherit;display:grid;grid-template-columns:28px 1fr;gap:10px;align-items:start;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);}
+.steps .step::before{counter-increment:s;content:counter(s);width:24px;height:24px;border-radius:50%;background:var(--ink);color:var(--card);font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;}
+.steps .step b{display:block;font-size:12.5px;}.steps .step p{margin:3px 0 0;font-size:12px;color:var(--grey);}
+.steps .step code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--ink);}
 .lever{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);margin-bottom:6px;font-size:12px;}
 .lever .dot{width:9px;height:9px;border-radius:50%;}.lever .dot.r{background:#C8441C;}.lever .dot.a{background:#B9770E;}.lever .dot.g{background:var(--green);}
 .lever b{display:block;}
