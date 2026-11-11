@@ -222,7 +222,7 @@ function channelOf(l) {
   const ck = String(l.click_id || '');
   // Paid signals first: a click id or a paid UTM beats whatever source was typed.
   if (/^fbl?:/.test(ck) || /source=(facebook|instagram|meta|fb|ig)\b/i.test(utm)) return 'meta';
-  if (/^g:/.test(ck) || /medium=(cpc|ppc|paid)/i.test(utm)) return 'google';
+  if (/^gl?:/.test(ck) || /medium=(cpc|ppc|paid)/i.test(utm)) return 'google';
   if (/hipages/.test(src)) return 'hipages';
   if (/local facebook group/.test(src)) return 'referral';            // a community post, not an ad
   if (/^(facebook|instagram)$|meta|facebook ad|instagram ad/.test(src)) return 'meta';
@@ -462,6 +462,34 @@ async function handleMetaLead(leadgenId, pageId) {
   return { id, ref };
 }
 
+// ---- Google lead form assets: each submission becomes an enquiry ------------------------------
+// In Google Ads the lead form's "Lead delivery" is set to Webhook with this tool's URL and
+// key. Google POSTs { lead_id, form_id, campaign_id, gcl_id, is_test, google_key,
+// user_column_data: [{ column_id, column_name, string_value }] }.
+function handleGoogleLead(b = {}) {
+  const leadId = String(b.lead_id || '').trim();
+  if (!leadId) return { error: 'no lead_id' };
+  if (db.prepare('SELECT id FROM leads WHERE click_id=?').get('gl:' + leadId)) return { duplicate: true };
+  const f = {}, extra = [];
+  (b.user_column_data || []).forEach(c => { const k = String(c.column_id || c.column_name || '').toUpperCase(); if (k) f[k] = String(c.string_value || '').trim(); });
+  const KNOWN = ['FULL_NAME', 'FIRST_NAME', 'LAST_NAME', 'EMAIL', 'WORK_EMAIL', 'PHONE_NUMBER', 'WORK_PHONE', 'CITY', 'POSTAL_CODE', 'STREET_ADDRESS', 'REGION', 'COUNTRY'];
+  (b.user_column_data || []).forEach(c => { const k = String(c.column_id || '').toUpperCase(); if (!KNOWN.includes(k) && c.string_value) extra.push(`${c.column_name || c.column_id}: ${c.string_value}`); });
+  const name = (f.FULL_NAME || [f.FIRST_NAME, f.LAST_NAME].filter(Boolean).join(' ') || '(Google lead)') + (b.is_test ? ' (test)' : '');
+  const phone = f.PHONE_NUMBER || f.WORK_PHONE || '', email = (f.EMAIL || f.WORK_EMAIL || '').toLowerCase();
+  const suburb = [f.CITY, f.POSTAL_CODE].filter(Boolean).join(', '), address = f.STREET_ADDRESS || '';
+  const { newId } = require('./ids'); const { nextRef, sydneyParts } = require('./refs');
+  const id = newId(), ref = nextRef();
+  const camp = b.campaign_id != null ? String(b.campaign_id) : null;
+  const campName = camp ? (db.prepare("SELECT name FROM ad_campaigns WHERE platform='google' AND campaign_id=?").get(camp) || {}).name : null;
+  const notes = [`${ref} · Google lead form${campName ? ' · ' + campName : camp ? ' · campaign ' + camp : ''}${b.is_test ? ' · TEST' : ''}`, ...extra].join('\n');
+  db.prepare(`INSERT INTO leads (id,name,phone,email,address,source,notes,status,stage,next_followup,job_type,suburb,call_answers,enquiry_ref,channel,campaign_ref,click_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, name, phone, email, address, 'Google Ads', notes, 'New', 'call1', sydneyParts().ymd, '', suburb,
+    JSON.stringify({ _prefill: { source: 'Google Ads', name, phone, email, suburb, address, enquiry_ref: ref, confirmed: {} } }), ref, 'google', camp, 'gl:' + leadId);
+  try { require('./push').notify({ title: `New Google lead: ${name}`, body: [suburb, phone].filter(Boolean).join(' · ') + ` · ${ref}`, url: '/admin/?lead=' + id, tag: 'lead-' + id }).catch(() => {}); } catch (e) {}
+  if (email && !b.is_test) { try { require('./estimator').autoInvite(id, { reason: 'new', by: 'google' }).catch(() => {}); } catch (e) {} }
+  return { id, ref };
+}
+
 // ---- scheduler: Meta pull at 6 am Sydney, attribution sweep hourly --------------------------
 function start() {
   attributeLeads();
@@ -477,4 +505,4 @@ function start() {
   setInterval(tick, 15 * 60e3).unref();
 }
 
-module.exports = { setupLeadAds, leadAdsStatus, captureAttribution, figure, slowLeads, verifyMetaSignature, handleMetaLead, PLATFORMS, connection, connections, setConnection, googleKey, checkGoogleKey, ingestGoogle, googleScript, metaAccounts, pullMeta, channelOf, attributeLeads, summary, start };
+module.exports = { handleGoogleLead, setupLeadAds, leadAdsStatus, captureAttribution, figure, slowLeads, verifyMetaSignature, handleMetaLead, PLATFORMS, connection, connections, setConnection, googleKey, checkGoogleKey, ingestGoogle, googleScript, metaAccounts, pullMeta, channelOf, attributeLeads, summary, start };

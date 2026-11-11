@@ -25,6 +25,8 @@ router.get('/connections', (req, res) => {
   const admin = req.user && req.user.role === 'admin';
   res.json({ connections: M.connections(), googleKey: admin ? M.googleKey() : null, toolUrlSet: !!settingGet('tool_url'),
     leadAds: M.leadAdsStatus(),
+    googleLeadWebhook: baseOf(req) + '/api/public/marketing/google/lead',
+    googleLastLeadAt: (db.prepare("SELECT created_at FROM leads WHERE click_id LIKE 'gl:%' ORDER BY created_at DESC LIMIT 1").get() || {}).created_at || null,
     metaWebhook: baseOf(req) + '/api/public/marketing/meta/webhook', metaVerifySet: !!settingGet('meta_verify_token') });
 });
 

@@ -10,6 +10,13 @@ router.post('/google', express.json({ limit: '2mb' }), (req, res) => {
   try { res.json({ ok: true, ...M.ingestGoogle(req.body || {}) }); }
   catch (e) { console.error('[marketing] google ingest', e); res.status(500).json({ error: e.message }); }
 });
+// Google lead form asset → webhook. Google sends the key in the body as google_key.
+router.post('/google/lead', (req, res) => {
+  const b = req.body || {};
+  if (!M.checkGoogleKey(b.google_key || req.get('x-marketing-key'))) return res.status(401).json({ error: 'bad key' });
+  try { const r = M.handleGoogleLead(b); console.log('[marketing] google lead', b.lead_id, r); res.json({}); }
+  catch (e) { console.error('[marketing] google lead', e); res.status(500).json({ error: e.message }); }
+});
 // Connectivity check for the script's Preview run.
 router.get('/google/ping', (req, res) => res.json({ ok: M.checkGoogleKey(req.get('x-marketing-key') || req.query.key) }));
 

@@ -395,6 +395,9 @@ async function marketingTab(v) {
       ${conn.leadAds && conn.leadAds.hasSecret ? '' : `<input id="laSecret" type="password" placeholder="Meta app secret" style="flex:1 1 200px;">`}
       <button class="btn ${conn.leadAds && conn.leadAds.setUp ? 'btn-ghost' : 'btn-blue'} btn-sm" id="laGo">${conn.leadAds && conn.leadAds.setUp ? 'Run setup again' : 'Set up lead ads'}</button></div>
     <div id="laOut"></div>
+    <div class="conn">${plat('google')}<span class="st ${conn.googleLastLeadAt ? 'ok' : 'no'}">Lead forms ${conn.googleLastLeadAt ? 'on' : 'not set up'}</span>
+      <span class="muted" style="flex:1 1 240px;">${conn.googleLastLeadAt ? 'last lead ' + esc(sydTime(conn.googleLastLeadAt)) + ' · ' : ''}Only if your Google ads use a lead form. In the form's "Lead delivery option" choose Webhook and paste this URL, with the key above as the Key:</span>
+      <input id="glUrl" value="${esc(conn.googleLeadWebhook || '')}" readonly style="flex:1 1 260px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"><button class="btn btn-ghost btn-sm" id="glCopy">Copy URL</button></div>
   </div>
 
   <div class="card"><h2>How to connect — step by step</h2><div class="rule"></div>
@@ -420,6 +423,7 @@ async function marketingTab(v) {
   $$('[data-mfig]').forEach(el => { const go = () => openFigure(el.dataset.mfig, `/marketing/figure/${el.dataset.mfig}?days=${days}`);
     el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
   $$('[data-lfig]').forEach(b => b.addEventListener('click', () => openFigure(b.dataset.lfig, `/marketing/figure/${b.dataset.lfig}?days=${days}`)));
+  const glc = $('#glCopy'); if (glc) glc.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#glUrl').value); toast('URL copied'); } catch (e) { $('#glUrl').select(); } });
   const la = $('#laGo'); if (la) la.addEventListener('click', async () => {
     const sec = $('#laSecret'); la.disabled = true; la.textContent = 'Talking to Meta…';
     const r = await api('/marketing/meta/leadads/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appSecret: sec ? sec.value.trim() : '' }) });
