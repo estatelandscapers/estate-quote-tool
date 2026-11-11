@@ -119,6 +119,62 @@ async function metaFetch(path, token, params = {}) {
   if (!r.ok || j.error) throw new Error((j.error && j.error.message) || `Meta API ${r.status}`);
   return j;
 }
+async function metaPost(path, token, params = {}) {
+  const body = new URLSearchParams(); Object.entries({ ...params, access_token: token }).forEach(([k, v]) => body.set(k, typeof v === 'string' ? v : JSON.stringify(v)));
+  const r = await fetch(META_API + path, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' }, body });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error((j.error && (j.error.error_user_msg || j.error.message)) || `Meta API ${r.status}`);
+  return j;
+}
+
+// ---- Lead ads, set up from here ---------------------------------------------------------------
+// Meta's app dashboard often has no Webhooks menu, and subscribing a Page to an app has no
+// button anywhere. Both are plain Graph calls, so the tool makes them:
+//   1. which app the system-user token belongs to            GET  /app
+//   2. register this tool's callback for Page `leadgen`       POST /{app}/subscriptions   (app token = id|secret)
+//   3. the Pages the system user manages, with Page tokens    GET  /me/accounts
+//   4. subscribe each Page to the app for `leadgen`           POST /{page}/subscribed_apps (Page token)
+// Each step reports in plain words, so a missing permission says which one.
+async function setupLeadAds(callbackUrl, { appSecret } = {}) {
+  const { settingSet } = require('../db');
+  const steps = []; const add = (ok, title, detail) => { steps.push({ ok, title, detail: detail || '' }); return ok; };
+  const c = connection('meta');
+  if (!c.secret) { add(false, 'Meta is not connected', 'Connect Meta above first (system-user token).'); return { ok: false, steps }; }
+  if (appSecret) settingSet('meta_app_secret', String(appSecret).trim());
+  const secret = settingGet('meta_app_secret');
+  if (!secret) { add(false, 'App secret needed', 'Paste the app secret (developers.facebook.com → your app → App settings → Basic → App secret → Show).'); return { ok: false, steps }; }
+  let verify = settingGet('meta_verify_token');
+  if (!verify) { verify = 'eq_' + crypto.randomBytes(9).toString('base64url'); settingSet('meta_verify_token', verify); }
+  let app;
+  try { app = await metaFetch('/app', c.secret, { fields: 'id,name' }); add(true, `App found: ${app.name}`, 'id ' + app.id); }
+  catch (e) { add(false, 'Could not read the app behind the token', e.message); return { ok: false, steps }; }
+  try {
+    await metaPost(`/${app.id}/subscriptions`, `${app.id}|${secret}`, { object: 'page', callback_url: callbackUrl, fields: 'leadgen', verify_token: verify, include_values: 'true' });
+    add(true, 'Webhook registered with Meta', callbackUrl);
+  } catch (e) {
+    add(false, 'Meta would not register the webhook', /secret|validat|access token/i.test(e.message) ? e.message + ' — check the app secret is this app\'s.' : e.message);
+    return { ok: false, steps, app };
+  }
+  let pages = [];
+  try { const r = await metaFetch('/me/accounts', c.secret, { fields: 'id,name,access_token', limit: 100 }); pages = r.data || []; }
+  catch (e) { add(false, 'Could not list your Pages', e.message + ' — the token needs pages_show_list.'); return { ok: false, steps, app }; }
+  if (!pages.length) { add(false, 'The system user has no Page', 'Business settings → System users → quote-tool → Assign assets → Pages → your Page (full control), then generate a new token with pages_show_list, pages_manage_metadata, pages_read_engagement, leads_retrieval and reconnect.'); return { ok: false, steps, app }; }
+  let any = false;
+  for (const pg of pages) {
+    try { await metaPost(`/${pg.id}/subscribed_apps`, pg.access_token, { subscribed_fields: 'leadgen' }); any = true; add(true, `Page subscribed: ${pg.name}`, 'lead-form submissions on this Page now come here'); }
+    catch (e) { add(false, `Could not subscribe Page: ${pg.name}`, e.message + (/permission|pages_manage_metadata/i.test(e.message) ? ' — the token needs pages_manage_metadata and the system user needs full control of the Page.' : '')); }
+  }
+  setConnection('meta', { config: JSON.stringify({ ...(JSON.parse(c.config || '{}')), leadAds: { app: { id: app.id, name: app.name }, pages: pages.map(p => ({ id: p.id, name: p.name })), at: new Date().toISOString(), ok: any } }) });
+  if (any) add(true, 'Two things only you can do in Meta', '1) App mode must be LIVE (top of the app dashboard) — in Development mode real leads are not delivered. 2) Business settings → Integrations → Leads access → your Page → CRMs → assign this app.');
+  return { ok: any, steps, app };
+}
+function leadAdsStatus() {
+  let cfg = {}; try { cfg = JSON.parse(connection('meta').config || '{}'); } catch (e) {}
+  const last = db.prepare("SELECT created_at FROM leads WHERE click_id LIKE 'fbl:%' ORDER BY created_at DESC LIMIT 1").get();
+  return { setUp: !!(cfg.leadAds && cfg.leadAds.ok), app: cfg.leadAds ? cfg.leadAds.app : null, pages: cfg.leadAds ? cfg.leadAds.pages : [], at: cfg.leadAds ? cfg.leadAds.at : null,
+    hasSecret: !!settingGet('meta_app_secret'), lastLeadAt: last ? last.created_at : null };
+}
+
 // Step 1 of connecting: list the ad accounts the token can see, so the user picks one.
 async function metaAccounts(token) {
   const j = await metaFetch('/me/adaccounts', token, { fields: 'id,name,account_id,currency,account_status' });
@@ -421,4 +477,4 @@ function start() {
   setInterval(tick, 15 * 60e3).unref();
 }
 
-module.exports = { captureAttribution, figure, slowLeads, verifyMetaSignature, handleMetaLead, PLATFORMS, connection, connections, setConnection, googleKey, checkGoogleKey, ingestGoogle, googleScript, metaAccounts, pullMeta, channelOf, attributeLeads, summary, start };
+module.exports = { setupLeadAds, leadAdsStatus, captureAttribution, figure, slowLeads, verifyMetaSignature, handleMetaLead, PLATFORMS, connection, connections, setConnection, googleKey, checkGoogleKey, ingestGoogle, googleScript, metaAccounts, pullMeta, channelOf, attributeLeads, summary, start };

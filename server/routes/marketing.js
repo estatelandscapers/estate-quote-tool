@@ -24,6 +24,7 @@ router.get('/figure/:key', (req, res) => {
 router.get('/connections', (req, res) => {
   const admin = req.user && req.user.role === 'admin';
   res.json({ connections: M.connections(), googleKey: admin ? M.googleKey() : null, toolUrlSet: !!settingGet('tool_url'),
+    leadAds: M.leadAdsStatus(),
     metaWebhook: baseOf(req) + '/api/public/marketing/meta/webhook', metaVerifySet: !!settingGet('meta_verify_token') });
 });
 
@@ -47,6 +48,11 @@ router.post('/meta/connect', adminOnly, async (req, res) => {
   M.setConnection('meta', { secret: String(b.token).trim(), account_id: String(b.accountId), account_name: b.accountName || null, currency: b.currency || 'AUD', status: 'connected', last_error: null });
   const r = await M.pullMeta(90);
   res.json({ ok: r.ok, pull: r, connection: M.connections().find(c => c.platform === 'meta') });
+});
+// Register the webhook and subscribe the Page(s) — everything Meta's dashboard makes hard.
+router.post('/meta/leadads/setup', adminOnly, async (req, res) => {
+  try { res.json(await M.setupLeadAds(baseOf(req) + '/api/public/marketing/meta/webhook', { appSecret: (req.body || {}).appSecret })); }
+  catch (e) { console.error('[marketing] lead ads setup', e); res.status(500).json({ ok: false, steps: [{ ok: false, title: 'Setup failed', detail: e.message }] }); }
 });
 router.post('/meta/pull', adminOnly, async (req, res) => res.json(await M.pullMeta(parseInt((req.body || {}).days, 10) || 3)));
 router.post('/:platform/disconnect', adminOnly, (req, res) => {

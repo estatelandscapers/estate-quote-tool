@@ -390,9 +390,11 @@ async function marketingTab(v) {
       <span class="muted" style="flex:1 1 240px;">${c.google && c.google.status === 'connected' ? `${esc(c.google.accountName || '')} · ${esc(c.google.accountId || '')} · last push ${c.google.lastPullAt ? esc(sydTime(c.google.lastPullAt)) : 'never'}` : 'Paste the key into a Google Ads script (guide below). No Google API approval needed.'}</span>
       <input id="gKey" value="${esc(conn.googleKey || '')}" readonly style="flex:1 1 200px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"><button class="btn btn-ghost btn-sm" id="gCopy">Copy key</button><a class="btn btn-ghost btn-sm" href="/api/marketing/google/script" target="_blank">Show script</a></div>
     ${!conn.toolUrlSet ? `<div class="warnbox" style="margin-bottom:8px;font-size:11.5px;"><b>Set the tool's address first.</b> Editor → Online estimator → "This tool's public URL". The Google script and the Meta lead-ads callback are built from it.</div>` : ''}
-    <div class="conn">${plat('meta')}<span class="st ${conn.metaVerifySet ? 'ok' : 'no'}">Lead ads ${conn.metaVerifySet ? 'ready' : 'not set up'}</span>
-      <span class="muted" style="flex:1 1 240px;">Optional. Each Meta lead-form submission becomes an enquiry here within a minute. Callback URL:</span>
-      <input id="whUrl" value="${esc(conn.metaWebhook || '')}" readonly style="flex:1 1 260px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"><button class="btn btn-ghost btn-sm" id="whCopy">Copy</button></div>
+    <div class="conn">${plat('meta')}<span class="st ${conn.leadAds && conn.leadAds.setUp ? 'ok' : 'no'}">Lead ads ${conn.leadAds && conn.leadAds.setUp ? 'on' : 'not set up'}</span>
+      <span class="muted" style="flex:1 1 240px;">${conn.leadAds && conn.leadAds.setUp ? `${esc((conn.leadAds.pages || []).map(p => p.name).join(', '))} → this tool · ${conn.leadAds.lastLeadAt ? 'last lead ' + esc(sydTime(conn.leadAds.lastLeadAt)) : 'no lead received yet'}` : 'Each Meta lead-form submission becomes an enquiry here within a minute. Paste the app secret and press the button — the tool registers itself with Meta and subscribes your Page.'}</span>
+      ${conn.leadAds && conn.leadAds.hasSecret ? '' : `<input id="laSecret" type="password" placeholder="Meta app secret" style="flex:1 1 200px;">`}
+      <button class="btn ${conn.leadAds && conn.leadAds.setUp ? 'btn-ghost' : 'btn-blue'} btn-sm" id="laGo">${conn.leadAds && conn.leadAds.setUp ? 'Run setup again' : 'Set up lead ads'}</button></div>
+    <div id="laOut"></div>
   </div>
 
   <div class="card"><h2>How to connect — step by step</h2><div class="rule"></div>
@@ -404,7 +406,7 @@ async function marketingTab(v) {
         <div class="step"><div><b>Generate token</b><p>Pick your app (create one at developers.facebook.com → My apps → Create app → "Other" → "Business" if there is none), expiry <b>Never</b>, permissions <code>ads_read</code>, <code>leads_retrieval</code>, <code>pages_read_engagement</code>. Copy the token.</p></div></div>
         <div class="step"><div><b>Paste it above and press Connect</b><p>The tool lists the ad accounts the token can see; pick one. It pulls the last 90 days straight away, then daily at 6 am.</p></div></div>
         <div class="step"><div><b>Tag your ad URLs</b><p>In each ad's URL parameters add <code>utm_source=facebook&amp;utm_medium=paid&amp;utm_campaign={{campaign.id}}</code>. Website enquiries then land here matched to the campaign.</p></div></div>
-        <div class="step"><div><b>Lead ads (only if you run lead forms)</b><p>Editor → Marketing: type any word as the verify token and paste the app secret (app dashboard → Settings → Basic). Then in the app: Webhooks → Page → subscribe to <code>leadgen</code> with the callback URL above and the same verify token. Finally Business settings → Integrations → Leads access → allow the app.</p></div></div>
+        <div class="step"><div><b>Lead ads (only if you run lead forms)</b><p>Give the system user your <b>Page</b> (Assign assets → Pages, full control) and include <code>pages_show_list</code>, <code>pages_manage_metadata</code>, <code>pages_read_engagement</code>, <code>leads_retrieval</code> in the token. Then under Connections paste the <b>app secret</b> (your app → App settings → Basic) and press <b>Set up lead ads</b>. Last, in Meta: switch the app to <b>Live</b>, and Business settings → Integrations → Leads access → your Page → assign the app.</p></div></div>
       </div></div>
       <div><div style="font-size:12px;font-weight:800;margin-bottom:6px;">${plat('google')} Google Ads — about 5 minutes, once</div><div class="steps">
         <div class="step"><div><b>Copy your key above</b><p>The key lets the script into this tool and nothing else. "Show script" opens the script with the key already filled in.</p></div></div>
@@ -418,6 +420,14 @@ async function marketingTab(v) {
   $$('[data-mfig]').forEach(el => { const go = () => openFigure(el.dataset.mfig, `/marketing/figure/${el.dataset.mfig}?days=${days}`);
     el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
   $$('[data-lfig]').forEach(b => b.addEventListener('click', () => openFigure(b.dataset.lfig, `/marketing/figure/${b.dataset.lfig}?days=${days}`)));
+  const la = $('#laGo'); if (la) la.addEventListener('click', async () => {
+    const sec = $('#laSecret'); la.disabled = true; la.textContent = 'Talking to Meta…';
+    const r = await api('/marketing/meta/leadads/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appSecret: sec ? sec.value.trim() : '' }) });
+    la.disabled = false; la.textContent = r.ok ? 'Run setup again' : 'Set up lead ads';
+    $('#laOut').innerHTML = `<div class="conn" style="flex-direction:column;align-items:stretch;gap:6px;">${(r.steps || []).map(st => `<div style="display:grid;grid-template-columns:18px 1fr;gap:8px;"><b style="color:${st.ok ? 'var(--green)' : '#C8441C'};">${st.ok ? '✓' : '✕'}</b><div><b>${esc(st.title)}</b>${st.detail ? `<br><span class="muted">${esc(st.detail)}</span>` : ''}</div></div>`).join('')}
+      ${r.ok ? '<div class="muted" style="font-size:11.5px;">Now send a test lead from Meta\'s Lead Ads Testing Tool (developers.facebook.com/tools/lead-ads-testing) — it should appear in Leads within a minute.</div>' : ''}</div>`;
+    toast(r.ok ? 'Lead ads connected' : 'Setup stopped — see the steps');
+  });
   const wc = $('#whCopy'); if (wc) wc.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#whUrl').value); toast('Callback URL copied'); } catch (e) { $('#whUrl').select(); } });
   const gc = $('#gCopy'); if (gc) gc.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#gKey').value); toast('Key copied'); } catch (e) { $('#gKey').select(); } });
   const mg = $('#metaGo'); if (mg) mg.addEventListener('click', async () => {
