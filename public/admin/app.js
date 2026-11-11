@@ -203,7 +203,7 @@ function shell() {
   // Admin sees everything. Everyone else works the delivery side of the business:
   // Leads, Quotes, Costs, Projects, Selections and Purchase Orders — but not the
   // rate card, the recipes or the vendor terms, and no money in the delivery tabs.
-  const adminOnlyTabs = ['editor', 'pricing', 'recipes', 'vendors', 'marketing', 'timeline'];
+  const adminOnlyTabs = ADMIN_TABS;
   const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
   if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
   $('#app').innerHTML = `
@@ -261,10 +261,14 @@ function shell() {
   // A notification opens straight into its lead: /admin/?lead=<id>
   const qp = new URLSearchParams(location.search);
   if (qp.get('lead')) { state.tab = 'leads'; state.leadId = qp.get('lead'); history.replaceState(null, '', '/admin/'); }
-  else if (qp.get('tab') && isAdmin()) { state.tab = qp.get('tab'); history.replaceState(null, '', '/admin/'); }
+  else if (qp.get('tab')) { state.tab = qp.get('tab'); history.replaceState(null, '', '/admin/'); }
   route();
 }
+// Tabs only the admin sees. Estimators get Marketing, Leads, Quotes and the delivery tabs —
+// not Costing (secured value, margins, profit), the Timeline, or the rate-card tabs.
+const ADMIN_TABS = ['editor', 'pricing', 'recipes', 'vendors', 'costing', 'timeline'];
 function route() {
+  if (!isAdmin() && ADMIN_TABS.includes(state.tab)) state.tab = 'leads';
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   const v = $('#view');
   v.classList.toggle('wide', state.tab === 'timeline');
@@ -377,7 +381,7 @@ async function marketingTab(v) {
     ${(m.levers || []).length ? m.levers.map(l => `<div class="lever"><span class="dot ${l.level}"></span><div><b>${esc(l.title)}</b>${esc(l.body)}</div>${l.url ? `<a class="btn btn-ghost btn-sm" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.action || 'Open')}</a>` : l.fig ? `<button class="btn btn-ghost btn-sm" data-lfig="${esc(l.fig)}">${esc(l.action || 'See')}</button>` : '<span></span>'}</div>`).join('') : '<p class="muted">Nothing to suggest yet — levers appear once there is spend and lead data to compare.</p>'}
   </div>
 
-  <div class="card"><h2>Connections</h2><div class="sub">Both read-only: the tool never changes a campaign, bid or budget.</div><div class="rule"></div>
+  ${isAdmin() ? `  <div class="card"><h2>Connections</h2><div class="sub">Both read-only: the tool never changes a campaign, bid or budget.</div><div class="rule"></div>
     <div class="conn">${plat('meta')}<span class="st ${c.meta && c.meta.status === 'connected' ? 'ok' : 'no'}">${c.meta && c.meta.status === 'connected' ? 'Connected' : c.meta && c.meta.status === 'error' ? 'Error' : 'Not connected'}</span>
       <span class="muted" style="flex:1 1 240px;">${c.meta && c.meta.status === 'connected' ? `${esc(c.meta.accountName || '')} · ${esc(c.meta.accountId || '')} · last pull ${c.meta.lastPullAt ? esc(sydTime(c.meta.lastPullAt)) : 'never'}` : c.meta && c.meta.lastError ? esc(c.meta.lastError) : 'Paste a system-user token (guide below).'}</span>
       ${c.meta && c.meta.status !== 'disconnected' ? `<button class="btn btn-ghost btn-sm" id="metaPull">Pull now</button><button class="btn btn-ghost btn-sm" id="metaOff">Disconnect</button>` : `<input id="metaToken" placeholder="paste the Meta system-user token" style="flex:1 1 260px;"><button class="btn btn-blue btn-sm" id="metaGo">Connect</button>`}</div>
@@ -409,7 +413,7 @@ async function marketingTab(v) {
         <div class="step"><div><b>Schedule it daily, 5:30 am</b><p>That is the whole setup — the script runs inside your own Google Ads account, so there is no developer token or approval wait.</p></div></div>
         <div class="step"><div><b>Make leads traceable</b><p>Turn on auto-tagging and add <code>?utm_source=google&amp;utm_medium=cpc&amp;utm_campaign={campaignid}</code> to ad URLs. The website form already passes UTM tags into the enquiry.</p></div></div>
       </div></div>
-    </div></div>`;
+    </div></div>` : `<div class="card"><h2>Connections</h2><div class="rule"></div>${m.connections.map(x => `<div class="conn">${plat(x.platform)}<span class="st ${x.status === 'connected' ? 'ok' : 'no'}">${x.status === 'connected' ? 'Connected' : 'Not connected'}</span><span class="muted">${x.status === 'connected' ? esc(x.accountName || '') + ' · last update ' + (x.lastPullAt ? esc(sydTime(x.lastPullAt)) : 'never') : 'Set up by the admin.'}</span></div>`).join('')}</div>`}`;
   $('#mktDays').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.mktDays = parseInt(b.dataset.d, 10); marketingTab(v); }));
   $$('[data-mfig]').forEach(el => { const go = () => openFigure(el.dataset.mfig, `/marketing/figure/${el.dataset.mfig}?days=${days}`);
     el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });

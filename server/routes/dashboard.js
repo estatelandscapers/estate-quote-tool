@@ -2,6 +2,8 @@ const express = require('express');
 const { db } = require('../db');
 const { TIERS, resolveItem, lineTotal, surchargeAmount } = require('../utils/pricing');
 const router = express.Router();
+// Costing (Current + Forecast) is the admin's: secured value, margins, profit, targets.
+router.use((req, res, next) => (!req.user || req.user.role !== 'admin') ? res.status(403).json({ error: 'admin only' }) : next());
 
 // Value of a quote, EXCLUDING GST.
 // This used to be a second, private copy of the totals maths — and it drifted: it still
