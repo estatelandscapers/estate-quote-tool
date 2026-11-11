@@ -250,6 +250,16 @@ function captureAttribution(leadId, b = {}) {
   if (!clickId && !campaign && !channel) return null;
   db.prepare('UPDATE leads SET click_id=COALESCE(click_id, ?), campaign_ref=COALESCE(campaign_ref, ?), channel=COALESCE(?, channel) WHERE id=?')
     .run(clickId, campaign, channel, leadId);
+  // Make it visible on the lead itself: an enquiry that arrived through the website from
+  // an ad reads "Google Ads" / "Facebook Ads", not "Our website", with the campaign in
+  // the first line of the notes.
+  if (channel) {
+    const l = db.prepare('SELECT source, notes FROM leads WHERE id=?').get(leadId);
+    const label = channel === 'google' ? 'Google Ads' : (/instagram|^ig$/.test(src) ? 'Instagram Ads' : 'Facebook Ads');
+    const camp = campaign ? (db.prepare('SELECT name FROM ad_campaigns WHERE platform=? AND campaign_id=?').get(channel, campaign) || {}).name || campaign : null;
+    const line = `Came from: ${label}${camp ? ' · ' + camp : ''}${utm.utm_term ? ' · searched "' + clip(utm.utm_term, 80) + '"' : ''} (via the website)`;
+    if (l && /^(our website|website)?$/i.test(l.source || '')) db.prepare('UPDATE leads SET source=?, notes=? WHERE id=?').run(label, line + '\n' + (l.notes || ''), leadId);
+  }
   return { channel, campaign, clickId };
 }
 function campaignRefOf(l) {
