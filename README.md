@@ -23,5 +23,7 @@ Node 22.5+ required (uses the built-in SQLite module).
 | `SMTP_PASS` | Zoho **App Password** |
 | `BACKUP_KEY` | Secret for the `/api/backup` nightly pull |
 | `PORT` | Set automatically by most hosts |
+| `ONEDRIVE_INVENTORY_PATH` | OneDrive folder for inventory photos (default `Estate Inventory`). Uses the existing `GRAPH_*` / `ONEDRIVE_USER` variables |
+| `INVENTORY_PHOTOS_LOCAL` | `1` = keep inventory photos under `DATA_DIR` instead of OneDrive. Local development only |
 
 Default management PIN is **1234** — change it in Settings on first run.

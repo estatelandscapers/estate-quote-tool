@@ -191,6 +191,16 @@ async function openFigure(key, url) {
   }));
 }
 
+function currentTheme() { let m = null; try { m = localStorage.getItem('estate-theme'); } catch (e) {} return m === 'dark' || m === 'amoled' ? m : 'light'; }
+function applyTheme(m) {
+  const r = document.documentElement;
+  // AMOLED is Dark with the surfaces taken to black, so every existing night-mode rule
+  // (data-theme="dark") still applies and only the palette underneath changes.
+  if (m === 'dark' || m === 'amoled') r.setAttribute('data-theme', 'dark'); else r.removeAttribute('data-theme');
+  if (m === 'amoled') r.setAttribute('data-amoled', ''); else r.removeAttribute('data-amoled');
+  const tc = document.querySelector('meta[name="theme-color"]'); if (tc) tc.setAttribute('content', m === 'amoled' ? '#000000' : m === 'dark' ? '#171A1F' : '#1E5BFF');
+}
+let LAST_TAB = null;
 function shell() {
   // Order: Leads | Quotes Pricing Recipes Vendors Editor | Projects Purchase Orders
   const pc = state.pendingCounts || {};
@@ -199,7 +209,7 @@ function shell() {
     : (t === 'timeline' && pc.timeline) ? `<span class="navdot" title="Month-end actuals to confirm">${pc.timeline}</span>` : '';
   const all = [['marketing', 'Marketing'], ['leads', 'Leads'], ['costing', 'Costing'], ['timeline', 'Timeline'], ['quotes', 'Quotes'], ['pricing', 'Pricing'], ['materials', 'Costs'],
                ['recipes', 'Recipes'], ['vendors', 'Vendors'], ['editor', 'Editor'],
-               ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders']];
+               ['jobs', 'Projects'], ['selections', 'Selections'], ['po', 'Purchase Orders'], ['inventory', 'Inventory']];
   // Admin sees everything. Everyone else works the delivery side of the business:
   // Leads, Quotes, Costs, Projects, Selections and Purchase Orders — but not the
   // rate card, the recipes or the vendor terms, and no money in the delivery tabs.
@@ -212,7 +222,7 @@ function shell() {
       <div class="nav">${tabs.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}" style="position:relative;">${t[1]}${badge(t[0])}</button>`).join('')}</div>
       <div class="spacer"></div>
       <span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}</span>
-      <button class="theme" id="themeBtn" title="Night mode — your choice on this device, separate from the phone's setting"><span id="themeLbl">Night</span> <span class="dot"></span></button>
+      <div class="themeseg" id="themeSeg" role="group" aria-label="Appearance — your choice on this device, separate from the phone's setting"><i class="thumb" aria-hidden="true"></i><button data-m="light" title="Light">Light</button><button data-m="dark" title="Dark — dark grey, best on LCD screens">Dark</button><button data-m="amoled" title="AMOLED — true black, best on OLED screens">AMOLED</button></div>
       <button class="btn btn-ghost btn-sm" id="bell" title="Lead notifications on this device">🔔</button>
       <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
     </div>
@@ -224,12 +234,17 @@ function shell() {
     route();
   }));
   $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
-  // Night mode: explicit per-device choice (never the phone's system setting).
-  const themeBtn = $('#themeBtn');
-  const applyTheme = m => { if (m === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme'); $('#themeLbl').textContent = m === 'dark' ? 'Day' : 'Night'; };
-  let savedTheme = null; try { savedTheme = localStorage.getItem('estate-theme'); } catch (e) {}
-  applyTheme(savedTheme);
-  themeBtn.addEventListener('click', () => { const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'; applyTheme(next); try { localStorage.setItem('estate-theme', next); } catch (e) {} });
+  // Appearance: Light, Dark (grey, LCD) or AMOLED (true black). An explicit per-device
+  // choice, never the phone's system setting. index.html applies it before first paint.
+  const themeSeg = $('#themeSeg');
+  const paintTheme = () => { const m = currentTheme(); themeSeg.dataset.m = m; themeSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.m === m ? 'true' : 'false')); };
+  applyTheme(currentTheme()); paintTheme();
+  themeSeg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    // A short cross-fade so the whole screen changes together instead of snapping.
+    const root = document.documentElement; root.classList.add('theming'); setTimeout(() => root.classList.remove('theming'), 420);
+    applyTheme(b.dataset.m); try { localStorage.setItem('estate-theme', b.dataset.m); } catch (e) {}
+    paintTheme();
+  }));
   ensureDrawer();
   // Notification bell: enable push on this device, or send a test once enabled.
   const bell = $('#bell');
@@ -272,6 +287,13 @@ function route() {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   const v = $('#view');
   v.classList.toggle('wide', state.tab === 'timeline');
+  // Moving to a different tab: what loads next rises into place. Only on a tab change —
+  // views repaint themselves constantly and must not re-animate every time they do.
+  if (LAST_TAB !== state.tab) {
+    LAST_TAB = state.tab; v.classList.remove('enter'); void v.offsetWidth; v.classList.add('enter');
+    clearTimeout(route._t); route._t = setTimeout(() => v.classList.remove('enter'), 1100);
+  }
+  if (typeof invBadge === 'function') invBadge();
   // Pending counts refresh at most once a minute. They were previously fetched on every
   // single render — two extra round-trips per click, which is what made the tool feel laggy.
   const PENDING_TTL = 60000;
@@ -298,6 +320,7 @@ function route() {
   if (state.tab === 'quotes') return state.quoteId ? quoteEditor(v) : quotesList(v);
   if (state.tab === 'jobs') return jobsTab(v);
   if (state.tab === 'po') return state.poId ? poEditor(v) : poList(v);
+  if (state.tab === 'inventory') return inventoryTab(v);
   if (state.tab === 'vendors') return vendorsTab(v);
   if (state.tab === 'materials') return materialsTab(v);
   if (state.tab === 'recipes') return recipesTab(v);

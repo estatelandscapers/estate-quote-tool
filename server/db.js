@@ -887,4 +887,42 @@ if (!settingGet2('seed_v12')) {
  settingSet2('seed_v12', '1');
 }
 
+// ---------------- v42: INVENTORY (equipment register, usage log, photos) ----------------
+// Photos are NOT stored here — inv_photos holds the OneDrive address and a fingerprint.
+// Usage logs and photo rows are append-only: no route updates or deletes them.
+db.exec(`
+CREATE TABLE IF NOT EXISTS inv_locations (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, archived INTEGER DEFAULT 0,
+  created_by TEXT, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS inv_people (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, active INTEGER DEFAULT 1,
+  created_by TEXT, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS inv_items (
+  id TEXT PRIMARY KEY, serial TEXT NOT NULL UNIQUE COLLATE NOCASE, description TEXT NOT NULL,
+  needs_service INTEGER DEFAULT 0, last_service_date TEXT, next_service_date TEXT, service_interval_months INTEGER,
+  location_id TEXT REFERENCES inv_locations(id), status TEXT DEFAULT 'in',
+  held_by TEXT REFERENCES inv_people(id), out_since TEXT, last_photo_id TEXT, notes TEXT,
+  archived_at TEXT, created_by TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS inv_photos (
+  id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES inv_items(id), log_id TEXT,
+  storage TEXT, od_item_id TEXT, od_path TEXT, web_url TEXT,
+  sha256 TEXT NOT NULL UNIQUE, bytes INTEGER, width INTEGER, height INTEGER,
+  taken_at TEXT, uploaded_by TEXT, uploaded_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS inv_logs (
+  id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES inv_items(id), type TEXT NOT NULL,
+  person_id TEXT, person_name TEXT, location_id TEXT, location_name TEXT,
+  notes TEXT, photo_id TEXT, service_date TEXT, next_service_date TEXT,
+  logged_by TEXT, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS inv_logs_item ON inv_logs(item_id, created_at);
+CREATE INDEX IF NOT EXISTS inv_photos_item ON inv_photos(item_id, uploaded_at);
+`);
+['Office', 'Northmead'].forEach(n => {
+  try { db.prepare('INSERT OR IGNORE INTO inv_locations (id,name,created_by) VALUES (?,?,?)').run(crypto.randomUUID(), n, 'system'); } catch (e) {}
+});
+
 module.exports = { db, settingGet, settingSet, settingGet2, settingSet2 };

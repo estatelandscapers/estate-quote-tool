@@ -17,10 +17,15 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/admin/styles.css">
+<script>
+// Apply the saved appearance before anything is drawn, so a dark screen never flashes white.
+try { var m = localStorage.getItem('estate-theme'); if (m === 'dark' || m === 'amoled') { document.documentElement.setAttribute('data-theme', 'dark'); if (m === 'amoled') document.documentElement.setAttribute('data-amoled', ''); } } catch (e) {}
+</script>
 </head>
 <body>
 <div id="app"><div class="loading">Loading…</div></div>
 <script src="/admin/app.js"></script>
+<script src="/admin/inventory.js"></script>
 <script>
 // Registers the service worker that makes the tool installable and keeps a copy of the
 // app shell for use with no signal. Network-first, so every deploy shows up immediately.

@@ -11,6 +11,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="/admin/icons/icon-192.png">
 <title>Estate Landscapers — Sign in</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script>try{var m=localStorage.getItem('estate-theme');if(m==='dark'||m==='amoled'){document.documentElement.setAttribute('data-theme','dark');if(m==='amoled')document.documentElement.setAttribute('data-amoled','');}}catch(e){}</script>
 <style>
 body{margin:0;font-family:"Montserrat",Arial,sans-serif;background:#F5F5F5;display:flex;align-items:center;justify-content:center;min-height:100vh;}
 .card{background:#fff;border:1px solid #E2E2E2;border-radius:16px;padding:34px 30px;width:360px;max-width:92vw;text-align:center;}
@@ -23,6 +24,20 @@ input{width:100%;box-sizing:border-box;border:1px solid #E2E2E2;border-radius:8p
 button{width:100%;background:#1E5BFF;color:#fff;border:none;border-radius:8px;padding:13px;font-family:inherit;font-weight:800;font-size:12px;letter-spacing:.5px;text-transform:uppercase;cursor:pointer;}
 .err{color:#C23B3B;font-size:12px;margin-top:10px;display:none;font-weight:600;}
 .tag{font-size:10px;color:#888;margin-top:16px;}
+/* Sign-in follows the appearance chosen inside the tool (Dark / AMOLED). */
+html[data-theme="dark"] body{background:#0E1013;color:#F2F3F5;}
+html[data-theme="dark"] .card{background:#171A1F;border-color:#2A2E36;}
+html[data-theme="dark"] input{background:#0E1013;border-color:#2A2E36;color:#F2F3F5;}
+html[data-theme="dark"] img{filter:brightness(1.6);}
+html[data-theme="dark"][data-amoled] body{background:#000;}
+html[data-theme="dark"][data-amoled] .card{background:#0B0B0D;border-color:#22252B;}
+html[data-theme="dark"][data-amoled] input{background:#000;border-color:#22252B;}
+.card{animation:rise .6s cubic-bezier(.2,.8,.2,1) both;}
+@keyframes rise{from{opacity:0;transform:translateY(14px) scale(.985);}to{opacity:1;transform:none;}}
+button{transition:transform .15s cubic-bezier(.2,.8,.2,1),background .2s;}button:active{transform:scale(.97);}
+input{transition:border-color .2s,box-shadow .2s;}input:focus{outline:none;border-color:#1E5BFF;box-shadow:0 0 0 3px rgba(30,91,255,.18);}
+.rem input:focus{box-shadow:none;}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 </style></head><body>
 <div class="card">
   <img src="/assets/logo-full.png" alt="Estate Landscapers">

@@ -64,6 +64,13 @@ async function gfetch(url, opts = {}) {
   return j;
 }
 
+// Same token and app registration, but hands back the raw Response — for file bytes
+// (inventory photos) where the body is an image, not JSON.
+async function graphRaw(url, opts = {}) {
+  const t = await token();
+  return fetch(url, { ...opts, headers: { Authorization: `Bearer ${t}`, ...(opts.headers || {}) } });
+}
+
 // One folder per enquiry: "Estate Enquiries/2026/ENQ-2026-0001 — Jane Smith — Kellyville"
 function folderNameFor(meta) {
   return `${meta.ref} — ${safeName(meta.name) || 'No name'} — ${safeName(meta.suburb) || 'No suburb'}`;
@@ -127,4 +134,4 @@ async function listFolder(meta) {
 }
 
 module.exports = { configured, ensureFolder, uploadUrlFor, folderPathFor, listFolder, selfTest, ROOT,
-  graphJson: gfetch, driveRoot: drive, encodePath: encPath };
+  graphJson: gfetch, graphRaw, safeName, driveRoot: drive, encodePath: encPath };

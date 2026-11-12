@@ -7,8 +7,8 @@
 //
 // /api/ is never cached at all. A cached quote total or lead list is worse than an error.
 
-const VERSION = 'estate-v41';
-const SHELL = ['/admin/', '/admin/index.html', '/admin/app.js', '/admin/styles.css',
+const VERSION = 'estate-v42';
+const SHELL = ['/admin/', '/admin/index.html', '/admin/app.js', '/admin/inventory.js', '/admin/styles.css',
   '/admin/login.html', '/admin/manifest.json', '/admin/icons/icon-192.png'];
 
 self.addEventListener('install', e => {

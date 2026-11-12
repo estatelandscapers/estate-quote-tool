@@ -51,6 +51,7 @@ app.use('/api/marketing', require('./routes/marketing'));
 app.use('/api/timeline', require('./routes/timeline'));            // works timeline (admin)          // Meta / Google Ads performance (admin)
 app.use('/api/public/marketing', require('./routes/publicMarketing')); // Google Ads script push + Meta webhooks (key-guarded)
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
+app.use('/api/inventory', require('./routes/inventory'));               // equipment register + photo-on-use log
 // Machine-to-machine API for the Site Management Tool (keyed, no session).
 app.use('/api/service', require('./routes/service'));
 console.log(process.env.SERVICE_API_KEY
