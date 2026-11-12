@@ -126,4 +126,17 @@ async function read(photo, size) {
   return out;
 }
 
-module.exports = { prepare, store, read, storageState, ROOT };
+// Remove a stored photo for good — only used when an admin permanently deletes an item.
+// A file that is already gone counts as removed.
+async function remove(photo) {
+  CACHE.delete(photo.id + ':t'); CACHE.delete(photo.id + ':f');
+  if (photo.storage === 'local') {
+    try { fs.unlinkSync(path.join(LOCAL_DIR, photo.od_path)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    return;
+  }
+  if (!photo.od_item_id) return;
+  const r = await od.graphRaw(`${od.driveRoot()}/items/${encodeURIComponent(photo.od_item_id)}`, { method: 'DELETE' });
+  if (!r.ok && r.status !== 404) throw new Error('OneDrive ' + r.status);
+}
+
+module.exports = { prepare, store, read, remove, storageState, ROOT };

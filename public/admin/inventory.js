@@ -2,11 +2,17 @@
 // Equipment register with check-out / check-in, a photo on every hand-over, and service
 // tracking. Loaded after app.js and built from the same pieces: .card, .btn, .tag, .seg,
 // .stat, .field, table.resp, .modal, the side drawer and toast().
-const INV = { data: null, q: '', loc: '', person: '', status: 'all', service: 'all', archived: false, checkedAt: 0 };
+const INV = { data: null, q: '', loc: '', person: '', status: 'all', service: 'all', flag: null, archived: false, checkedAt: 0 };
 const INV_FRESH_MS = 24 * 36e5;
 const jpost = (p, body, method) => api(p, { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 const invDate = d => { if (!d) return '—'; const [y, m, dd] = String(d).slice(0, 10).split('-'); return `${dd} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m - 1]} ${y}`; };
 const invThumb = (id, cls) => id ? `<img class="${cls || 'inv-th'}" loading="lazy" alt="" src="/api/inventory/photos/${id}?s=thumb" onerror="this.classList.add('broken')">` : `<span class="${cls || 'inv-th'} none" aria-hidden="true"></span>`;
+
+// "12 d", "3 mo", "1 y 4 mo" — how long, at a glance.
+const invAge = d => d == null ? '—' : d < 1 ? 'today' : d < 60 ? `${d} d` : d < 365 ? `${Math.floor(d / 30.4)} mo` : `${Math.floor(d / 365)} y${Math.floor((d % 365) / 30.4) ? ' ' + Math.floor((d % 365) / 30.4) + ' mo' : ''}`;
+const invNum = n => n == null ? '' : String(Math.round(n * 100) / 100);
+const invQtyCell = i => i.qty == null ? '<span class="muted">—</span>' : `<b>${invNum(i.qty)}</b>${i.low ? ` <span class="tag tag-superseded" title="At or below the minimum of ${invNum(i.minQty)}">Low${i.minQty != null ? ' · min ' + invNum(i.minQty) : ''}</span>` : ''}`;
+const invAgeCell = i => `${invAge(i.ageDays)}${i.status === 'out' ? '' : `<span class="inv-idle ${i.idle ? 'warn' : ''}" title="${i.lastUsedAt ? 'Since it was last checked out or in' : 'Never checked out since it was added'}">idle ${invAge(i.idleDays)}</span>`}`;
 
 function invServiceTag(i) {
   if (i.serviceStatus === 'na') return '<span class="muted">Not required</span>';
@@ -26,7 +32,9 @@ async function invBadge(force) {
   const s = await api('/inventory/summary').catch(() => null);
   const b = document.querySelector('.nav button[data-tab="inventory"]'); if (!b || !s) return;
   b.querySelectorAll('.navdot').forEach(d => d.remove());
-  if (s.overdue) b.insertAdjacentHTML('beforeend', `<span class="navdot red" title="${s.overdue} item(s) overdue for service">${s.overdue}</span>`);
+  // Red for a service that is overdue; otherwise the low-stock count in the usual gold.
+  if (s.overdue) b.insertAdjacentHTML('beforeend', `<span class="navdot red" title="${s.overdue} item(s) overdue for service${s.low ? ` · ${s.low} low on stock` : ''}">${s.overdue}</span>`);
+  else if (s.low) b.insertAdjacentHTML('beforeend', `<span class="navdot" title="${s.low} item(s) low on stock">${s.low}</span>`);
 }
 
 // ---------------- list ----------------
@@ -49,11 +57,14 @@ async function inventoryTab(v) {
       <div class="inv-actions">${isAdmin() ? '<button class="btn btn-ghost" id="invLists">Locations &amp; people</button>' : ''}<button class="btn btn-blue" id="invAdd">+ Add item</button></div></div>
       <div class="rule"></div>
       ${d.storage && !d.storage.ready ? `<div class="inv-banner err"><b>Photo storage is not connected.</b> ${esc(d.storage.hint || '')} Items can be added, but nothing can be checked out or in until it is.</div>` : ''}
-      <div class="grid4">
+      ${c.low ? `<div class="inv-banner warn"><b>${c.low} item${c.low === 1 ? ' is' : 's are'} low on stock.</b> ${esc(d.items.filter(i => i.low).slice(0, 4).map(i => `${i.description} (${invNum(i.qty)} left)`).join(' · '))}${c.low > 4 ? ` · +${c.low - 4} more` : ''} <a href="#" id="invLowLink">Show them</a></div>` : ''}
+      <div class="inv-tiles">
         ${tile('all', 'Items', c.total, 'in the register')}
         ${tile('out', 'Checked out', c.out, c.out ? 'with crew now' : 'everything is in')}
         ${tile('due', 'Service due', c.due, `within ${d.dueSoonDays} days`, c.due ? 'warn' : '')}
         ${tile('overdue', 'Service overdue', c.overdue, c.overdue ? 'needs booking' : 'nothing overdue', c.overdue ? 'bad' : '')}
+        ${tile('low', 'Low stock', c.low, c.low ? 'at or below minimum' : 'nothing running low', c.low ? 'bad' : '')}
+        ${tile('idle', 'Sitting idle', c.idle, `in store ${d.idleDays}+ days unused`, c.idle ? 'warn' : '')}
       </div></div>
     <div class="card">
       <div class="boardtools inv-tools">
@@ -74,7 +85,7 @@ async function inventoryTab(v) {
   $('#invLoc').addEventListener('change', e => { INV.loc = e.target.value; repaint(); });
   $('#invPerson').addEventListener('change', e => { INV.person = e.target.value; repaint(); });
   const seg = (id, key) => $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
-    INV[key] = b.dataset.v; INV.tile = null; $(id).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    INV[key] = b.dataset.v; INV.tile = null; INV.flag = null; $(id).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
     $$('.stat.tap', v).forEach(t => t.classList.remove('sel')); repaint();
   }));
   seg('#invStatus', 'status'); seg('#invService', 'service');
@@ -83,12 +94,14 @@ async function inventoryTab(v) {
     const go = () => {
       const k = t.dataset.tile; INV.tile = k;
       INV.status = k === 'out' ? 'out' : 'all'; INV.service = k === 'due' ? 'due' : k === 'overdue' ? 'overdue' : 'all';
+      INV.flag = k === 'low' || k === 'idle' ? k : null;
       if (k === 'all') { INV.q = ''; INV.loc = ''; INV.person = ''; }
       inventoryTab(v);
     };
     t.addEventListener('click', go); t.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
   });
   const sc = $('#invScan'); if (sc) sc.addEventListener('click', () => invScan(code => { INV.q = code; $('#invQ').value = code; repaint(); }));
+  const ll = $('#invLowLink'); if (ll) ll.addEventListener('click', e => { e.preventDefault(); const t = v.querySelector('[data-tile="low"]'); if (t) t.click(); });
   repaint();
   invBadge(true);
 }
@@ -101,6 +114,8 @@ function invFiltered() {
     if (INV.person && i.usedById !== INV.person) return false;
     if (INV.status !== 'all' && i.status !== INV.status) return false;
     if (INV.service !== 'all' && i.serviceStatus !== INV.service) return false;
+    if (INV.flag === 'low' && !i.low) return false;
+    if (INV.flag === 'idle' && !i.idle) return false;
     return true;
   });
 }
@@ -113,15 +128,17 @@ function invPaintList(v) {
   }
   if (!rows.length) {
     box.innerHTML = `<div class="inv-empty"><h2>Nothing matches</h2><div class="sub">No item fits these filters${INV.q ? ` or “${esc(INV.q)}”` : ''}.</div><button class="btn btn-ghost" id="invClear">Clear filters</button></div>`;
-    $('#invClear').addEventListener('click', () => { Object.assign(INV, { q: '', loc: '', person: '', status: 'all', service: 'all', tile: null }); inventoryTab(v); }); return;
+    $('#invClear').addEventListener('click', () => { Object.assign(INV, { q: '', loc: '', person: '', status: 'all', service: 'all', flag: null, tile: null }); inventoryTab(v); }); return;
   }
   box.innerHTML = `<div class="legend" style="margin:0 0 8px;">${rows.length} of ${all.length} item${all.length === 1 ? '' : 's'}</div>
-    <table class="resp inv-table"><thead><tr><th style="width:52px;"></th><th>Serial</th><th>Description</th><th>Location</th><th>Used by</th><th>Last service</th><th>Next service</th><th>Status</th><th></th></tr></thead><tbody>
+    <table class="resp inv-table"><thead><tr><th style="width:52px;"></th><th>Serial</th><th>Description</th><th>Location</th><th>Qty</th><th title="Time in the register, and how long it has sat unused in store">Age</th><th>Used by</th><th>Last service</th><th>Next service</th><th>Status</th><th></th></tr></thead><tbody>
     ${rows.map((i, n) => `<tr class="inv-row ${i.archived ? 'arch' : ''}" data-id="${i.id}" tabindex="0" style="--i:${Math.min(n, 14)}">
       <td class="inv-thcell">${invThumb(i.photoId)}</td>
       <td data-l="Serial"><b>${esc(i.serial)}</b></td>
       <td data-l="Description">${esc(i.description)}</td>
       <td data-l="Location">${esc(i.location || '—')}</td>
+      <td data-l="Qty">${invQtyCell(i)}</td>
+      <td data-l="Age" class="inv-agecell">${invAgeCell(i)}</td>
       <td data-l="Used by">${i.usedBy ? esc(i.usedBy) : '<span class="muted">—</span>'}</td>
       <td data-l="Last service">${i.lastServiceDate ? invDate(i.lastServiceDate) : '<span class="muted">—</span>'}</td>
       <td data-l="Next service">${i.needsService && i.nextServiceDate ? `${invDate(i.nextServiceDate)} ` : ''}${invServiceTag(i)}</td>
@@ -293,12 +310,19 @@ function invItemForm(item, v) {
       <div class="field"><label for="ii_iv">Service every</label><select id="ii_iv"><option value="">No fixed interval</option>${[1, 3, 6, 12, 24].map(m => `<option value="${m}" ${ed && item.serviceIntervalMonths === m ? 'selected' : ''}>${m === 12 ? '12 months' : m === 24 ? '2 years' : m + ' month' + (m > 1 ? 's' : '')}</option>`).join('')}</select></div>
       <div class="field" data-field="nextServiceDate"><label for="ii_next">Next service date</label><input id="ii_next" type="date" value="${esc(ed ? item.nextServiceDate || '' : '')}"></div>
     </div></div></div>
+    <label class="inv-switch" style="margin-top:12px;"><input type="checkbox" id="ii_trk" ${ed && item.qty != null ? 'checked' : ''}><span class="track"></span><span>Track quantity <span class="muted" style="font-weight:500;">— for things kept in numbers, like blades, fuel or PPE</span></span></label>
+    <div class="inv-collapse ${ed && item.qty != null ? 'open' : ''}" id="ii_trkbox"><div><div class="grid2" style="padding-top:12px;">
+      <div class="field" data-field="qty"><label for="ii_qty">Quantity on hand</label><input id="ii_qty" type="number" min="0" step="any" inputmode="decimal" value="${ed && item.qty != null ? invNum(item.qty) : ''}"></div>
+      <div class="field" data-field="minQty"><label for="ii_min">Minimum level <span class="optmark">low-stock alert</span></label><input id="ii_min" type="number" min="0" step="any" inputmode="decimal" value="${ed && item.minQty != null ? invNum(item.minQty) : ''}"><div class="hint">Flags as low when the quantity is at or below this.</div></div>
+    </div></div></div>
     <div class="field" style="margin-top:12px;"><label for="ii_notes">Notes <span class="optmark">optional</span></label><textarea id="ii_notes" rows="2" maxlength="2000">${esc(ed ? item.notes : '')}</textarea></div>
     <div class="inv-err" role="alert" hidden></div>
-    <div class="inv-foot">${ed && isAdmin() && !item.archived ? '<button class="btn btn-danger" id="ii_arch" style="margin-right:auto;">Archive</button>' : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-blue" id="ii_save">${ed ? 'Save changes' : 'Add item'}</button></div>`, { width: 600 });
+    <div class="inv-foot">${ed && isAdmin() && !item.archived ? '<span style="margin-right:auto;display:flex;gap:8px;"><button class="btn btn-danger" id="ii_arch">Archive</button><button class="btn btn-danger" id="ii_del">Delete…</button></span>' : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-blue" id="ii_save">${ed ? 'Save changes' : 'Add item'}</button></div>`, { width: 600 });
   invGrowSelect(sh, sh.q('#ii_loc'), 'location');
   const svc = sh.q('#ii_svc'), box = sh.q('#ii_svcbox');
   svc.addEventListener('change', () => box.classList.toggle('open', svc.checked));
+  const trk = sh.q('#ii_trk');
+  trk.addEventListener('change', () => { sh.q('#ii_trkbox').classList.toggle('open', trk.checked); if (trk.checked) setTimeout(() => sh.q('#ii_qty').focus(), 120); });
   // Next date follows last date + interval until someone types their own.
   let nextTouched = ed && !!item.nextServiceDate;
   const calc = () => {
@@ -322,7 +346,9 @@ function invItemForm(item, v) {
   const save = sh.q('#ii_save');
   save.addEventListener('click', async () => {
     const body = { serial: sInp.value, description: sh.q('#ii_desc').value, locationId: sh.q('#ii_loc').value === '__new' ? '' : sh.q('#ii_loc').value,
-      needsService: svc.checked, lastServiceDate: sh.q('#ii_last').value, nextServiceDate: sh.q('#ii_next').value, serviceIntervalMonths: sh.q('#ii_iv').value, notes: sh.q('#ii_notes').value };
+      needsService: svc.checked, lastServiceDate: sh.q('#ii_last').value, nextServiceDate: sh.q('#ii_next').value, serviceIntervalMonths: sh.q('#ii_iv').value, notes: sh.q('#ii_notes').value,
+      trackQty: trk.checked, qty: sh.q('#ii_qty').value, minQty: sh.q('#ii_min').value };
+    if (body.trackQty && (body.qty === '' || +body.qty < 0)) return sh.error('Enter how many are on hand (0 or more).', 'qty');
     if (!body.serial.trim()) return sh.error('Enter the serial number.', 'serial');
     if (!body.description.trim()) return sh.error('Give the item a description.', 'description');
     if (!body.locationId) return sh.error('Choose where the item is kept.', 'locationId');
@@ -338,6 +364,31 @@ function invItemForm(item, v) {
     const r = await api('/inventory/items/' + item.id, { method: 'DELETE' });
     if (r.error) return sh.error(r.error);
     sh.close(); closeDrawer(); toast(`${item.serial} archived`); invAfterChange(null, v);
+  });
+  const dl = sh.q('#ii_del'); if (dl) dl.addEventListener('click', () => invDeleteDialog(item, v, () => sh.close()));
+}
+
+// ---------------- permanent delete (admin) ----------------
+// Archive keeps everything; this removes the item, its history and its photos for good.
+// The serial has to be typed, so it cannot happen by a slip of the thumb.
+function invDeleteDialog(item, v, after) {
+  const sh = invSheet(`
+    <h2 style="margin:0 0 3px;">Delete ${esc(item.serial)} for good?</h2><div class="sub">${esc(item.description)}</div><div class="rule"></div>
+    <div class="inv-banner err" style="margin-bottom:12px;"><b>This cannot be undone.</b> The item, every check-out, check-in and service entry, and all of its photos (in OneDrive as well) are removed. To take it off the register but keep its record, use Archive.</div>
+    <div class="field" data-field="confirm"><label for="idl_c">Type the serial number to confirm</label><input id="idl_c" autocomplete="off" autocapitalize="characters" placeholder="${esc(item.serial)}"></div>
+    <div class="inv-err" role="alert" hidden></div>
+    <div class="inv-foot"><button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-danger" id="idl_go" disabled>Delete for good</button></div>`, { width: 460 });
+  const inp = sh.q('#idl_c'), go = sh.q('#idl_go');
+  const match = () => inp.value.trim().replace(/\s+/g, ' ').toUpperCase() === item.serial.toUpperCase();
+  inp.addEventListener('input', () => { go.disabled = !match(); });
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter' && match()) go.click(); });
+  go.addEventListener('click', async () => {
+    go.disabled = true; sh.lock(true); go.innerHTML = '<span class="spin" style="border-color:color-mix(in srgb,var(--red) 35%,transparent);border-top-color:var(--red);"></span> Deleting…';
+    const r = await jpost(`/inventory/items/${item.id}/purge`, { confirm: inp.value }).catch(() => ({ error: 'No connection. Nothing was deleted.' }));
+    sh.lock(false);
+    if (r.error) { go.textContent = 'Delete for good'; go.disabled = !match(); return sh.error(r.error, r.field); }
+    sh.close(); if (after) after(); closeDrawer();
+    toast(`${item.serial} deleted${r.photos ? ` · ${r.photos} photo${r.photos === 1 ? '' : 's'} removed` : ''}`); invAfterChange(null, v);
   });
 }
 
@@ -380,7 +431,7 @@ async function invOpen(id, v) {
     <div class="muted" style="font-size:12.5px;margin:3px 0 10px;">${esc(i.description)}</div>
     <div class="inv-tags">${invStatusTag(i)} ${i.needsService ? invServiceTag(i) : ''}</div>
     <div class="inv-cta">
-      ${i.archived ? (isAdmin() ? '<button class="btn btn-blue" id="idRestore">Restore item</button>' : '')
+      ${i.archived ? (isAdmin() ? '<button class="btn btn-blue" id="idRestore">Restore item</button><button class="btn btn-danger" id="idDel">Delete…</button>' : '')
         : `${i.status === 'out' ? '<button class="btn btn-blue" id="idUse">Check in</button>' : '<button class="btn btn-blue" id="idUse">Check out</button>'}
            <button class="btn btn-ghost" id="idSvc">Log service</button><button class="btn btn-ghost" id="idEdit">Edit</button>`}
     </div>
@@ -389,6 +440,10 @@ async function invOpen(id, v) {
       ${kv('Item location', esc(i.location || '—'))}
       ${kv('Last service', i.lastServiceDate ? invDate(i.lastServiceDate) : '—')}
       ${kv('Next service', i.needsService ? (i.nextServiceDate ? invDate(i.nextServiceDate) : 'Not set') : 'Not required')}
+      ${kv('In the register', `${invAge(i.ageDays)} <span class="muted" style="font-weight:500;">· added ${esc(invDate(i.createdAt))}</span>`)}
+      ${kv(i.status === 'out' ? 'Out for' : 'Sitting idle', i.status === 'out' ? invAge(Math.max(0, Math.floor((Date.now() - new Date(String(i.outSince).replace(' ', 'T') + 'Z')) / 864e5))) : `${invAge(i.idleDays)} <span class="muted" style="font-weight:500;">· ${i.lastUsedAt ? 'last used ' + esc(invDate(i.lastUsedAt)) : 'never checked out'}</span>`)}
+      ${i.qty != null ? kv('Quantity on hand', `<span class="inv-qty"><button class="btn btn-ghost btn-sm" id="idQm" aria-label="One fewer" ${i.archived || i.qty <= 0 ? 'disabled' : ''}>−</button><b id="idQv">${invNum(i.qty)}</b><button class="btn btn-ghost btn-sm" id="idQp" aria-label="One more" ${i.archived ? 'disabled' : ''}>+</button></span>${i.low ? ' <span class="tag tag-superseded">Low</span>' : ''}`) : ''}
+      ${i.qty != null ? kv('Minimum level', i.minQty != null ? invNum(i.minQty) : '<span class="muted">Not set — no alert</span>') : ''}
     </div>
     ${i.status === 'out' && i.outSince ? `<div class="muted" style="font-size:11.5px;margin-top:8px;">Out since ${esc(sydTime(i.outSince))}</div>` : ''}
     ${i.notes ? `<div class="read" style="white-space:pre-wrap;">${esc(i.notes)}</div>` : ''}
@@ -403,6 +458,10 @@ async function invOpen(id, v) {
   const u = $('#idUse'); if (u) u.addEventListener('click', () => invUseForm(i, i.status === 'out' ? 'checkin' : 'checkout', v));
   const s = $('#idSvc'); if (s) s.addEventListener('click', () => invServiceForm(i, v));
   const e = $('#idEdit'); if (e) e.addEventListener('click', () => invItemForm(i, v));
+  const dd = $('#idDel'); if (dd) dd.addEventListener('click', () => invDeleteDialog(i, v));
+  const bump = async n => { const x = await jpost(`/inventory/items/${i.id}/qty`, { qty: Math.max(0, (i.qty || 0) + n) }, 'PUT').catch(() => ({ error: 'No connection. Nothing was saved.' })); if (x.error) return toast(x.error); if (x.low && !i.low) toast(`${i.serial} is now low on stock`); invAfterChange(i.id, v); };
+  const qm = $('#idQm'); if (qm) qm.addEventListener('click', () => bump(-1));
+  const qp = $('#idQp'); if (qp) qp.addEventListener('click', () => bump(1));
   const rs = $('#idRestore'); if (rs) rs.addEventListener('click', async () => { const x = await jpost(`/inventory/items/${i.id}/restore`); if (x.error) return toast(x.error); toast(`${i.serial} restored`); invAfterChange(i.id, v); });
   $$('#drawerBody .inv-gallery .ph').forEach(b => b.addEventListener('click', () => invLightbox(r.photos, +b.dataset.n, i)));
 }

@@ -10,8 +10,9 @@
 // The usage entry is written only after the photo is confirmed stored in OneDrive.
 //
 // Who can do what: any signed-in office login can add and edit items and log usage or
-// service. Only admin can archive, restore, change a serial number, or rename/retire
-// locations and people. Usage entries and photos can't be edited or removed by anyone.
+// service. Only admin can archive, restore, permanently delete, change a serial number, or
+// rename/retire locations and people. Usage entries and photos can't be edited by anyone;
+// they are only ever removed together with their item, by an admin's permanent delete.
 const express = require('express');
 const { db } = require('../db');
 const { newId } = require('../utils/ids');
@@ -21,6 +22,7 @@ const router = express.Router();
 
 const DUE_SOON_DAYS = 14;
 const FRESH_HOURS = 24;
+const IDLE_DAYS = 60;     // in store and untouched this long = "sitting idle"
 
 const isAdmin = req => req.user && req.user.role === 'admin';
 const who = req => (req.user && (req.user.name || req.user.username)) || 'unknown';
@@ -53,11 +55,21 @@ function serviceStatus(r, t = today()) {
 }
 function daysBetween(a, b) { return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 864e5); }
 
-const ITEM_SQL = `SELECT i.*, l.name AS location_name, p.name AS held_by_name
+const ITEM_SQL = `SELECT i.*, l.name AS location_name, p.name AS held_by_name,
+  (SELECT MAX(g.created_at) FROM inv_logs g WHERE g.item_id=i.id AND g.type IN ('checkout','checkin')) AS last_used_at
   FROM inv_items i LEFT JOIN inv_locations l ON l.id=i.location_id LEFT JOIN inv_people p ON p.id=i.held_by`;
+// Whole days since a stored UTC timestamp ("2026-11-12 03:04:05").
+const daysSince = ts => ts ? Math.max(0, Math.floor((Date.now() - new Date(String(ts).replace(' ', 'T') + 'Z').getTime()) / 864e5)) : null;
+const isLow = r => r.qty != null && r.min_qty != null && r.qty <= r.min_qty;
 function shape(r, t = today()) {
   const st = serviceStatus(r, t);
+  // Age = time in the register. Idle = time in store since it last changed hands (or since
+  // it was added, if it never has). An item that is out is in use, so it is not idle.
+  const idleDays = r.status === 'out' ? null : daysSince(r.last_used_at || r.created_at);
   return {
+    qty: r.qty == null ? null : r.qty, minQty: r.min_qty == null ? null : r.min_qty, low: !r.archived_at && isLow(r),
+    ageDays: daysSince(r.created_at), lastUsedAt: r.last_used_at || null, idleDays,
+    idle: !r.archived_at && idleDays != null && idleDays >= IDLE_DAYS,
     id: r.id, serial: r.serial, description: r.description, notes: r.notes || '',
     status: r.status === 'out' ? 'out' : 'in',
     usedById: r.held_by || null, usedBy: r.held_by_name || null, outSince: r.out_since || null,
@@ -91,16 +103,17 @@ router.get('/', (req, res) => {
   const live = items.filter(i => !i.archived);
   res.json({
     items, locations: locations(), people: people(), today: t, suggestedSerial: suggestSerial(),
-    storage: photos.storageState(), dueSoonDays: DUE_SOON_DAYS,
+    storage: photos.storageState(), dueSoonDays: DUE_SOON_DAYS, idleDays: IDLE_DAYS,
     counts: { total: live.length, out: live.filter(i => i.status === 'out').length,
+      low: live.filter(i => i.low).length, idle: live.filter(i => i.idle).length,
       due: live.filter(i => i.serviceStatus === 'due').length, overdue: live.filter(i => i.serviceStatus === 'overdue').length },
   });
 });
 // Just the number for the nav badge.
 router.get('/summary', (req, res) => {
   const t = today();
-  const rows = db.prepare('SELECT needs_service, next_service_date FROM inv_items WHERE archived_at IS NULL').all();
-  res.json({ overdue: rows.filter(r => serviceStatus(r, t) === 'overdue').length, due: rows.filter(r => serviceStatus(r, t) === 'due').length });
+  const rows = db.prepare('SELECT needs_service, next_service_date, qty, min_qty FROM inv_items WHERE archived_at IS NULL').all();
+  res.json({ low: rows.filter(isLow).length, overdue: rows.filter(r => serviceStatus(r, t) === 'overdue').length, due: rows.filter(r => serviceStatus(r, t) === 'due').length });
 });
 
 // ---- items ------------------------------------------------------------------------
@@ -122,6 +135,14 @@ function readItemBody(b, existing) {
     if (!out.next_service_date) return { error: 'This item needs servicing, so it needs a next service date (or a last service date and an interval).', field: 'nextServiceDate' };
     if (!isYmd(out.next_service_date)) return { error: 'Next service date is not a valid date.', field: 'nextServiceDate' };
     if (out.last_service_date && out.next_service_date <= out.last_service_date) return { error: 'Next service date must be after the last service date.', field: 'nextServiceDate' };
+  }
+  // Stock level, only for items kept in numbers. Off = not counted, never "low".
+  out.qty = null; out.min_qty = null;
+  if (b.trackQty) {
+    const q = Number(b.qty), m = b.minQty === '' || b.minQty == null ? null : Number(b.minQty);
+    if (b.qty === '' || b.qty == null || !isFinite(q) || q < 0 || q > 1e6) return { error: 'Enter how many are on hand (0 or more).', field: 'qty' };
+    if (m != null && (!isFinite(m) || m < 0 || m > 1e6)) return { error: 'The minimum level must be 0 or more.', field: 'minQty' };
+    out.qty = q; out.min_qty = m;
   }
   out.notes = String(b.notes || '').trim().slice(0, 2000);
   out.location_id = b.locationId || (existing && existing.location_id) || null;
@@ -146,8 +167,8 @@ router.post('/items', (req, res) => {
   const clash = serialClash(serial); if (clash) return bad(res, clash, 409, { field: 'serial' });
   const r = readItemBody(b); if (r.error) return bad(res, r.error, 400, { field: r.field });
   const id = newId(), v = r.v;
-  db.prepare(`INSERT INTO inv_items (id,serial,description,needs_service,last_service_date,next_service_date,service_interval_months,location_id,notes,created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(id, serial, v.description, v.needs_service, v.last_service_date, v.next_service_date, v.service_interval_months, v.location_id, v.notes, who(req));
+  db.prepare(`INSERT INTO inv_items (id,serial,description,needs_service,last_service_date,next_service_date,service_interval_months,location_id,notes,created_by,qty,min_qty)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, serial, v.description, v.needs_service, v.last_service_date, v.next_service_date, v.service_interval_months, v.location_id, v.notes, who(req), v.qty, v.min_qty);
   audit(req, id, 'item_created', `${serial} — ${v.description}`);
   res.json(shape(getItem(id)));
 });
@@ -183,19 +204,60 @@ router.put('/items/:id', (req, res) => {
   // from the edit form would change the record without the proof.
   if (it.status === 'out' && v.location_id !== it.location_id) return bad(res, 'This item is checked out. Check it in to change its location.', 409, { field: 'locationId' });
   db.prepare(`UPDATE inv_items SET serial=?, description=?, needs_service=?, last_service_date=?, next_service_date=?, service_interval_months=?,
-    location_id=?, notes=?, updated_at=datetime('now') WHERE id=?`).run(serial, v.description, v.needs_service, v.last_service_date, v.next_service_date, v.service_interval_months, v.location_id, v.notes, it.id);
+    location_id=?, notes=?, qty=?, min_qty=?, updated_at=datetime('now') WHERE id=?`).run(serial, v.description, v.needs_service, v.last_service_date, v.next_service_date, v.service_interval_months, v.location_id, v.notes, v.qty, v.min_qty, it.id);
   const ch = [];
   if (serial !== it.serial) ch.push(`serial ${it.serial} → ${serial}`);
   if (v.description !== it.description) ch.push('description');
   if (v.location_id !== it.location_id) ch.push('location');
   if ((v.next_service_date || '') !== (it.next_service_date || '')) ch.push(`next service ${it.next_service_date || '—'} → ${v.next_service_date || '—'}`);
   if ((v.last_service_date || '') !== (it.last_service_date || '')) ch.push(`last service ${it.last_service_date || '—'} → ${v.last_service_date || '—'}`);
+  if ((v.qty == null ? '' : v.qty) !== (it.qty == null ? '' : it.qty)) ch.push(`quantity ${it.qty == null ? '—' : it.qty} → ${v.qty == null ? 'not counted' : v.qty}`);
+  if ((v.min_qty == null ? '' : v.min_qty) !== (it.min_qty == null ? '' : it.min_qty)) ch.push(`minimum ${it.min_qty == null ? '—' : it.min_qty} → ${v.min_qty == null ? '—' : v.min_qty}`);
   if (!!v.needs_service !== !!it.needs_service) ch.push(v.needs_service ? 'servicing on' : 'servicing off');
   audit(req, it.id, 'item_edited', ch.join('; ') || 'notes');
   res.json(shape(getItem(it.id)));
 });
 
-// Archive, never delete: the usage history and its photos are the point of the register.
+// Quick stock count from the item window: set the number on hand. Any office login.
+router.put('/items/:id/qty', (req, res) => {
+  const it = getItem(req.params.id); if (!it) return bad(res, 'Item not found.', 404);
+  if (it.archived_at) return bad(res, 'This item is archived.', 409);
+  if (it.qty == null) return bad(res, 'This item is not counted. Turn on "Track quantity" in Edit first.', 409);
+  const q = Number((req.body || {}).qty);
+  if (!isFinite(q) || q < 0 || q > 1e6) return bad(res, 'Enter how many are on hand (0 or more).', 400, { field: 'qty' });
+  db.prepare("UPDATE inv_items SET qty=?, updated_at=datetime('now') WHERE id=?").run(q, it.id);
+  audit(req, it.id, 'qty_changed', `${it.serial}: ${it.qty} → ${q}`);
+  res.json(shape(getItem(it.id)));
+});
+
+// Permanent delete (admin): the item, its usage history and its photos, in OneDrive too.
+// There is no undo, so the serial has to be typed to confirm, and a checked-out item has to
+// come back first. Photos go first: if OneDrive cannot remove one, the item is kept so the
+// tool never loses track of a photo that still exists.
+router.post('/items/:id/purge', adminOnly, (req, res) => exclusive(req.params.id, res, async () => {
+  const it = getItem(req.params.id); if (!it) return bad(res, 'Item not found.', 404);
+  if (it.status === 'out') return bad(res, `This item is checked out to ${it.held_by_name || 'someone'}. Check it in before deleting.`, 409);
+  if (cleanSerial((req.body || {}).confirm) !== it.serial) return bad(res, `Type the serial number ${it.serial} exactly to confirm.`, 400, { field: 'confirm' });
+  const ph = db.prepare('SELECT * FROM inv_photos WHERE item_id=?').all(it.id);
+  let removed = 0;
+  for (const p of ph) {
+    try { await photos.remove(p); } catch (e) {
+      console.error('[inventory] purge photo', p.id, e.message);
+      return bad(res, `${removed} of ${ph.length} photos were removed, then the photo store stopped responding. The item has been kept. Try again in a minute.`, 502);
+    }
+    db.prepare('UPDATE inv_items SET last_photo_id=NULL WHERE id=? AND last_photo_id=?').run(it.id, p.id);
+    db.prepare('DELETE FROM inv_photos WHERE id=?').run(p.id); removed++;
+  }
+  const logs = db.prepare('SELECT COUNT(*) n FROM inv_logs WHERE item_id=?').get(it.id).n;
+  tx(() => {
+    db.prepare('DELETE FROM inv_logs WHERE item_id=?').run(it.id);
+    db.prepare('DELETE FROM inv_items WHERE id=?').run(it.id);
+  });
+  audit(req, it.id, 'item_deleted', `${it.serial} — ${it.description} · ${logs} history entr${logs === 1 ? 'y' : 'ies'}, ${removed} photo${removed === 1 ? '' : 's'} removed`);
+  res.json({ ok: true, photos: removed, logs });
+}));
+
+// Archive keeps everything: the item leaves the register but its history and photos stay.
 router.delete('/items/:id', adminOnly, (req, res) => {
   const it = getItem(req.params.id); if (!it) return bad(res, 'Item not found.', 404);
   if (it.status === 'out') return bad(res, `This item is checked out to ${it.held_by_name || 'someone'}. Check it in before archiving.`, 409);
