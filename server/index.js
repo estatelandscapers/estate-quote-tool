@@ -48,6 +48,7 @@ app.use('/api/public/estimate', require('./routes/publicEstimate')); // website 
 app.use('/api/public', require('./routes/publicEnquiry')); // website enquiry form
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/marketing', require('./routes/marketing'));
+app.use('/api/search', require('./routes/search'));                 // universal search (read-only)
 app.use('/api/timeline', require('./routes/timeline'));            // works timeline (admin)          // Meta / Google Ads performance (admin)
 app.use('/api/public/marketing', require('./routes/publicMarketing')); // Google Ads script push + Meta webhooks (key-guarded)
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);

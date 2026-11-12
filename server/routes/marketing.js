@@ -56,6 +56,15 @@ router.post('/meta/leadads/setup', adminOnly, async (req, res) => {
   try { res.json(await M.setupLeadAds(baseOf(req) + '/api/public/marketing/meta/webhook', { appSecret: (req.body || {}).appSecret })); }
   catch (e) { console.error('[marketing] lead ads setup', e); res.status(500).json({ ok: false, steps: [{ ok: false, title: 'Setup failed', detail: e.message }] }); }
 });
+// Refresh button on the Campaigns card: fetch the latest from Meta now, for anyone who can
+// see the Marketing tab. Google cannot be pulled — its Ads script pushes on its own schedule —
+// so the reply just says when each platform last reported.
+router.post('/refresh', async (req, res) => {
+  let meta = null;
+  try { const c = M.connection('meta'); if (c && c.secret && c.account_id && c.status !== 'disconnected') meta = await M.pullMeta(3); } catch (e) { meta = { ok: false, error: e.message }; }
+  const g = (() => { try { return M.connection('google'); } catch (e) { return null; } })();
+  res.json({ meta, googleLast: g ? (g.last_push_at || g.last_pull_at || null) : null });
+});
 router.post('/meta/pull', adminOnly, async (req, res) => res.json(await M.pullMeta(parseInt((req.body || {}).days, 10) || 3)));
 router.post('/:platform/disconnect', adminOnly, (req, res) => {
   if (!M.PLATFORMS.includes(req.params.platform)) return res.status(404).json({ error: 'unknown platform' });

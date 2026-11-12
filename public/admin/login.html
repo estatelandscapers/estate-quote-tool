@@ -1,5 +1,5 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#1E5BFF">
+<meta name="theme-color" content="#F3F4F7">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -13,27 +13,27 @@
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script>try{var m=localStorage.getItem('estate-theme');if(m==='dark'||m==='amoled'){document.documentElement.setAttribute('data-theme','dark');if(m==='amoled')document.documentElement.setAttribute('data-amoled','');}}catch(e){}</script>
 <style>
-body{margin:0;font-family:"Montserrat",Arial,sans-serif;background:#F5F5F5;display:flex;align-items:center;justify-content:center;min-height:100vh;}
-.card{background:#fff;border:1px solid #E2E2E2;border-radius:16px;padding:34px 30px;width:360px;max-width:92vw;text-align:center;}
+body{margin:0;font-family:"Montserrat",Arial,sans-serif;background:#F3F4F7;display:flex;align-items:center;justify-content:center;min-height:100vh;}
+.card{background:#fff;border:1px solid #E4E6EC;border-radius:20px;box-shadow:0 24px 70px rgba(10,14,24,.10);padding:34px 30px;width:360px;max-width:92vw;text-align:center;}
 img{height:56px;margin-bottom:14px;}
 h1{font-size:12px;letter-spacing:1.4px;color:#888;text-transform:uppercase;font-weight:800;margin:0 0 20px;}
 label{display:block;text-align:left;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#888;margin:12px 0 4px;}
 input{width:100%;box-sizing:border-box;border:1px solid #E2E2E2;border-radius:8px;padding:11px;font-family:inherit;font-size:14px;}
 .rem{display:flex;align-items:center;gap:8px;font-size:12px;margin:14px 0;text-align:left;}
 .rem input{width:auto;}
-button{width:100%;background:#1E5BFF;color:#fff;border:none;border-radius:8px;padding:13px;font-family:inherit;font-weight:800;font-size:12px;letter-spacing:.5px;text-transform:uppercase;cursor:pointer;}
+button{width:100%;background:#2459F5;color:#fff;border:none;border-radius:11px;padding:13px;font-family:inherit;font-weight:700;font-size:13px;cursor:pointer;}
 .err{color:#C23B3B;font-size:12px;margin-top:10px;display:none;font-weight:600;}
 .tag{font-size:10px;color:#888;margin-top:16px;}
 /* Sign-in follows the appearance chosen inside the tool (Dark / AMOLED). */
-html[data-theme="dark"] body{background:#0E1013;color:#F2F3F5;}
-html[data-theme="dark"] .card{background:#171A1F;border-color:#2A2E36;}
+html[data-theme="dark"] body{background:#0D0F13;color:#F2F3F5;}
+html[data-theme="dark"] .card{background:#16191F;border-color:#262A33;box-shadow:0 24px 70px rgba(0,0,0,.5);}html[data-theme="dark"] button{background:#4F7DFF;}
 html[data-theme="dark"] input{background:#0E1013;border-color:#2A2E36;color:#F2F3F5;}
 html[data-theme="dark"] img{filter:brightness(1.6);}
 html[data-theme="dark"][data-amoled] body{background:#000;}
 html[data-theme="dark"][data-amoled] .card{background:#0B0B0D;border-color:#22252B;}
 html[data-theme="dark"][data-amoled] input{background:#000;border-color:#22252B;}
-.card{animation:rise .6s cubic-bezier(.2,.8,.2,1) both;}
-@keyframes rise{from{opacity:0;transform:translateY(14px) scale(.985);}to{opacity:1;transform:none;}}
+.card{animation:rise .5s cubic-bezier(.3,1.35,.6,1) both;}
+@keyframes rise{from{opacity:0;transform:scale(.9);}to{opacity:1;transform:none;}}
 button{transition:transform .15s cubic-bezier(.2,.8,.2,1),background .2s;}button:active{transform:scale(.97);}
 input{transition:border-color .2s,box-shadow .2s;}input:focus{outline:none;border-color:#1E5BFF;box-shadow:0 0 0 3px rgba(30,91,255,.18);}
 .rem input:focus{box-shadow:none;}
@@ -59,7 +59,7 @@ document.getElementById('f').addEventListener('submit', async function(ev){
     var r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({username:document.getElementById('u').value,password:document.getElementById('p').value,remember:document.getElementById('r').checked})});
     var j=await r.json();
-    if(j.ok){location.href='/admin';}
+    if(j.ok){try{sessionStorage.setItem('estate-welcome','1');}catch(x){}location.href='/admin';}
     else{e.textContent=j.error||'Sign-in failed';e.style.display='block';}
   }catch(err){e.textContent='Network error';e.style.display='block';}
 });

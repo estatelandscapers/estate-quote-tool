@@ -106,7 +106,9 @@ const isAdmin = () => USER && USER.role === 'admin';
 async function boot() {
   USER = await api('/auth/me');
   if (!USER || !USER.role) return; // redirected
+  const deep = /[?&](lead|tab)=/.test(location.search);   // a notification link goes straight in
   shell();
+  if (!deep && typeof osWelcome === 'function') osWelcome();
 }
 // ---- v21: side drawer, link signal, behaviour record ---------------------------------
 function ensureDrawer() {
@@ -198,7 +200,40 @@ function applyTheme(m) {
   // (data-theme="dark") still applies and only the palette underneath changes.
   if (m === 'dark' || m === 'amoled') r.setAttribute('data-theme', 'dark'); else r.removeAttribute('data-theme');
   if (m === 'amoled') r.setAttribute('data-amoled', ''); else r.removeAttribute('data-amoled');
-  const tc = document.querySelector('meta[name="theme-color"]'); if (tc) tc.setAttribute('content', m === 'amoled' ? '#000000' : m === 'dark' ? '#171A1F' : '#1E5BFF');
+  const tc = document.querySelector('meta[name="theme-color"]'); if (tc) tc.setAttribute('content', m === 'amoled' ? '#050506' : m === 'dark' ? '#111419' : '#FCFCFD');
+}
+// ---- v43 frame helpers ---------------------------------------------------------------
+const SETUP_TABS = ['pricing', 'recipes', 'vendors', 'editor'];      // gathered under Setup on the dock
+const MOBILE_TABS = ['marketing', 'leads', 'quotes', 'jobs'];        // the phone's bottom bar; the rest sit under More
+let NAV_TABS = [];
+const NAV_SHORT = { po: 'Orders' };                                  // dock label only; the page title keeps the full name
+const NAV_ICONS = {
+  marketing: '<path d="M4 19V10M10 19V5M16 19v-7M21 19H3"/>',
+  leads: '<circle cx="9" cy="8" r="3.500"/><path d="M2.500 20c.6-3.600 3.200-5.500 6.500-5.500s5.900 1.900 6.500 5.500M17 5.500a3 3 0 010 5.500M19 14.800c1.500.9 2.400 2.600 2.700 5.200"/>',
+  costing: '<circle cx="12" cy="12" r="9"/><path d="M14.800 9.300c-.5-1-1.600-1.500-2.800-1.500-1.600 0-2.900.8-2.900 2.100 0 2.900 5.900 1.400 5.900 4.200 0 1.300-1.300 2.100-3 2.100-1.300 0-2.500-.6-3.100-1.600M12 6v12"/>',
+  timeline: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M7 14h5M7 17.500h9"/>',
+  quotes: '<path d="M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6"/>',
+  materials: '<path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18.500" cy="17" r="1.500"/>',
+  jobs: '<path d="M3 20h18M5 20V9l7-5 7 5v11M10 20v-6h4v6"/>',
+  selections: '<path d="M4 6h10M4 12h16M4 18h8"/><circle cx="18" cy="6" r="2"/><circle cx="16" cy="18" r="2"/>',
+  po: '<path d="M3 5h3l2.500 11h10l2-8H7.500"/><circle cx="10" cy="19.500" r="1.300"/><circle cx="17" cy="19.500" r="1.300"/>',
+  inventory: '<path d="M3 8l9-5 9 5v8l-9 5-9-5zM3 8l9 5 9-5M12 13v8"/>',
+  pricing: '<path d="M20.500 13.500l-7 7a1.500 1.500 0 01-2.100 0L3 12V3h9l8.500 8.400a1.500 1.500 0 010 2.100z"/><circle cx="7.500" cy="7.500" r="1.300"/>',
+  recipes: '<path d="M6 3h11a2 2 0 012 2v16H8a2 2 0 01-2-2zM6 17h13M10 7h5M10 11h5"/>',
+  vendors: '<path d="M3 9l1.500-5h15L21 9M4 9v11h16V9M3 9h18M9 20v-6h6v6"/>',
+  editor: '<path d="M4 20h4L19 9l-4-4L4 16zM13.500 6.500l4 4"/>',
+  setup: '<circle cx="12" cy="12" r="3"/><path d="M12 2.500v3M12 18.500v3M2.500 12h3M18.500 12h3M5.300 5.300l2.100 2.100M16.600 16.600l2.100 2.100M18.700 5.300l-2.100 2.100M7.400 16.600l-2.100 2.100"/>',
+  more: '<rect x="4" y="4" width="6.500" height="6.500" rx="1.500"/><rect x="13.500" y="4" width="6.500" height="6.500" rx="1.500"/><rect x="4" y="13.500" width="6.500" height="6.500" rx="1.500"/><rect x="13.500" y="13.500" width="6.500" height="6.500" rx="1.500"/>'
+};
+const navIcon = k => `<svg class="nico" viewBox="0 0 24 24" aria-hidden="true">${NAV_ICONS[k] || NAV_ICONS.more}</svg>`;
+// Keeps the top-bar title, the phone's bottom bar and the Setup button in step with the tab.
+function paintFrame() {
+  const t = NAV_TABS.find(x => x[0] === state.tab);
+  const pt = document.querySelector('#pageTitle'); if (pt) pt.textContent = t ? t[1] : '';
+  let hit = false;
+  document.querySelectorAll('.tabbar button[data-tab]').forEach(b => { const on = b.dataset.tab === state.tab; if (on) hit = true; b.classList.toggle('on', on); });
+  const more = document.querySelector('#moreBtn'); if (more) more.classList.toggle('on', !hit);
+  const sb = document.querySelector('#setupBtn'); if (sb) sb.classList.toggle('on', SETUP_TABS.includes(state.tab));
 }
 let LAST_TAB = null;
 function shell() {
@@ -216,23 +251,62 @@ function shell() {
   const adminOnlyTabs = ADMIN_TABS;
   const tabs = all.filter(t => isAdmin() || !adminOnlyTabs.includes(t[0]));
   if (!tabs.find(t => t[0] === state.tab)) state.tab = 'leads';
+  // v43 frame: a dock down the left (a bottom bar plus a launcher on phones), a thin top bar
+  // with the search box and the account menu, and the content edge to edge. The tabs, what
+  // they open and who may see them are exactly as before.
+  NAV_TABS = tabs;
+  const btn = t => `<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}" title="${t[1]}">${navIcon(t[0])}<span class="lbl">${NAV_SHORT[t[0]] || t[1]}</span>${badge(t[0])}</button>`;
+  const main = tabs.filter(t => !SETUP_TABS.includes(t[0])), setup = tabs.filter(t => SETUP_TABS.includes(t[0]));
+  const pri = MOBILE_TABS.map(k => tabs.find(t => t[0] === k)).filter(Boolean);
+  const initials = String(USER.name || '?').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
   $('#app').innerHTML = `
+    <aside class="dock" id="dock">
+      <div class="dockbrand" title="Estate Landscapers — Business Management Tool">${LOGO}</div>
+      <div class="launchhead"><b>All sections</b><button class="x" id="launchX" aria-label="Close">×</button></div>
+      <nav class="nav" id="nav" aria-label="Sections">
+        ${main.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}${btn(t)}`).join('')}
+        ${setup.length ? `<span class="navgrow"></span><div class="navgrp" id="setupGrp"><button type="button" class="grpbtn" id="setupBtn" title="Setup — pricing, recipes, vendors, editor" aria-haspopup="true">${navIcon('setup')}<span class="lbl">Setup</span></button><div class="grppop" id="setupPop"><div class="grptitle">Setup</div>${setup.map(btn).join('')}</div></div>` : ''}
+      </nav>
+    </aside>
     <div class="top">
-      <div class="brand">${LOGO}<div><b>ESTATE LANDSCAPERS</b><span>Business Management Tool</span></div></div>
-      <div class="nav">${tabs.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}<button data-tab="${t[0]}" class="${state.tab === t[0] ? 'on' : ''}" style="position:relative;">${t[1]}${badge(t[0])}</button>`).join('')}</div>
-      <div class="spacer"></div>
-      <span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}</span>
-      <div class="themeseg" id="themeSeg" role="group" aria-label="Appearance — your choice on this device, separate from the phone's setting"><i class="thumb" aria-hidden="true"></i><button data-m="light" title="Light">Light</button><button data-m="dark" title="Dark — dark grey, best on LCD screens">Dark</button><button data-m="amoled" title="AMOLED — true black, best on OLED screens">AMOLED</button></div>
-      <button class="btn btn-ghost btn-sm" id="bell" title="Lead notifications on this device">🔔</button>
-      <button class="btn btn-ghost btn-sm" id="signout">Sign out</button>
+      <div class="brand">${LOGO}<div><b id="pageTitle"></b><span>Estate Landscapers</span></div></div>
+      <button type="button" class="osearch" id="osSearch" title="Search everything (Ctrl K)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.500-3.500"/></svg><span>Search leads, quotes, projects, orders, stock…</span><kbd>Ctrl K</kbd></button>
+      <div class="acct">
+        <button type="button" class="avatar" id="acctBtn" title="${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}" aria-haspopup="true">${esc(initials)}</button>
+        <div class="acctpop" id="acctPop">
+          <div class="who"><b>${esc(USER.name)}</b><span class="tag ${isAdmin() ? 'tag-accepted' : 'tag-draft'}">${isAdmin() ? 'Admin' : 'Estimator'}</span></div>
+          <div class="acctrow"><span>Appearance</span><div class="themeseg" id="themeSeg" role="group" aria-label="Appearance — your choice on this device, separate from the phone's setting"><i class="thumb" aria-hidden="true"></i><button data-m="light" title="Light">Light</button><button data-m="dark" title="Dark — dark grey, best on LCD screens">Dark</button><button data-m="amoled" title="AMOLED — true black, best on OLED screens">AMOLED</button></div></div>
+          <div class="acctrow"><span>Lead notifications</span><button class="btn btn-ghost btn-sm" id="bell" title="Lead notifications on this device">🔔</button></div>
+          <div class="acctrow"><span></span><button class="btn btn-ghost btn-sm" id="signout">Sign out</button></div>
+        </div>
+      </div>
     </div>
-    <div class="wrap" id="view"></div>`;
-  document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => {
-    state.tab = b.dataset.tab; state.quoteId = null; state.poId = null; state.selQuoteId = null;
-    // Leads from the top bar is always the Summary — never the lead or sub-view you left.
-    if (b.dataset.tab === 'leads') { state.leadId = null; state.leadFull = false; state.leadsSub = 'summary'; state.leadPhase = null; closeLeadDrawer(); }
+    <div class="wrap" id="view"></div>
+    <nav class="tabbar" id="tabbar" aria-label="Sections">${pri.map(t => `<button data-tab="${t[0]}">${navIcon(t[0])}<span>${t[1]}</span></button>`).join('')}<button type="button" id="moreBtn">${navIcon('more')}<span>More</span></button></nav>`;
+  const goTab = t => {
+    state.tab = t; state.quoteId = null; state.poId = null; state.selQuoteId = null;
+    // Leads from the bar is always the Summary — never the lead or sub-view you left.
+    if (t === 'leads') { state.leadId = null; state.leadFull = false; state.leadsSub = 'summary'; state.leadPhase = null; closeLeadDrawer(); }
+    document.body.classList.remove('launch'); const sp = $('#setupGrp'); if (sp) sp.classList.remove('open');
+    window.scrollTo(0, 0);
     route();
-  }));
+  };
+  document.querySelectorAll('.nav button[data-tab], .tabbar button[data-tab]').forEach(b => b.addEventListener('click', () => goTab(b.dataset.tab)));
+  if ($('#setupBtn')) $('#setupBtn').addEventListener('click', e => { e.stopPropagation(); $('#setupGrp').classList.toggle('open'); $('.acct').classList.remove('open'); });
+  $('#moreBtn').addEventListener('click', () => document.body.classList.toggle('launch'));
+  $('#launchX').addEventListener('click', () => document.body.classList.remove('launch'));
+  $('#acctBtn').addEventListener('click', e => { e.stopPropagation(); $('.acct').classList.toggle('open'); const g = $('#setupGrp'); if (g) g.classList.remove('open'); });
+  $('#osSearch').addEventListener('click', () => { if (typeof osSearch === 'function') osSearch(); });
+  if (!shell._once) {
+    shell._once = true;
+    // Clicking anywhere else closes the Setup and account pop-outs.
+    document.addEventListener('click', e => {
+      const a = document.querySelector('.acct'); if (a && !a.contains(e.target)) a.classList.remove('open');
+      const g = document.querySelector('#setupGrp'); if (g && !g.contains(e.target)) g.classList.remove('open');
+      if (document.body.classList.contains('launch') && !e.target.closest('#dock') && !e.target.closest('#moreBtn')) document.body.classList.remove('launch');
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.body.classList.remove('launch'); document.querySelectorAll('.acct.open, #setupGrp.open').forEach(x => x.classList.remove('open')); } });
+  }
   $('#signout').addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); location.href = '/admin/login.html'; });
   // Appearance: Light, Dark (grey, LCD) or AMOLED (true black). An explicit per-device
   // choice, never the phone's system setting. index.html applies it before first paint.
@@ -284,7 +358,8 @@ function shell() {
 const ADMIN_TABS = ['editor', 'pricing', 'recipes', 'vendors', 'costing', 'timeline'];
 function route() {
   if (!isAdmin() && ADMIN_TABS.includes(state.tab)) state.tab = 'leads';
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
+  document.querySelectorAll('.nav button[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
+  paintFrame();
   const v = $('#view');
   v.classList.toggle('wide', state.tab === 'timeline');
   // Moving to a different tab: what loads next rises into place. Only on a tab change —
@@ -305,7 +380,7 @@ function route() {
       if (next.pricing !== pc0.pricing || next.recipes !== pc0.recipes || next.timeline !== pc0.timeline) {
         state.pendingCounts = next;
         const nav = document.querySelector('.nav');
-        if (nav) nav.querySelectorAll('button').forEach(b => {
+        if (nav) nav.querySelectorAll('button[data-tab]').forEach(b => {
           const t = b.dataset.tab; const n = t === 'pricing' ? next.pricing : t === 'recipes' ? next.recipes : t === 'timeline' ? next.timeline : 0;
           b.querySelectorAll('.navdot').forEach(d => d.remove());
           if (n) b.insertAdjacentHTML('beforeend', `<span class="navdot">${n}</span>`);
@@ -395,7 +470,7 @@ async function marketingTab(v) {
     ${m.budget ? `<div style="margin-top:10px;font-size:12px;"><b>This month:</b> ${money(m.budget.spent)} of ${money(m.budget.month)} budget (${m.budget.pct}%) with ${m.budget.monthPct}% of the month gone · heading for ${money(m.budget.projected)}<div class="bar" style="height:6px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:4px;"><i style="display:block;height:100%;width:${Math.min(100, m.budget.pct)}%;background:${m.budget.pct > m.budget.monthPct + 15 ? '#C8441C' : 'var(--blue)'};"></i></div></div>` : ''}
   </div>
 
-  <div class="card"><h2>Campaigns</h2><div class="sub">Every campaign the platforms report, ${days} days. "Leads here" are enquiries in this tool attributed to the campaign; "platform" is the platform's own count.</div><div class="rule"></div>
+  <div class="card"><div class="cardhead"><h2>Campaigns</h2><button class="btn btn-ghost btn-sm" id="mktRefresh" title="Fetch the latest figures from Meta now. Google sends its own figures when its script runs."><svg class="rico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 10-2.300 5.700M20 4v7h-7"/></svg>Refresh</button></div><div class="sub">Every campaign the platforms report, ${days} days. "Leads here" are enquiries in this tool attributed to the campaign; "platform" is the platform's own count.</div><div class="rule"></div>
     ${m.campaigns.length ? `<div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>Campaign</th><th>Status</th><th class="right">Spend</th><th class="right">Clicks</th><th class="right">Leads here</th><th class="right">Platform</th><th class="right">CPL</th><th class="right">Quoted</th><th class="right">Ads live</th></tr></thead><tbody>
       ${m.campaigns.map(k => `<tr><td>${plat(k.platform)} ${esc(k.name)}</td><td><span class="tag tag-${k.status === 'ACTIVE' ? 'accepted' : 'draft'}">${esc(k.status || '')}</span></td><td class="right">${money(k.spend)}</td><td class="right">${k.clicks}</td><td class="right">${k.toolLeads}</td><td class="right muted">${k.platformLeads}</td><td class="right">${k.cpl != null ? money(k.cpl) : '—'}</td><td class="right">${k.toolQuoted}</td><td class="right">${dash(k.adsLive)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No campaign data yet.</p>'}
   </div>
@@ -443,6 +518,16 @@ async function marketingTab(v) {
       </div></div>
     </div></div>` : `<div class="card"><h2>Connections</h2><div class="rule"></div>${m.connections.map(x => `<div class="conn">${plat(x.platform)}<span class="st ${x.status === 'connected' ? 'ok' : 'no'}">${x.status === 'connected' ? 'Connected' : 'Not connected'}</span><span class="muted">${x.status === 'connected' ? esc(x.accountName || '') + ' · last update ' + (x.lastPullAt ? esc(sydTime(x.lastPullAt)) : 'never') : 'Set up by the admin.'}</span></div>`).join('')}</div>`}`;
   $('#mktDays').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.mktDays = parseInt(b.dataset.d, 10); marketingTab(v); }));
+  // Refresh: fetch the latest from Meta now and repaint. Google cannot be asked — its Ads
+  // script sends figures on its own schedule — so the message says so.
+  const rf = $('#mktRefresh');
+  if (rf) rf.addEventListener('click', async () => {
+    rf.disabled = true; rf.classList.add('busy');
+    const r = await api('/marketing/refresh', { method: 'POST' }).catch(() => null);
+    const msg = !r || r.error ? 'Could not refresh' + (r && r.error ? ': ' + r.error : '') : !r.meta ? 'Meta is not connected' : r.meta.ok === false ? 'Meta: ' + (r.meta.error || 'could not refresh') : 'Meta updated just now';
+    toast(msg + ' · Google updates when its script runs');
+    marketingTab(v);
+  });
   $$('[data-mfig]').forEach(el => { const go = () => openFigure(el.dataset.mfig, `/marketing/figure/${el.dataset.mfig}?days=${days}`);
     el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
   $$('[data-lfig]').forEach(b => b.addEventListener('click', () => openFigure(b.dataset.lfig, `/marketing/figure/${b.dataset.lfig}?days=${days}`)));
@@ -854,7 +939,7 @@ async function leadsSummary(v) {
   const dueLabel = c => { if (c.phase === 5) return ''; if (!c.due) return '<span class="d">no date</span>'; const diff = Math.round((new Date(c.due) - new Date(today)) / 864e5);
     return diff < 0 ? `<span class="d over">${-diff}d overdue</span>` : diff === 0 ? '<span class="d today">today</span>' : `<span class="d">in ${diff}d</span>`; };
   const cardHtml = c => `<div class="lead" draggable="${c.kind === 'lead' ? 'true' : 'false'}" data-id="${esc(c.id || '')}" data-q="${esc(c.quoteId || '')}" data-kind="${c.kind}">
-      <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:#FFF4E5;color:#8a5a00;">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : ''}</div>
+      <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:var(--warn-soft);color:var(--warn-ink);">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : ''}</div>
       <div class="where">${esc(c.suburb || '')}${c.quoteNumber ? ' · quote ' + esc(c.quoteNumber) : ''}</div>
       <div class="next">${dueLabel(c)}<span>${esc(c.nextAction || '')}</span></div>
       <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.est ? estChip(c.est) : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
@@ -911,7 +996,7 @@ async function leadsEnquiries(v) {
   const rows = data.leads || [];
   const today = localYmd();
   const line = (l, cls) => `<div class="today ${cls} ${l.phase === 4 ? 'q' : ''}">
-      <div><b>${esc(l.name || '—')}</b>${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
+      <div><b>${esc(l.name || '—')}</b>${l.smallProject ? ' <span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);">SMALL PROJECT</span>' : ''}${l.suburb ? ' — ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}
         <br><span class="muted" style="font-size:11px;">Step ${l.phase} · ${esc(l.stageLabel)} · <b>${esc(l.nextAction)}</b>${l.due ? ' · due ' + esc(l.due) : ''}${l.quoteNumber ? ' · quote ' + esc(l.quoteNumber) : ''}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" data-snooze="${l.id}">😴 Snooze 3 days</button>
@@ -922,11 +1007,11 @@ async function leadsEnquiries(v) {
       <div class="rule"></div>
       <div class="grid3" style="margin-bottom:12px;">
         <div class="stat" style="border-left:4px solid var(--red);"><div class="k">Overdue</div><div class="v" style="color:var(--red);">${board.overdue.length}</div></div>
-        <div class="stat" style="border-left:4px solid #B5761E;"><div class="k">Due today</div><div class="v" style="color:#B5761E;">${board.dueToday.length}</div></div>
+        <div class="stat" style="border-left:4px solid #B5761E;"><div class="k">Due today</div><div class="v" style="color:var(--warn-ink);">${board.dueToday.length}</div></div>
         <div class="stat" style="border-left:4px solid var(--green);"><div class="k">This week</div><div class="v" style="color:var(--green);">${board.thisWeek.length}</div></div>
       </div>
       ${board.overdue.length ? `<div class="wl">Overdue</div>${board.overdue.map(l => line(l, '')).join('')}` : ''}
-      ${board.dueToday.length ? `<div class="wl" style="color:#B5761E;">Due today</div>${board.dueToday.map(l => line(l, 'soon')).join('')}` : ''}
+      ${board.dueToday.length ? `<div class="wl" style="color:var(--warn-ink);">Due today</div>${board.dueToday.map(l => line(l, 'soon')).join('')}` : ''}
       ${board.thisWeek.length ? `<div class="wl" style="color:var(--green);">Coming up this week</div>${board.thisWeek.map(l => line(l, 'ok')).join('')}` : ''}
       ${board.undated.length ? `<div class="wl" style="color:var(--grey);">No follow-up set</div>${board.undated.map(l => line(l, 'ok')).join('')}` : ''}
       ${!board.overdue.length && !board.dueToday.length && !board.thisWeek.length && !board.undated.length ? '<p class="muted">Nothing due. Every enquiry is up to date.</p>' : ''}
@@ -956,7 +1041,7 @@ async function leadsEnquiries(v) {
       </div><table class="resp"><thead><tr><th style="width:26px;"><input type="checkbox" id="selAll" style="width:auto;" title="Select all shown"></th><th>Name</th><th>Contact</th><th>Site</th><th>Step</th><th>Next</th><th>Quote</th><th></th></tr></thead><tbody>
       ${shown.map(l => { const ph = STAGE_PHASE[l.stage] || 1; return `<tr${['Won', 'Lost'].includes(l.status) ? ' style="opacity:.55;"' : ''}>
         <td><input type="checkbox" class="selLead" data-sel="${l.id}" style="width:auto;"></td>
-        <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.smallProject ? ` <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>` : ''}${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
+        <td data-l="Name"><b>${esc(l.name || '—')}</b>${l.smallProject ? ` <span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);">SMALL PROJECT</span>` : ''}${l.jobType ? `<br><span class="muted" style="font-size:10.5px;">${esc(l.jobType)}</span>` : ''}</td>
         <td data-l="Contact">${l.phone ? `<a href="${telHref(l.phone)}" style="color:inherit;">${esc(l.phone)}</a>` : ''}${l.email ? '<br><span class="muted" style="font-size:10.5px;">' + esc(l.email) + '</span>' : ''}</td>
         <td data-l="Site">${esc(l.suburb || l.address || '')}</td>
         <td data-l="Step"><span class="tag stepTag s${ph}">STEP ${ph}</span>${['Won', 'Lost'].includes(l.status) ? `<br><span class="muted" style="font-size:10px;">${esc(l.status)}</span>` : ''}</td>
@@ -1737,7 +1822,7 @@ function refreshBp(v) {
     ? `<div class="warnbox"><b>Not enough to price on the phone.</b><br>${esc(CALL.script)}</div>`
     : `<div class="bpbox"><div class="bplab">Ballpark — say this range</div>
         <div class="bpnum">$${bp.incLo.toLocaleString()} – $${bp.incHi.toLocaleString()}</div>
-        <div style="font-size:11.5px;color:#aaa;">including GST · ${bp.inc.length} item${bp.inc.length === 1 ? '' : 's'} priced${bp.exc.length ? ` · <span style="color:#e8c98a;">${bp.exc.length} excluded</span>` : ''}</div>
+        <div style="font-size:11.5px;color:var(--grey);">including GST · ${bp.inc.length} item${bp.inc.length === 1 ? '' : 's'} priced${bp.exc.length ? ` · <span style="color:#e8c98a;">${bp.exc.length} excluded</span>` : ''}</div>
         ${bp.sur.length ? `<div style="margin-top:9px;border-top:1px solid #333;padding-top:7px;">${bp.sur.map(s => `<div class="surl"><span>${esc(s.name)}<br><span class="w">${esc(s.why)}</span></span><b>${s.pct ? '+' + s.pct + '%' : '+$' + s.amount}</b></div>`).join('')}</div>` : ''}
        </div>
        ${bp.exc.length ? `<div class="warnbox" style="margin-top:10px;"><b>Not included — needs the site visit</b><br>${bp.exc.map(e => '• ' + esc(e)).join('<br>')}</div>` : ''}
@@ -1793,7 +1878,7 @@ async function leadConsole(v) {
   const groups = [...new Set(stages.map(s => s.group))];
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:#FFF4E5;color:#8a5a00;">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.address || l.suburb || '')}${l.address && l.suburb && !String(l.address).toLowerCase().includes(String(l.suburb).split(',')[0].toLowerCase()) ? ' · ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
+      <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.address || l.suburb || '')}${l.address && l.suburb && !String(l.address).toLowerCase().includes(String(l.suburb).split(',')[0].toLowerCase()) ? ' · ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
         ${l.phone ? `<a class="btn btn-blue btn-sm" href="${telHref(l.phone)}" style="text-decoration:none;">📞 Call ${esc(l.phone)}</a>` : ''}
@@ -1802,7 +1887,7 @@ async function leadConsole(v) {
       </div></div>
     <div class="rule"></div>
     <div class="pipe" style="margin-bottom:14px;">
-      ${(stageData.phases || []).map(p => `<div class="ph ${p.id === st.phase ? 'on' : ''}" style="${p.id < st.phase ? 'background:#F2F8F4;border-color:#CBE0D2;' : ''}">
+      ${(stageData.phases || []).map(p => `<div class="ph ${p.id === st.phase ? 'on' : ''}" style="${p.id < st.phase ? 'background:var(--ok-soft);border-color:var(--ok-line);' : ''}">
         <div class="n">${p.id < st.phase ? '✓ DONE' : p.id === st.phase ? 'YOU ARE HERE' : 'PHASE ' + p.id}</div>
         <div class="t" style="font-size:11px;">${esc(p.label)}</div>
         ${p.id === st.phase ? `<div class="w">${esc(st.stageLabel)}</div>` : ''}</div>`).join('')}
@@ -2145,7 +2230,7 @@ async function leadConsole(v) {
     if (r.error) return toast(r.error);
     $('#ms_subject').value = r.subject; $('#ms_body').value = r.message; autosize($('#ms_body'));
     closeAs = { stage: 'closeout', status: 'Lost', reason: 'Not a fit', nextFollowup: null };
-    $('#ms_warn').innerHTML = '<span style="color:#8a5a00;font-weight:700;">Sending this closes the enquiry as Not a fit.</span>';
+    $('#ms_warn').innerHTML = '<span style="color:var(--warn-ink);font-weight:700;">Sending this closes the enquiry as Not a fit.</span>';
     toast('Not-a-fit reply loaded — send with Email, WhatsApp or SMS');
   });
   $('#ms_sample').addEventListener('click', async () => {
@@ -2189,7 +2274,7 @@ async function quotesList(v) {
       <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>
         ${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
       <td>${q.status === 'accepted' || isLost ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td>${q.views}</td>
-      <td class="right">${q.isSample ? `<span class="tag" style="background:#FFF4E5;color:#8a5a00;margin-right:6px;">SAMPLE</span>` : ``}<button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
+      <td class="right">${q.isSample ? `<span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);margin-right:6px;">SAMPLE</span>` : ``}<button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
         ${isLost ? `<button class="btn btn-ghost btn-sm" data-reopen="${q.id}">Reopen</button>`
           : (q.status === 'accepted' || isSup ? '' : `<button class="btn btn-ghost btn-sm" data-lost="${q.id}">Lost</button>`)}
         <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button></td></tr>`; }).join('')}
@@ -2295,9 +2380,9 @@ async function quoteEditor(v) {
       <div class="h"><b>${q.copyReview.complete ? '✓ Copied from' : 'Copied from'} ${esc(q.copyReview.source ? q.copyReview.source.quoteNumber + ' · ' + (q.copyReview.source.client || '') : 'another quote')}</b>
         <span>${q.copyReview.complete ? 'Every carried-over detail has been confirmed — this quote can be sent.' : `Confirm each item before sending — ${q.copyReview.items.filter(i => !i.done).length} to go. Sending is blocked until the list is complete.`}</span></div>
       <div class="list">${q.copyReview.items.map(i => `<label class="${i.done ? 'done' : ''}"><input type="checkbox" data-crev="${i.key}" ${i.done ? 'checked' : ''} ${i.auto ? 'disabled' : ''}> <span>${esc(i.label)}</span><em>${i.auto ? 'from the record' : i.done ? esc((i.by || '') + ' · ' + sydTime(i.at)) : ''}</em></label>`).join('')}</div></div>` : ''}
-    ${q.linkOff && !q.lostAt ? `<div class="emailbar failed" style="background:#FFF8E8;border-color:#EAD9AC;color:#7a5e1a;">
+    ${q.linkOff && !q.lostAt ? `<div class="emailbar failed" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn-ink);">
       <b>The client link is switched off</b><br><span style="font-size:11px;">Anyone opening it sees a "please call us" page instead of the price. The quote is unchanged — turn it back on any time.</span></div>` : ''}
-    ${q.lostAt ? `<div class="emailbar failed" style="background:#F6F6F6;border-color:#DDD;color:#666;">
+    ${q.lostAt ? `<div class="emailbar failed" style="background:var(--tint);border-color:var(--line);color:var(--grey);">
       <b>This quote is marked as LOST</b>${q.lostReason ? ` — ${esc(q.lostReason)}` : ''}
       <br><span style="font-size:11px;">Hidden from the quotes list and can't be sent. Everything is kept — press Reopen to bring it back.</span></div>` : ''}
     ${q.emailStatus ? `<div class="emailbar ${q.emailStatus}"><b>Signed-contract email: ${q.emailStatus.toUpperCase()}</b><br><span style="font-size:11px;">${esc(q.emailDetail || '')}</span></div>` : ''}
@@ -2309,7 +2394,7 @@ async function quoteEditor(v) {
       ${q.sentAt ? `<span class="muted">sent ${esc(sydTime(q.sentAt))} to ${esc(q.sentTo || '')}${q.sentBy ? ' by ' + esc(q.sentBy) : ''}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
       ${q.link ? `<span class="muted">reading ${esc(q.link.activeLabel)}${q.link.lastOpened ? ' · last ' + esc(sydTime(q.link.lastOpened)) : ''}</span><span class="signal sig-${q.link.signal}" title="${esc(q.link.signalWhy || '')}">${SIG_LABEL[q.link.signal] || q.link.signal}</span><a href="#" id="openBehaviour" style="font-weight:700;">Behaviour record →</a>` : ''}
     </div>
-    ${q.won ? `<div class="emailbar" style="background:#F2F8F4;border-color:#DEEBE2;color:#1F6B37;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+    ${q.won ? `<div class="emailbar" style="background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok-ink);display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
       <span class="wonbadge">✓ Won · ${q.won.method === 'manual' ? (q.won.how === 'po' ? 'client PO' : q.won.how === 'contract' ? 'contract returned' : 'email approval') : 'e-signed'}</span>
       ${q.won.method === 'manual' ? `<span style="font-size:12px;">${esc(q.won.ref || '')}${q.won.approvedBy ? ' · ' + esc(q.won.approvedBy) : ''} · ${q.won.value != null ? money(q.won.value) + ' ex GST' : ''} · ${esc(sydTime(q.won.at))} · marked by ${esc(q.won.markedBy || '')}${q.won.hasFile ? ` · <a href="/api/quotes/${q.id}/won-file" target="_blank">${esc(q.won.fileName || 'approval document')}</a>` : ''}</span>
       ${isAdmin() ? '<button class="btn btn-ghost btn-sm" id="unwinQ" title="Wrong PO or wrong quote — revert to quoted. The document and audit line are kept.">Undo won</button>' : ''}` : ''}</div>` : ''}
@@ -2950,7 +3035,7 @@ async function jobsTab(v) {
     }).join('') || '<tr><td colspan="12" class="muted">No jobs won yet.</td></tr>'}</tbody></table>
     ${!isAdmin() ? '' : `<div class="grid4" style="margin-top:12px;">
       <div class="stat"><div class="k">Gross margin (before overheads)</div><div class="v">${(data.summary || {}).grossPct || 0}%</div></div>
-      <div class="stat"><div class="k">Overhead allocated</div><div class="v">${money((data.summary || {}).overhead || 0)}</div><div style="font-size:10px;color:#999;">${money(data.overheadDailyRate || 0)} per crew-day</div></div>
+      <div class="stat"><div class="k">Overhead allocated</div><div class="v">${money((data.summary || {}).overhead || 0)}</div><div style="font-size:10px;color:var(--grey);">${money(data.overheadDailyRate || 0)} per crew-day</div></div>
       <div class="stat hero"><div class="k">Net-of-overhead margin</div><div class="v">${(data.summary || {}).netPct || 0}%</div></div>
       <div class="stat"><div class="k">Jobs shown</div><div class="v">${(data.jobs || []).length}</div></div>
     </div>
@@ -3396,7 +3481,7 @@ function indicativeLine(cur) {
     return `<b>${VNAME[k]}</b> ${money2(variable)}/${esc(cur.unit)}${fixed ? ` + ${money(fixed)} per job` : ''}`;
   });
   return 'Indicative cost at Standard — ' + parts.join(' &nbsp;·&nbsp; ') +
-    '<br><span style="color:#aaa;">Variable is per ' + esc(cur.unit) + '; fixed costs (plant hire, delivery) are charged once per job, so compare the two separately.</span>';
+    '<br><span style="color:var(--grey);">Variable is per ' + esc(cur.unit) + '; fixed costs (plant hire, delivery) are charged once per job, so compare the two separately.</span>';
 }
 async function recipesTab(v) {
   const sub = state.recipesSub || 'live';
@@ -3570,7 +3655,7 @@ async function selectionDetail(v) {
         ${d.locked ? '<button class="btn btn-ghost btn-sm" id="unlockSel">Unlock</button>' : ''}</div>
     </div><div class="rule"></div>
     <table><thead><tr><th>Code</th><th>Deliverable</th><th>Qty</th><th>Quoted as</th><th>Final method</th><th>Vendor</th><th>Sub days</th>${d.restricted ? '' : '<th class="right">Cost impact</th>'}</tr></thead><tbody>
-    ${d.lines.map(l => `<tr ${l.delta !== 0 ? 'style="background:#FFFBF2;"' : ''}>
+    ${d.lines.map(l => `<tr ${l.delta !== 0 ? 'style="background:var(--warn-soft);"' : ''}>
       <td><b>${esc(l.code)}</b></td><td>${esc(l.name)}<br><span class="muted" style="font-size:10.5px;">${esc(l.spec || '')}</span></td>
       <td>${l.qty} ${esc(l.unit || '')}</td>
       <td><span class="tag ${l.quotedMethod === 'in' ? 't-in' : l.quotedMethod === 'sub' ? 't-subv' : 't-mix'}">${VNAME[l.quotedMethod] || l.quotedMethod}</span></td>
