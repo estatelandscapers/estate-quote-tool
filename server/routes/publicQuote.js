@@ -328,6 +328,8 @@ router.post('/:token/sign', async (req, res) => {
         else { outcome.push('office: sent'); anySent = true; }
       } catch (e) { outcome.push('office FAILED: ' + e.message); anyFail = true; console.error('office email failed', e.message); }
       if (!pdf) outcome.push('WARNING: PDF could not be generated');
+      // A thank-you by text, when that message is switched on.
+      try { require('../utils/sms').signed(fresh); } catch (e) {}
       // Winning the quote wins the lead — otherwise the two drift apart.
       try {
         if (fresh.lead_id) db.prepare("UPDATE leads SET stage='won', status='Won', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(fresh.lead_id);

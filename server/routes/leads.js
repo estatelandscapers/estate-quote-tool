@@ -903,6 +903,13 @@ router.post('/:id/message', async (req, res) => {
       return res.status(502).json({ error: e.message, hint: e.hint });
     }
   }
+  // A text sent from the tool itself (send:true). Without it, 'sms' only records that the
+  // rep texted from their own phone, exactly as before.
+  if (channel === 'sms' && b.send) {
+    const r = await require('../utils/sms').send({ type: 'manual', lead: l, to: b.to || l.phone, body: b.body, by: who, history: false });
+    if (!r.ok) return res.status(r.status === 'off' || r.status === 'unconfigured' ? 409 : 502).json({ error: r.status === 'held' ? 'Trial mode: this number is not on the trial list, so the text was not sent.' : (r.error || 'The text could not be sent.'), hint: r.hint, smsStatus: r.status });
+    outcome = 'sent';
+  }
   // A human reached out: a pending code email is no longer wanted.
   if (['call', 'whatsapp', 'sms', 'email'].includes(channel)) { try { require('../utils/estimator').cancelPending(l.id, 'lead contacted by ' + who); } catch (e) {} }
 

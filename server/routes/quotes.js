@@ -452,6 +452,8 @@ router.post('/:id/send', async (req, res) => {
       status=CASE WHEN status='draft' THEN 'sent' ELSE status END,
       updated_at=datetime('now') WHERE id=?`)
     .run(to, to, subject, b.message || '', req.user.name || req.user.username, q.id);
+  // The quote link by text as well, when that message is switched on. Never blocks the send.
+  try { require('../utils/sms').quoteSent(db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id), link); } catch (e) {}
   // Sending the quote advances the lead to Phase 4 and diarises the chase.
   try {
     if (q.lead_id) {

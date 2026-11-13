@@ -299,6 +299,8 @@ function scheduleFallbackAck(ref) {
 // went out at submission time saying files "have been received safely", which was a claim
 // the server had no way to stand behind: the browser had not finished uploading yet.
 function sendAck({ email, name, ref, audience, files = [], missing = [] }) {
+  // The same acknowledgement by text, once per enquiry, when that message is switched on.
+  try { const lead = db.prepare('SELECT * FROM leads WHERE enquiry_ref=?').get(ref); if (lead) require('../utils/sms').enquiry(lead); } catch (e) {}
   const first = String(name || '').split(' ')[0] || 'there';
   const esc = s => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   const list = files.length

@@ -283,6 +283,8 @@ async function invite(leadId, { reason = 'new', by = '' } = {}) {
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
     .run(msgId, l.id, 'email', 'estinvite', mail.subject, mail.text, by || 'auto', outcome,
       `Online estimator ${reason === 'resend' ? 'code resent' : 'invitation'} · code ${code} · valid to ${exp.slice(0, 10)}${err ? ' · NOT SENT: ' + err : ''}`);
+  // The same invitation by text, when that message is switched on. Never blocks or fails the email.
+  try { require('./sms').invite({ ...l, est_code: code }, { resend: reason === 'resend' }); } catch (e) {}
   return { ok: outcome === 'sent', code, expires: exp, error: err };
 }
 

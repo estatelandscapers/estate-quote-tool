@@ -2213,6 +2213,18 @@ async function leadConsole(v) {
   });
   $('#ms_sms').addEventListener('click', async () => {
     if (!msg.phoneOk) return toast('Add a mobile number first');
+    // When texting from the tool is switched on, the text goes out under the business name
+    // and is logged. Otherwise it opens the phone's own Messages app, as it always has.
+    const st = await api('/sms/status').catch(() => null);
+    if (st && st.configured && st.mode !== 'off') {
+      if (!$('#ms_body').value.trim()) return toast('Write the message first');
+      const btn = $('#ms_sms'), label = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…';
+      const r = await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: 'sms', send: true, stage: state.leadStage || stage, body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...(closeAs || {}) }) });
+      btn.disabled = false; btn.textContent = label;
+      if (r.error) return toast(r.error + (r.hint ? ' ' + r.hint : ''));
+      toast('Text sent'); return leadConsole(v);
+    }
     window.open(`sms:${String(l.phone).replace(/[^\d+]/g, '')}?&body=${encodeURIComponent($('#ms_body').value)}`, '_self');
     await record('sms'); toast('Opened Messages — logged'); leadConsole(v);
   });
@@ -3942,6 +3954,7 @@ async function settingsTab(v) {
       <div class="field"><label>Meta app secret (checks webhook signatures)</label><input id="set_meta_app_secret" type="password" value="${esc(s.meta_app_secret || '')}" placeholder="from the app's Settings → Basic"></div>
     </div>
     <button class="btn btn-blue" id="saveMkt">Save marketing settings</button></div>
+  <div id="smsCard"></div>
   <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;"><h2>Online estimator</h2>
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;cursor:pointer;"><input type="checkbox" id="set_est_enabled_cb" ${s.est_enabled !== '0' ? 'checked' : ''} style="width:auto;"> Auto lead processing <span class="tag ${s.est_enabled !== '0' ? 'tag-accepted' : 'tag-superseded'}" id="estOnTag">${s.est_enabled !== '0' ? 'ON' : 'OFF'}</span></label></div>
     <div class="muted" style="font-size:11px;margin:4px 0 8px;">Off = no automatic code emails to new leads, the website estimator shows "paused", and the Send code button is disabled. Leads keep arriving exactly as before. Nothing is lost when it comes back on.</div>
@@ -4003,6 +4016,7 @@ async function settingsTab(v) {
     <button class="btn btn-blue" id="saveContract">Save contract text</button></div>`;
   const save = (keys, msg) => async () => { const body = {}; keys.forEach(k => body[k] = $('#set_' + k).value); await api('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast(msg); };
   $('#saveEmailSet').addEventListener('click', save(['email_signature', 'quote_email_subject', 'quote_email_body'], 'Email settings saved'));
+  if (typeof smsSettings === 'function') smsSettings($('#smsCard'));
   api('/settings/estimator-status').then(st => {
     const el = $('#estSampleStatus'); if (!el) return;
     el.innerHTML = st.ok ? `Sample-quote link in emails: <span class="tag tag-accepted">OK</span> quote ${esc(st.sampleNumber)} · <a href="${esc(st.link)}" target="_blank" style="color:var(--blue);font-weight:700;">${esc(st.link)}</a>`
