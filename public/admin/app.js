@@ -1047,7 +1047,7 @@ async function leadsEnquiries(v) {
         <td data-l="Step"><span class="tag stepTag s${ph}">STEP ${ph}</span>${['Won', 'Lost'].includes(l.status) ? `<br><span class="muted" style="font-size:10px;">${esc(l.status)}</span>` : ''}</td>
         <td data-l="Next">${l.followupOverdue ? '<span class="tag age-flag">overdue</span> ' : ''}${esc(l.nextFollowup || '—')}${l.msgCount ? `<br><span class="muted" style="font-size:10px;">${l.msgCount} msg</span>` : ''}</td>
         <td data-l="Quote">${l.quoteNumber ? esc(l.quoteNumber) : (l.quoteMissing ? '<span class="tag age-flag" title="The quote linked to this enquiry no longer exists">quote missing</span>' : '<span class="muted">—</span>')}</td>
-        <td class="right"><button class="btn btn-ghost btn-sm" data-lopen2="${l.id}">Open</button> <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`; }).join('')}
+        <td class="right"><button class="btn btn-ghost btn-sm" data-lopen2="${l.id}">Open</button>${l.status === 'Lost' ? ` <button class="btn btn-ghost btn-sm" data-lreopen="${l.id}" title="Back to the step it had reached, follow-up due today">Reopen</button>` : ''} <button class="btn btn-danger btn-sm" data-ld="${l.id}">✕</button></td></tr>`; }).join('')}
       </tbody></table>` : '<p class="muted">No open enquiries.</p>';
     // Multi-select. The bar only appears once something is ticked, so the table stays
     // clean for everyday use.
@@ -1057,6 +1057,12 @@ async function leadsEnquiries(v) {
       bar.style.display = picked ? 'block' : 'none';
       const n = $('#bulkN'); if (n) n.textContent = picked;
     };
+    v.querySelectorAll('[data-lreopen]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      const r = await api(`/leads/${b.dataset.lreopen}/reopen`, { method: 'POST' });
+      if (r.error) { b.disabled = false; return toast(r.error); }
+      toast(`Reopened — back at "${r.label}"`); leadsTab($('#view'));
+    }));
     v.querySelectorAll('.selLead').forEach(c => c.addEventListener('change', syncBulk));
     const selAll = $('#selAll');
     if (selAll) selAll.addEventListener('change', () => {
@@ -1904,7 +1910,7 @@ async function leadConsole(v) {
         <button class="btn btn-blue btn-big" id="ld_call" style="width:100%;margin-bottom:9px;">📞 Discovery Call Script</button>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="ld_snooze">😴 Snooze 3 days</button>
-          <button class="btn btn-ghost btn-sm" id="ld_close">✕ Close this enquiry</button>
+          ${l.status === 'Lost' ? '<button class="btn btn-blue btn-sm" id="ld_reopen" title="Puts this enquiry back at the step it had reached, with a follow-up due today">↺ Reopen this enquiry</button>' : '<button class="btn btn-ghost btn-sm" id="ld_close">✕ Close this enquiry</button>'}
           <button class="btn btn-ghost btn-big" id="ld_stepback">← Step back</button>
           ${st.phase < 4 ? '<button class="btn btn-ghost btn-big" id="ld_skip">⏭ Skip ahead</button>' : ''}
         </div>
@@ -1942,7 +1948,8 @@ async function leadConsole(v) {
           <div class="field" style="margin:0;flex:1;min-width:110px;"><label>Time</label><input id="ms_time" placeholder="9:00am"></div>
         </div>
         <div class="field"><label>Subject (email only)</label><input id="ms_subject"></div>
-        <div class="field"><label>Message</label><textarea id="ms_body" rows="11"></textarea></div>
+        <div class="field"><label>Message <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500;">— email and WhatsApp</span></label><textarea id="ms_body" rows="11"></textarea></div>
+        <div class="field"><label>Short version <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500;">— SMS</span> <span class="muted" id="ms_smsn" style="text-transform:none;letter-spacing:0;font-weight:500;float:right;"></span></label><textarea id="ms_smsbody" rows="3" maxlength="600"></textarea></div>
         <div id="ms_warn" class="legend"></div>
       </div>
       <div>
@@ -1955,7 +1962,7 @@ async function leadConsole(v) {
           <button class="btn btn-ghost" id="ms_sample" title="Loads the sample-quote message above — then send it with WhatsApp, Email or SMS">📱 Sample quote</button>
           <button class="btn btn-ghost" id="ms_notfit" title="Loads a polite decline. Sending it closes the enquiry as Not a fit">Not a fit</button>
         </div>
-        <div class="legend" style="margin-bottom:12px;">WhatsApp and SMS open on your phone with the message ready — press send there. The tool records it either way. Email is sent from here with your signature.</div>
+        <div class="legend" style="margin-bottom:12px;">The message above is written for the step this lead is on. Email is sent from here with your signature. WhatsApp opens on your phone with your name and number added. SMS sends the short version.</div>
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--grey);margin-bottom:6px;">History</div>
         <div class="timeline" id="leadTimeline">
           ${history.length ? history.map(m => {
@@ -2009,7 +2016,13 @@ async function leadConsole(v) {
     const r = await api(`/leads/${l.id}/snooze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 3 }) });
     toast('Snoozed until ' + r.until); leadConsole(v);
   });
-  $('#ld_close').addEventListener('click', async () => {
+  const reo = $('#ld_reopen'); if (reo) reo.addEventListener('click', async () => {
+    reo.disabled = true;
+    const r = await api(`/leads/${l.id}/reopen`, { method: 'POST' });
+    if (r.error) { reo.disabled = false; return toast(r.error); }
+    toast(`Reopened — back at "${r.label}"`); state.leadStage = null; leadConsole(v);
+  });
+  if ($('#ld_close')) $('#ld_close').addEventListener('click', async () => {
     const co = await api(`/leads/${l.id}/closeout`);
     if (co.error) return toast(co.error);
     const bg = document.createElement('div'); bg.className = 'modal-bg';
@@ -2112,13 +2125,17 @@ async function leadConsole(v) {
 
   // What the client told us — and how the quote compares.
   api(`/leads/${l.id}/answers`).then(A => {
-    const box = document.getElementById('answersPanel'); if (!box || !A.hasCall) return;
+    const box = document.getElementById('answersPanel'); if (!box) return;
+    // Say so when the answers cannot be read, instead of leaving a gap where they belong.
+    if (!A || A.error) { box.innerHTML = `<div class="card" style="margin:12px 0 0;"><h2>What they told us</h2><p class="muted">The answers could not be loaded${A && A.error ? ': ' + esc(A.error) : ''}. Reload the page; if it still fails, tell Claude which lead.</p></div>`; return; }
+    if (!A.hasCall) return;
     const cmp = A.compare;
     const flagged = cmp ? cmp.onQuote.filter(x => x.status !== 'ok').length + cmp.missing.length : 0;
     box.innerHTML = `<div class="card" style="margin:12px 0 0;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div><h2>What they told us${(A.rows.find(r => r.k === 'Answered') ? ' (online estimate)' : ' on the call')}</h2>
-          <div class="sub">Captured ${A.rows.length} answers${cmp ? ' · checked against quote ' + esc(cmp.quoteNumber) : ''}</div></div>
+        <div><h2>What they told us${A.online ? ' (online estimate)' : ' on the call'}</h2>
+          <div class="sub">Captured ${A.rows.length} answers${cmp ? ' · checked against quote ' + esc(cmp.quoteNumber) : ''}${A.partial ? ' · <b style="color:var(--amber);">they answered online but have not opened the ballpark yet</b>' : ''}</div>
+          ${A.unanswered && A.unanswered.length ? `<div class="legend" style="margin-top:4px;">Left blank online, ask on the call: ${A.unanswered.map(esc).join(', ')}</div>` : ''}</div>
         ${cmp ? `<a class="btn btn-ghost btn-sm" href="/admin#quote-${cmp.quoteId}" target="_blank" id="openQuoteTab">Open the quote in a new tab ↗</a>` : ''}
       </div><div class="rule"></div>
       <div class="grid2">
@@ -2140,7 +2157,7 @@ async function leadConsole(v) {
       </div></div>`;
     const oq = document.getElementById('openQuoteTab');
     if (oq) oq.addEventListener('click', e => { e.preventDefault(); window.open(location.pathname + '?quote=' + cmp.quoteId, '_blank'); });
-  }).catch(() => {});
+  }).catch(e => { const box = document.getElementById('answersPanel'); if (box) box.innerHTML = `<div class="card" style="margin:12px 0 0;"><h2>What they told us</h2><p class="muted">The answers could not be shown (${esc(String((e && e.message) || e))}). Tell Claude which lead this is.</p></div>`; });
 
   // Documents panel — only once the discovery call has happened.
   if (st.phase >= 2 && st.phase <= 3) {
@@ -2181,6 +2198,9 @@ async function leadConsole(v) {
   // before loadMsg, which clears it and runs immediately below.
   let closeAs = null;
   let msg = {};
+  // One text is 160 characters; a longer one is charged as two or more.
+  const smsCount = () => { const n = $('#ms_smsbody').value.length; const el = $('#ms_smsn'); if (el) { el.textContent = `${n} characters · ${n <= 160 ? 1 : Math.ceil(n / 153)} text${n <= 160 ? '' : 's'}`; el.style.color = n > 160 ? 'var(--amber)' : ''; } };
+  $('#ms_smsbody').addEventListener('input', smsCount);
   async function loadMsg() {
     const qs = new URLSearchParams({ stage: state.leadStage || stage });
     if ($('#ms_date').value) qs.set('date', $('#ms_date').value);
@@ -2189,6 +2209,7 @@ async function leadConsole(v) {
     msg = await api(`/leads/${l.id}/message?` + qs.toString());
     $('#ms_subject').value = msg.subject || '';
     $('#ms_body').value = msg.body || '';
+    $('#ms_smsbody').value = msg.sms || ''; smsCount();
     const w = [];
     if (!msg.phoneOk) w.push('No usable mobile number — WhatsApp and SMS are unavailable.');
     if (!msg.emailOk) w.push('No email address on this lead.');
@@ -2202,13 +2223,16 @@ async function leadConsole(v) {
   const record = async (channel, extra) => {
     await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channel, stage: state.leadStage || stage, subject: $('#ms_subject').value,
-        body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...extra, ...(closeAs || {}) }) });
+        body: channel === 'sms' ? ($('#ms_smsbody').value || $('#ms_body').value) : $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...extra, ...(closeAs || {}) }) });
   };
   $('#ms_wa').addEventListener('click', async () => {
     if (!msg.phoneOk) return toast('Add a mobile number first');
     // Rebuild the link from the edited text, not the original template.
     const intl = String(l.phone).replace(/[^\d+]/g, '').replace(/^\+/, '').replace(/^0/, '61');
-    window.open(`https://wa.me/${intl}?text=${encodeURIComponent($('#ms_body').value)}`, '_blank');
+    // WhatsApp has no signature of its own, so the sender's name and number are added
+    // unless the message already ends with them.
+    const waText = $('#ms_body').value.trim(), so = msg.signoff || '';
+    window.open(`https://wa.me/${intl}?text=${encodeURIComponent(so && !waText.endsWith(so) ? waText + '\n\n' + so : waText)}`, '_blank');
     await record('whatsapp'); toast('Opened WhatsApp — logged against this lead'); leadConsole(v);
   });
   $('#ms_sms').addEventListener('click', async () => {
@@ -2217,15 +2241,17 @@ async function leadConsole(v) {
     // and is logged. Otherwise it opens the phone's own Messages app, as it always has.
     const st = await api('/sms/status').catch(() => null);
     if (st && st.configured && st.mode !== 'off') {
-      if (!$('#ms_body').value.trim()) return toast('Write the message first');
+      const smsText = ($('#ms_smsbody').value || $('#ms_body').value).trim();
+      if (!smsText) return toast('Write the message first');
+      if (smsText.length > 320 && !confirm(`This text is ${smsText.length} characters, which sends as ${Math.ceil(smsText.length / 153)} texts. Send it anyway?`)) return;
       const btn = $('#ms_sms'), label = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…';
       const r = await api(`/leads/${l.id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: 'sms', send: true, stage: state.leadStage || stage, body: $('#ms_body').value, nextFollowup: $('#ld_next').value || null, ...(closeAs || {}) }) });
+        body: JSON.stringify({ channel: 'sms', send: true, stage: state.leadStage || stage, body: smsText, nextFollowup: $('#ld_next').value || null, ...(closeAs || {}) }) });
       btn.disabled = false; btn.textContent = label;
       if (r.error) return toast(r.error + (r.hint ? ' ' + r.hint : ''));
       toast('Text sent'); return leadConsole(v);
     }
-    window.open(`sms:${String(l.phone).replace(/[^\d+]/g, '')}?&body=${encodeURIComponent($('#ms_body').value)}`, '_self');
+    window.open(`sms:${String(l.phone).replace(/[^\d+]/g, '')}?&body=${encodeURIComponent($('#ms_smsbody').value || $('#ms_body').value)}`, '_self');
     await record('sms'); toast('Opened Messages — logged'); leadConsole(v);
   });
   $('#ms_email').addEventListener('click', async () => {
@@ -2241,6 +2267,7 @@ async function leadConsole(v) {
     const r = await api(`/leads/${l.id}/not-a-fit-message`);
     if (r.error) return toast(r.error);
     $('#ms_subject').value = r.subject; $('#ms_body').value = r.message; autosize($('#ms_body'));
+    $('#ms_smsbody').value = ''; smsCount();
     closeAs = { stage: 'closeout', status: 'Lost', reason: 'Not a fit', nextFollowup: null };
     $('#ms_warn').innerHTML = '<span style="color:var(--warn-ink);font-weight:700;">Sending this closes the enquiry as Not a fit.</span>';
     toast('Not-a-fit reply loaded — send with Email, WhatsApp or SMS');

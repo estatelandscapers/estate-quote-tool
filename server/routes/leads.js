@@ -459,43 +459,59 @@ router.put('/:id/stage', (req, res) => {
 router.get('/:id/answers', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'not found' });
-  let a = {}; try { a = JSON.parse(l.call_answers || '{}'); } catch (e) {}
+  let a = {}; try { a = JSON.parse(l.call_answers || '{}') || {}; } catch (e) {}
   const CS2 = require('../utils/callScript');
-  const bp = CS2.ballpark(a);
-  const label = (v) => Array.isArray(v) ? v.join(', ') : (v === 'unknown' ? 'not known' : v);
+  // Answers typed into the online estimator are only copied across when the client reaches
+  // the ballpark. Someone who answered every question and stopped one screen short used to
+  // show nothing here. Their answers are read straight from the estimator instead.
+  const REAL = k => !['_prefill', '_estimator', 'scope', 'notes'].includes(k);
+  let partial = false, est = {};
+  try { est = (JSON.parse(l.est_answers || '{}') || {}).current || {}; } catch (e) {}
+  if (!Object.keys(a).filter(REAL).length && Object.keys(est).filter(REAL).length) { a = { ...a, ...est }; partial = true; }
+  let bp = { decline: false, tooUnknown: true, exc: [] };
+  try { bp = CS2.ballpark(a); } catch (e) { console.error('[answers] ballpark failed for', l.name, e.message); }
   const SIZE = {}; (CS2.SIZES || []).forEach(s => SIZE[s.id] = s);
+  // Show the wording the client chose, not the code stored for it ("two+" → "Two or more").
+  const OPT = {}; (CS2.STEPS || []).forEach(st => { if (st.key && st.options) OPT[st.key] = Object.fromEntries(st.options.map(o => [o.v, o.label || o.v])); });
+  const word = (key, v) => v === 'unknown' ? 'Not sure' : ((OPT[key] || {})[v] || v);
+  const say = (key, v) => Array.isArray(v) ? v.map(x => word(key, x)).join(', ') : word(key, v);
 
   const rows = [];
-  const push = (k, v) => { if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length)) rows.push({ k, v: label(v) }); };
-  push('Site address', a.siteAddress);
-  push('Property', [a.propertyType, a.builder, a.handover && 'handover ' + a.handover].filter(Boolean).join(' · '));
-  push('Drawings', a.plans);
-  push('To remove', a.toRemove);
-  push('Wants done', (a.scope || []).map(s => (SIZE[s] || {}).label || s));
-  push('Part of block', a.areaOfBlock);
-  Object.entries(a.sizes || {}).forEach(([k, v]) => {
-    const s = SIZE[k]; if (!s) return;
-    rows.push({ k: s.label, v: v === 'unknown' ? 'not known — excluded' : `${v} ${s.unit}`.trim() });
-  });
-  push('Access', a.accessMm === 'unknown' ? 'not measured' : (a.accessMm ? a.accessMm + ' mm' : null));
-  push('Steps', a.steps === 'unknown' ? 'not counted' : (a.steps != null ? a.steps + ' steps' : null));
-  push('Fall', a.fallMm === 'unknown' ? 'not assessed' : (a.fallMm != null ? (a.fallMm / 1000).toFixed(1) + ' m' : null));
-  push('Vehicle access', a.vehicle);
-  push('Services', a.services);
-  push('Timing', a.timing || a.startWhen);
-  push('Driver', a.driver);
-  push('Other quotes', a.otherQuotes);
-  push('Decision', a.decisionMaker);
-  push('Source', a.source);
-  if (!bp.decline && !bp.tooUnknown) rows.push({ k: 'Ballpark given', v: `$${bp.incLo.toLocaleString()} – $${bp.incHi.toLocaleString()} inc GST` });
-  if (a.priceReaction) rows.push({ k: 'Their reaction', v: a.priceReaction });
-  if (a.fallDir) rows.push({ k: 'Fall direction', v: a.fallDir === 'higher' ? 'back fence higher than the house' : 'back fence lower than the house' });
-  if (a._estimator) rows.push({ k: 'Answered', v: `by the client online, ${a._estimator.at} (version ${a._estimator.version})` });
-  if (a.notes) rows.push({ k: 'Notes', v: a.notes });
+  const push = (k, v) => { if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length)) rows.push({ k, v: Array.isArray(v) ? v.join(', ') : String(v) }); };
+  try {
+    push('Site address', a.siteAddress);
+    push('Property', [a.propertyType && say('propertyType', a.propertyType), a.builder, a.handover && 'handover: ' + say('handover', a.handover), a.startWhen && 'start: ' + say('startWhen', a.startWhen)].filter(Boolean).join(' · '));
+    push('Drawings they have', a.plans && say('plans', a.plans));
+    push('To remove first', a.toRemove && say('toRemove', a.toRemove));
+    push('Wants done', (a.scope || []).map(s => (SIZE[s] || {}).label || word('scope', s)));
+    push('Part of block', a.areaOfBlock && say('areaOfBlock', a.areaOfBlock));
+    Object.entries(a.sizes || {}).forEach(([k, v]) => {
+      const s = SIZE[k]; if (!s) return;
+      rows.push({ k: s.label, v: v === 'unknown' ? 'Not sure — to measure on site' : `${v} ${s.unit}`.trim() });
+    });
+    push('Side access width', a.accessMm === 'unknown' ? 'Not measured' : (a.accessMm ? a.accessMm + ' mm' : null));
+    push('Steps to work across', a.steps === 'unknown' ? 'Not counted' : (a.steps != null ? a.steps + ' steps' : null));
+    push('Fall front to back', a.fallMm === 'unknown' ? 'Not assessed' : (a.fallMm != null ? (a.fallMm / 1000).toFixed(1) + ' m' + (a.fallDir ? (a.fallDir === 'higher' ? ', back higher' : ', back lower') : '') : null));
+    push('Vehicle access', a.vehicle && say('vehicle', a.vehicle));
+    push('Underground / in the way', a.services && say('services', a.services));
+    push('Timing', a.timing && say('timing', a.timing));
+    push('Driving the date', a.driver && say('driver', a.driver));
+    push('Other quotes', a.otherQuotes && say('otherQuotes', a.otherQuotes));
+    push('Who decides', a.decisionMaker && say('decisionMaker', a.decisionMaker));
+    push('Source', a.source);
+    if (!bp.decline && !bp.tooUnknown && bp.incLo != null) rows.push({ k: partial ? 'Ballpark from these answers' : 'Ballpark given', v: `$${bp.incLo.toLocaleString()} – $${bp.incHi.toLocaleString()} inc GST` });
+    if (a.priceReaction) rows.push({ k: 'Their reaction', v: ({ works: 'That works', high: 'Higher than expected', low: 'Lower than expected', cheaper: 'Wants it cheaper', nocommit: 'Not sure yet', 'definite-no': 'Out of budget' })[a.priceReaction] || a.priceReaction });
+    if (a._estimator) rows.push({ k: 'Answered', v: `by the client online, ${a._estimator.at} (version ${a._estimator.version})` });
+    else if (partial) rows.push({ k: 'Answered', v: 'by the client online — they have not opened the ballpark yet' });
+    if (a.notes) rows.push({ k: 'Their notes', v: a.notes });
+  } catch (e) { console.error('[answers] rows failed for', l.name, e.message); }
+  // Which online questions are still blank, so the confirming call knows what to ask.
+  let unanswered = [];
+  try { if (partial || a._estimator) unanswered = require('../utils/estimator').unanswered(a); } catch (e) {}
 
   // Compare against the quote, if one exists.
   let compare = null;
-  if (l.quote_id) {
+  try { if (l.quote_id) {
     const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(l.quote_id);
     if (q) {
       const fq = fullQuote(q);
@@ -523,8 +539,8 @@ router.get('/:id/answers', (req, res) => {
         ballparkLo: bp.incLo, ballparkHi: bp.incHi, inBallpark,
         excludedOnCall: bp.exc || [] };
     }
-  }
-  res.json({ hasCall: Object.keys(a).length > 0, rows, compare, ballpark: bp });
+  } } catch (e) { compare = null; console.error('[answers] quote comparison failed for', l.name, e.message); }
+  res.json({ hasCall: rows.length > 0, partial, unanswered, online: partial || !!a._estimator, rows, compare, ballpark: bp });
 });
 
 // ---- SITE VISIT CALENDAR -----------------------------------------------------
@@ -857,14 +873,19 @@ router.post('/:id/call/finish', (req, res) => {
 router.get('/:id/message', (req, res) => {
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'not found' });
-  const stage = req.query.stage || l.stage || 'noanswer';
-  let quoteLink = '';
+  const stage = req.query.stage || l.stage || 'call1';
+  // The quote the client should be reading is the latest revision, not the first one linked.
+  let quoteLink = '', quoteNumber = '';
   if (l.quote_id) {
-    const q = db.prepare('SELECT token FROM quotes WHERE id=?').get(l.quote_id);
-    if (q) quoteLink = `${req.protocol}://${req.get('host')}/q/${q.token}`;
+    const q = latestRevision({ id: l.quote_id }) || db.prepare('SELECT token, quote_number FROM quotes WHERE id=?').get(l.quote_id);
+    if (q) { quoteLink = `${req.protocol}://${req.get('host')}/q/${q.token}`; quoteNumber = q.quote_number || ''; }
   }
+  // A visit message with no date typed in uses the visit that is actually booked.
+  let date = req.query.date, time = req.query.time;
+  if (!date) { try { const v = nextVisit(l.id); if (v) { date = v.date; time = time || v.time || ''; } } catch (e) {} }
+  let estLink = ''; try { estLink = String(settingGet('est_url') || '').split('?')[0]; } catch (e) {}
   const msg = buildMessage({ lead: l, stage, sender: req.user ? (req.user.name || req.user.username) : '',
-    date: req.query.date, time: req.query.time, quoteLink });
+    date, time, quoteLink, quoteNumber, estLink });
   // Australian mobiles: 04xx -> 614xx for WhatsApp's international format.
   const digits = String(l.phone || '').replace(/[^\d+]/g, '');
   let intl = digits.replace(/^\+/, '');
@@ -873,7 +894,7 @@ router.get('/:id/message', (req, res) => {
   res.json({ ...msg, stage, quoteLink,
     phoneOk: usable, emailOk: !!l.email,
     waUrl: usable ? `https://wa.me/${intl}?text=${encodeURIComponent(msg.body)}` : null,
-    smsUrl: usable ? `sms:${digits}?&body=${encodeURIComponent(msg.body)}` : null });
+    smsUrl: usable ? `sms:${digits}?&body=${encodeURIComponent(msg.sms || msg.body)}` : null });
 });
 
 // Record what was sent. WhatsApp and SMS hand off to the phone, so the tool logs what
@@ -1011,6 +1032,40 @@ router.post('/:id/close', async (req, res) => {
   db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
     .run(newId(), l.id, 'note', r.stage, who, 'logged', 'Closed: ' + reason + (emailed ? ' · close-out email sent' : ''));
   res.json({ ok: true, stage: r.stage, reason, emailed });
+});
+
+// Reopen a closed enquiry. It goes back to the step it had reached before it was closed,
+// with a follow-up due today, and its quote (closed along with it) is reopened too.
+const CLOSED_STAGES = ['lost', 'closeout', 'disqualified'];
+router.post('/:id/reopen', (req, res) => {
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+  if (!l) return res.status(404).json({ error: 'not found' });
+  if (l.status !== 'Lost') return res.status(409).json({ error: 'This enquiry is not closed.' });
+  const who = req.user ? (req.user.name || req.user.username) : '';
+  const { normalise, stageById: sb } = require('../utils/leadTemplates');
+  // The last step recorded in its history before any closing step.
+  const hist = db.prepare("SELECT stage FROM lead_messages WHERE lead_id=? AND stage IS NOT NULL AND stage<>'' ORDER BY created_at DESC, rowid DESC").all(l.id)
+    .map(r => normalise(r.stage)).filter(st => !CLOSED_STAGES.includes(st) && st !== 'won' && sb(st).id === st);
+  const back = hist[0] || 'call1';
+  const today = require('../utils/refs').sydneyParts().ymd;
+  let quoteNote = '';
+  if (l.quote_id) {
+    try {
+      const q = db.prepare('SELECT id, quote_number, status, lost_at FROM quotes WHERE id=?').get(l.quote_id);
+      if (q && q.status !== 'accepted' && q.lost_at) {
+        db.prepare("UPDATE quotes SET lost_at=NULL, lost_reason=NULL, link_off=0, updated_at=datetime('now') WHERE id=?").run(q.id);
+        quoteNote = ` · quote ${q.quote_number} reopened and its link switched back on`;
+      }
+    } catch (e) {}
+  }
+  db.prepare("UPDATE leads SET stage=?, status=?, next_followup=?, declined_reason=NULL, stage_override=NULL, override_snapshot=NULL, parked=0, updated_at=datetime('now') WHERE id=?")
+    .run(back, l.quote_id ? 'Quoted' : 'Contacted', today, l.id);
+  // Let the evidence have the last word (a live quote puts it in Step 4, drawings in Step 3).
+  const now = syncLeadStage(db.prepare('SELECT * FROM leads WHERE id=?').get(l.id));
+  const label = sb(now.stage).label;
+  db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
+    .run(newId(), l.id, 'note', now.stage, who, 'logged', `Reopened — back at "${label}"${l.declined_reason ? ' · was closed as: ' + l.declined_reason : ''}${quoteNote}`);
+  res.json({ ok: true, stage: now.stage, label });
 });
 
 // The sample-quote message for this lead: link to the current sample plus wording the rep

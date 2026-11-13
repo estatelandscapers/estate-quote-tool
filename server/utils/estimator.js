@@ -238,6 +238,13 @@ function answeredCount(a) {
   return { answered: done.length, total: steps.length };
 }
 
+// The questions this client was shown and has left blank, in their short names.
+function unanswered(a) {
+  a = a || {};
+  return applicable(onlineSteps(), a).filter(s => !s.optional && !(s.type === 'sizes' ? Object.keys(a.sizes || {}).length > 0 : a[s.key] != null && a[s.key] !== '' && !(Array.isArray(a[s.key]) && !a[s.key].length)))
+    .map(s => DIFF_LABEL[s.key] || s.id);
+}
+
 // ---- the access code -----------------------------------------------------------------------
 function codeFor() {
   // 4 digits, never shared with another live code. Leading zeros allowed: "0417" is fine.
