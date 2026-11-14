@@ -34,23 +34,27 @@ const mode = () => { const m = settingGet('sms_mode'); return m === 'live' || m 
 // What can be sent, in the order the client meets them. `vars` is what the wording may use.
 const TYPES = [
   { key: 'enquiry', label: 'Enquiry received', when: 'Straight after a website enquiry arrives.', vars: ['first', 'ref', 'phone'],
-    def: 'Estate Landscapers: thanks {{first}}, we have your enquiry (ref {{ref}}) and will be in touch shortly. Questions? Call {{phone}}.' },
+    def: 'Thank you for your enquiry. We have it (ref {{ref}}) and will be in touch shortly.' },
   { key: 'invite', label: 'Estimator invite', when: 'With the email that sends the online estimate code.', vars: ['first', 'link', 'code', 'phone'],
-    def: 'Estate Landscapers: Hi {{first}}, get a ballpark for your project online in about 8 minutes: {{link}} Your code is {{code}}. Questions? Call {{phone}}.' },
+    def: 'You can get a ballpark for your project online in about 8 minutes: {{link}}\nYour code is {{code}}.' },
   { key: 'est_reminder', label: 'Estimate reminder', when: 'If the online estimate is still not finished after the number of days below.', vars: ['first', 'link', 'code', 'phone'], days: 2,
-    def: 'Estate Landscapers: Hi {{first}}, your online estimate is still waiting. It takes about 8 minutes: {{link}} Code {{code}}. Stuck on a question? Call {{phone}} and we will help.' },
+    def: 'Your online estimate is still waiting. It takes about 8 minutes: {{link}}\nYour code is {{code}}. If you are stuck on a question, call me and I will help.' },
   { key: 'visit', label: 'Site visit reminder', when: 'The afternoon before a booked site visit.', vars: ['first', 'when', 'phone'],
-    def: 'Estate Landscapers: Hi {{first}}, a reminder that your site visit is tomorrow, {{when}}. Need to change it? Call {{phone}}.' },
+    def: 'A reminder that your site visit is tomorrow, {{when}}. Call me if you need to change it.' },
   { key: 'quote', label: 'Quote sent', when: 'When you press Send to client on a quote.', vars: ['first', 'quote', 'link', 'phone'],
-    def: 'Estate Landscapers: Hi {{first}}, your quote {{quote}} is ready to view: {{link}} Questions? Call {{phone}}.' },
+    def: 'Your quote {{quote}} is ready to view: {{link}}' },
   { key: 'quote_followup', label: 'Quote follow-up', when: 'If the quote is still not accepted after the number of days below.', vars: ['first', 'quote', 'link', 'phone'], days: 3,
-    def: 'Estate Landscapers: Hi {{first}}, checking in on quote {{quote}}. Any questions, or changes you would like? Call {{phone}} or reply to our email. {{link}}' },
+    def: 'Checking in on quote {{quote}}. Any questions, or changes you would like? Call me or reply to our email. {{link}}' },
   { key: 'signed', label: 'Contract signed', when: 'When the client signs and the contract is emailed.', vars: ['first', 'quote', 'phone'],
-    def: 'Estate Landscapers: thank you {{first}}. Your signed contract for quote {{quote}} has been emailed to you. We will call to confirm scheduling.' },
+    def: 'Thank you. Your signed contract for quote {{quote}} has been emailed to you. We will call to confirm scheduling.' },
 ];
+// The wording before v47, which began "Estate Landscapers:" and carried the phone number
+// inside the text. A saved copy of one of these is the old default, not an edit, so the
+// new default replaces it.
+const OLD_DEFS = {"enquiry": "Estate Landscapers: thanks {{first}}, we have your enquiry (ref {{ref}}) and will be in touch shortly. Questions? Call {{phone}}.", "invite": "Estate Landscapers: Hi {{first}}, get a ballpark for your project online in about 8 minutes: {{link}} Your code is {{code}}. Questions? Call {{phone}}.", "est_reminder": "Estate Landscapers: Hi {{first}}, your online estimate is still waiting. It takes about 8 minutes: {{link}} Code {{code}}. Stuck on a question? Call {{phone}} and we will help.", "visit": "Estate Landscapers: Hi {{first}}, a reminder that your site visit is tomorrow, {{when}}. Need to change it? Call {{phone}}.", "quote": "Estate Landscapers: Hi {{first}}, your quote {{quote}} is ready to view: {{link}} Questions? Call {{phone}}.", "quote_followup": "Estate Landscapers: Hi {{first}}, checking in on quote {{quote}}. Any questions, or changes you would like? Call {{phone}} or reply to our email. {{link}}", "signed": "Estate Landscapers: thank you {{first}}. Your signed contract for quote {{quote}} has been emailed to you. We will call to confirm scheduling."};
 const typeOf = k => TYPES.find(t => t.key === k);
 const isOn = k => settingGet('sms_on_' + k) === '1';
-const textOf = k => { const s = settingGet('sms_text_' + k); return s && String(s).trim() ? String(s) : typeOf(k).def; };
+const textOf = k => { const s = settingGet('sms_text_' + k); return s && String(s).trim() && String(s).trim() !== OLD_DEFS[k] ? String(s) : typeOf(k).def; };
 const daysOf = k => { const d = parseFloat(settingGet('sms_days_' + k)); return isFinite(d) && d > 0 ? d : typeOf(k).days; };
 
 // ---- numbers and text -------------------------------------------------------------------
@@ -80,7 +84,16 @@ function fill(tpl, vars) {
     .replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?])/g, '$1').trim();
 }
 const firstName = n => String(n || '').trim().split(/\s+/)[0] || 'there';
-const companyPhone = () => settingGet('company_phone') || '0414 147 008';
+const companyPhone = () => require('./leadTemplates').localPhone(settingGet('company_phone') || '0414147008');
+const signName = () => String(settingGet('sms_sign_name') || 'Smit').trim();
+// Every text has the same shape as every other message from the business:
+//   Hi <first name>, / the message / Thanks / <name> / Estate Landscapers / <phone>
+// The saved wording is only the middle. Wording that brings its own greeting is left alone.
+function shape(first, text) {
+  const t = String(text || '').trim();
+  if (/^\s*(hi|hello|dear)\b/i.test(t)) return t;
+  return `Hi ${first},\n\n${t}\n\nThanks\n${[signName(), 'Estate Landscapers', companyPhone()].filter(Boolean).join('\n')}`;
+}
 
 // ---- the provider -----------------------------------------------------------------------
 async function providerCall(path, opts = {}) {
@@ -157,23 +170,23 @@ const leadById = id => id ? db.prepare('SELECT * FROM leads WHERE id=?').get(id)
 
 function enquiry(lead) {
   if (!lead) return;
-  return send({ type: 'enquiry', ref: 'enquiry:' + lead.id, lead, body: fill(textOf('enquiry'), { first: firstName(lead.name), ref: lead.enquiry_ref || '', phone: companyPhone() }) });
+  return send({ type: 'enquiry', ref: 'enquiry:' + lead.id, lead, body: shape(firstName(lead.name), fill(textOf('enquiry'), { first: firstName(lead.name), ref: lead.enquiry_ref || '', phone: companyPhone() })) });
 }
 function invite(lead, { resend } = {}) {
   if (!lead) return;
   // A resend by hand is a new message, so it gets its own key; the automatic one is once only.
   return send({ type: 'invite', ref: 'invite:' + lead.id + (resend ? ':' + Date.now() : ''), lead,
-    body: fill(textOf('invite'), { first: firstName(lead.name), link: estLink(), code: lead.est_code || '', phone: companyPhone() }) });
+    body: shape(firstName(lead.name), fill(textOf('invite'), { first: firstName(lead.name), link: estLink(), code: lead.est_code || '', phone: companyPhone() })) });
 }
 function quoteSent(q, link) {
   const lead = leadById(q && q.lead_id); if (!lead) return;
   return send({ type: 'quote', ref: `quote:${q.id}:${q.send_count || 0}`, lead, quoteId: q.id,
-    body: fill(textOf('quote'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', link, phone: companyPhone() }) });
+    body: shape(firstName(q.client_name || lead.name), fill(textOf('quote'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', link, phone: companyPhone() })) });
 }
 function signed(q) {
   const lead = leadById(q && q.lead_id); if (!lead) return;
   return send({ type: 'signed', ref: 'signed:' + q.id, lead, quoteId: q.id,
-    body: fill(textOf('signed'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', phone: companyPhone() }) });
+    body: shape(firstName(q.client_name || lead.name), fill(textOf('signed'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', phone: companyPhone() })) });
 }
 
 // ---- reminders (every 5 minutes, texts only between 9 am and 6 pm Sydney) ---------------
@@ -193,7 +206,7 @@ async function runReminders() {
         AND COALESCE(est_status,'') IN ('invited','started') AND status NOT IN ('Won','Lost') AND COALESCE(parked,0)=0
         AND est_code IS NOT NULL AND COALESCE(est_code_expires,'') > ? LIMIT 20`).all(sqlAgo(d), sqlAgo(d + 7), sinceOn('est_reminder'), now);
     for (const l of rows) await send({ type: 'est_reminder', ref: 'est_reminder:' + l.id, lead: l,
-      body: fill(textOf('est_reminder'), { first: firstName(l.name), link: estLink(), code: l.est_code, phone: companyPhone() }) });
+      body: shape(firstName(l.name), fill(textOf('est_reminder'), { first: firstName(l.name), link: estLink(), code: l.est_code, phone: companyPhone() })) });
   }
 
   if (isOn('quote_followup')) {
@@ -205,7 +218,7 @@ async function runReminders() {
     for (const q of rows) {
       const lead = leadById(q.lead_id); if (!lead || ['Won', 'Lost'].includes(lead.status) || lead.parked) continue;
       await send({ type: 'quote_followup', ref: 'quote_followup:' + q.id, lead, quoteId: q.id,
-        body: fill(textOf('quote_followup'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', link: base ? `${base}/q/${q.token}` : '', phone: companyPhone() }) });
+        body: shape(firstName(q.client_name || lead.name), fill(textOf('quote_followup'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', link: base ? `${base}/q/${q.token}` : '', phone: companyPhone() })) });
     }
   }
 
@@ -217,7 +230,7 @@ async function runReminders() {
       const lead = leadById(v.lead_id); if (!lead || ['Won', 'Lost'].includes(lead.status)) continue;
       const day = new Date(v.visit_date + 'T00:00:00Z').toLocaleDateString('en-AU', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' });
       await send({ type: 'visit', ref: `visit:${v.id}:${v.visit_date}`, lead,
-        body: fill(textOf('visit'), { first: firstName(lead.name), when: [day, v.visit_time].filter(Boolean).join(' at '), phone: companyPhone() }) });
+        body: shape(firstName(lead.name), fill(textOf('visit'), { first: firstName(lead.name), when: [day, v.visit_time].filter(Boolean).join(' at '), phone: companyPhone() })) });
     }
   }
 }
@@ -228,9 +241,9 @@ function start() {
 // ---- for the Settings page --------------------------------------------------------------
 function state() {
   return {
-    configured: configured(), sender: sender() || null, mode: mode(), trialNumbers: String(settingGet('sms_trial_numbers') || ''),
+    configured: configured(), sender: sender() || null, mode: mode(), signName: signName(), trialNumbers: String(settingGet('sms_trial_numbers') || ''),
     types: TYPES.map(t => ({ key: t.key, label: t.label, when: t.when, vars: t.vars, on: isOn(t.key), text: textOf(t.key), def: t.def,
-      days: t.days ? daysOf(t.key) : null, measure: measure(fill(textOf(t.key), SAMPLE)) })),
+      days: t.days ? daysOf(t.key) : null, measure: measure(shape(SAMPLE.first, fill(textOf(t.key), SAMPLE))), preview: shape(SAMPLE.first, fill(textOf(t.key), SAMPLE)) })),
     recent: db.prepare(`SELECT s.type, s.to_number, s.body, s.status, s.error, s.sent_by, s.created_at, s.parts, l.name AS lead FROM sms_log s LEFT JOIN leads l ON l.id=s.lead_id ORDER BY s.created_at DESC, s.rowid DESC LIMIT 25`).all(),
     counts: db.prepare("SELECT status, COUNT(*) n FROM sms_log WHERE created_at >= datetime('now','-30 days') GROUP BY status").all(),
   };
@@ -241,6 +254,7 @@ const SAMPLE = { first: 'Jonathan', ref: 'ENQ-2026-1101', phone: '0414 147 008',
 
 function save(b) {
   if (['off', 'trial', 'live'].includes(b.mode)) settingSet('sms_mode', b.mode);
+  if (b.signName !== undefined && String(b.signName).trim()) settingSet('sms_sign_name', String(b.signName).trim().slice(0, 30));
   if (b.trialNumbers !== undefined) settingSet('sms_trial_numbers', String(b.trialNumbers || '').slice(0, 600));
   (b.types || []).forEach(t => {
     if (!typeOf(t.key)) return;
@@ -263,4 +277,4 @@ async function check() {
   return { ok: true, balance: a.body.credit_balance != null ? a.body.credit_balance : null, sender: sender(), senderApproved: senderOk };
 }
 
-module.exports = { TYPES, configured, mode, mobile, measure, fill, send, enquiry, invite, quoteSent, signed, runReminders, start, state, save, check, trialNumbers };
+module.exports = { shape, measureShaped: text => measure(shape(SAMPLE.first, fill(text, SAMPLE))), TYPES, configured, mode, mobile, measure, fill, send, enquiry, invite, quoteSent, signed, runReminders, start, state, save, check, trialNumbers };

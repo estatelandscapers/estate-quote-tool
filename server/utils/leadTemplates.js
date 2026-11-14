@@ -45,8 +45,19 @@ const STAGES = [
 
 // One message per stage — the message that belongs to the step the lead is on, so what the
 // client reads matches what was just said or done. Each has a full version (email and
-// WhatsApp) and a short one (SMS, kept near one text). No sign-off in the wording: email
-// adds the signature, WhatsApp adds the sender's name and number.
+// WhatsApp) and a short one (SMS).
+//
+// Every message has the same shape, added by buildMessage, so the wording below is only
+// the middle:
+//     Hi <first name>,
+//
+//     <the message>
+//
+//     Thanks
+//     <sender>
+//     Estate Landscapers
+//     <phone>
+// The phone number is in the sign-off, so the wording says "call me", not the number.
 //
 // Fills in: {{name}} first name · {{job}} what they want done · {{address}} site address ·
 // {{suburb}} · {{me}} who is sending · {{slot}} "on Friday 20 November at 9:00am" ·
@@ -56,98 +67,82 @@ const DEFAULTS = {
   // ---- Step 1: enquiry — a message after every unanswered call -------------------------
   call1: {
     subject: 'Your {{jobshort}} enquiry — Estate Landscapers',
-    body: `Hi {{name}},
+    body: `Thank you for your enquiry about {{job}}{{at_address}}.
 
-{{me}} from Estate Landscapers here. Thanks for your enquiry about {{job}}{{at_address}}.
+I tried to call you just now to run through the project. It takes about ten minutes and lets me give you a realistic ballpark before anyone spends time on a site visit.
 
-I tried to call you just now to run through the project — it takes about ten minutes and lets me give you a realistic ballpark before anyone spends time on a site visit.
-
-When is a good time to call you back? You can reply here with a time, or ring me on {{phone}}.
+When is a good time to call you back? You can reply here with a time, or call me whenever suits.
 
 If it is easier, you can also answer the same questions online in about 8 minutes and see a ballpark straight away: {{estlink}}`,
-    sms: `Estate Landscapers: Hi {{name}}, {{me}} here. I tried calling about your {{jobshort}} enquiry. When suits for a quick call? Or ring me on {{phone}}.`,
+    sms: `I tried calling about your {{jobshort}} enquiry. When is a good time for a quick call?`,
   },
   call2: {
     subject: 'Tried you again — your {{jobshort}} enquiry',
-    body: `Hi {{name}},
-
-{{me}} from Estate Landscapers. I have tried you a second time about your {{job}} enquiry and missed you again — no problem, I know the days get busy.
+    body: `I have tried you a second time about your {{job}} enquiry and missed you again — no problem, I know the days get busy.
 
 To give you a proper figure I only need a few details: roughly how much of each item, what the access is like, and whether you have any drawings. A ten-minute call covers it.
 
-Let me know a time that suits, or call me on {{phone}} whenever you are free. Before 8 am and after 4 pm are both fine.`,
-    sms: `Estate Landscapers: Hi {{name}}, missed you again about your {{jobshort}} enquiry. What time suits for a 10 min call? {{me}}, {{phone}}.`,
+Let me know a time that suits, or call me whenever you are free. Before 8 am and after 4 pm are both fine.`,
+    sms: `I missed you again about your {{jobshort}} enquiry. What time suits for a 10 minute call?`,
   },
   call3: {
     subject: 'Still keen to help with your {{jobshort}} project',
-    body: `Hi {{name}},
+    body: `I have called three times now about your {{job}} enquiry and have not been able to reach you.
 
-{{me}} from Estate Landscapers again. I have called three times now about your {{job}} enquiry and have not been able to reach you.
-
-If the project is still going ahead, I would like to help. Reply with a time that suits, or call {{phone}}, and I will work around you.
+If the project is still going ahead, I would like to help. Reply with a time that suits, or call me, and I will work around you.
 
 If your plans have changed or you have gone with someone else, just let me know and I will close the enquiry so you do not hear from us again.`,
-    sms: `Estate Landscapers: Hi {{name}}, third try about your {{jobshort}} enquiry. Still going ahead? Reply with a time or call {{phone}}. If not, just say so. {{me}}`,
+    sms: `Third try about your {{jobshort}} enquiry. If it is still going ahead, reply with a time to call. If not, just let me know.`,
   },
   call4: {
     subject: 'Last call — your {{jobshort}} enquiry',
-    body: `Hi {{name}},
+    body: `This is my last attempt to reach you about your {{job}} enquiry. I do not want to keep chasing if the timing is not right.
 
-{{me}} from Estate Landscapers. This is my last attempt to reach you about your {{job}} enquiry — I do not want to keep chasing if the timing is not right.
-
-If you would still like a price, call me on {{phone}} or reply to this message this week and I will pick it straight up.
+If you would still like a price, call me or reply to this message this week and I will pick it straight up.
 
 Otherwise I will close the enquiry at the end of the week. You are welcome to come back to us any time and we will start from where we left off.`,
-    sms: `Estate Landscapers: Hi {{name}}, last try about your {{jobshort}} enquiry. Still want a price? Call {{phone}} this week, or I will close it off. {{me}}`,
+    sms: `Last try about your {{jobshort}} enquiry. If you still want a price, call or reply this week. Otherwise I will close it off.`,
   },
   callback: {
     subject: 'Call back {{slot}} — Estate Landscapers',
-    body: `Hi {{name}},
-
-Thanks for picking up just now. As agreed, I will call you back {{slot}} to go through your {{job}} project.
+    body: `Thank you for picking up just now. As agreed, I will call you back {{slot}} to go through your {{job}} project.
 
 The call takes about ten minutes. If you can have a rough idea of the areas and sizes involved, and any drawings you hold, I can give you a ballpark on the spot.
 
-If that time stops suiting, reply here or call {{phone}} and we will move it.`,
-    sms: `Estate Landscapers: Hi {{name}}, I will call you back {{slot}} about your {{jobshort}}. Need to move it? Call {{phone}}. {{me}}`,
+If that time stops suiting, reply here or call me and we will move it.`,
+    sms: `Confirming I will call you back {{slot}} about your {{jobshort}} project. Call me if that needs to move.`,
   },
   // ---- Step 2: qualifying ------------------------------------------------------------
   qualified: {
     subject: 'Next steps for your {{jobshort}} project',
-    body: `Hi {{name}},
-
-Thanks for your time on the phone. It was good to go through your {{job}} project{{at_address}}.
+    body: `Thank you for your time on the phone. It was good to go through your {{job}} project{{at_address}}.
 
 Here is what happens from here:
 
 1. You send us what you have: any drawings (architectural, hydraulic, landscape plan or DA consent) and a few photos of the front, the back and the side access.
 2. We check the scope against those and confirm the ballpark we discussed.
-3. We come out for a site visit — Fridays — to measure, check levels and look at access.
+3. We come out for a site visit, on a Friday, to measure, check levels and look at access.
 4. Your itemised quote follows within 48 hours of the visit, with three levels of finish to compare.
 
 You can send the drawings and photos by replying to this message or to {{email}}. If there is nothing drawn up yet, the photos alone are enough to keep moving.
 
-Any questions, call me on {{phone}}.`,
-    sms: `Estate Landscapers: thanks for the chat {{name}}. Next step: email any drawings and photos of the front, back and side access to {{email}}. {{me}}`,
+If you have any questions, call me.`,
+    sms: `Thank you for the chat. Next step: please email any drawings and photos of the front, back and side access to {{email}}`,
   },
   estimatedone: {
     subject: 'Your online estimate — Estate Landscapers',
-    body: `Hi {{name}},
-
-{{me}} from Estate Landscapers here. Thank you for completing the online estimate for your {{job}} project{{at_address}} — I have your answers in front of me.
+    body: `Thank you for completing the online estimate for your {{job}} project{{at_address}}. I have your answers in front of me.
 
 Before we come out I would like a quick call to confirm two or three of them, mainly the sizes and the access, so the site visit and the quote are based on the right scope. It takes about five minutes.
 
-When suits today or tomorrow? Reply with a time, or call me on {{phone}}.
+When suits today or tomorrow? Reply with a time, or call me.
 
 Your code still works if you would like to change any answers: {{estlink}}`,
-    sms: `Estate Landscapers: thanks for doing the online estimate {{name}}. Can I call to confirm a couple of answers? When suits? {{me}}, {{phone}}`,
+    sms: `Thank you for completing the online estimate. I would like a 5 minute call to confirm a couple of answers. When suits?`,
   },
   docsasked: {
     subject: 'Drawings and photos for your {{jobshort}} project',
-    body: `Hi {{name}},
-
-{{me}} from Estate Landscapers. To take your {{job}} project{{at_address}} to the next step, I need the following from you:
+    body: `To take your {{job}} project{{at_address}} to the next step, I need the following from you:
 
 • Drawings — whichever you have: architectural, hydraulic, a landscape plan, or the DA consent
 • Photos — the front, the backyard, and the side access at its narrowest point
@@ -155,39 +150,33 @@ Your code still works if you would like to change any answers: {{estlink}}`,
 
 Send them by replying to this message or to {{email}}. Phone photos are fine, and if you have no drawings, the photos on their own are enough.
 
-Once they are in, I will check the scope, confirm the ballpark and book a Friday site visit with you. If anything on the list is hard to find, call me on {{phone}} and we will work around it.`,
-    sms: `Estate Landscapers: Hi {{name}}, please send your drawings (if any) and photos of the front, back and side access to {{email}}. {{me}}`,
+Once they are in, I will check the scope, confirm the ballpark and book a Friday site visit with you. If anything on the list is hard to find, call me and we will work around it.`,
+    sms: `To move ahead I need your drawings (if any) and photos of the front, back and side access. Please email them to {{email}}`,
   },
   disqualified: {
     subject: 'Your landscaping enquiry — Estate Landscapers',
-    body: `Hi {{name}},
-
-Thank you for going through your {{job}} project with us and for being upfront about where you have landed.
+    body: `Thank you for going through your {{job}} project with us and for being upfront about where you have landed.
 
 As discussed, I will close the enquiry on our side, so you will not get any more follow-ups from us.
 
-If the scope, timing or budget changes down the track, call me on {{phone}} and we will pick it up from where we left off — everything you have told us stays on file.`,
-    sms: `Estate Landscapers: thanks {{name}}. As discussed I have closed your enquiry. If plans change, call {{phone}} and we will pick it straight up. {{me}}`,
+If the scope, timing or budget changes down the track, call me and we will pick it up from where we left off. Everything you have told us stays on file.`,
+    sms: `As discussed, I have closed your enquiry. If your plans change, call me and we will pick it straight up.`,
   },
   // ---- Step 3: documentation -------------------------------------------------------
   docsin: {
     subject: 'Got your drawings — booking the site visit',
-    body: `Hi {{name}},
-
-Thank you, I have received what you sent for the {{job}} project{{at_address}} and have been through it.
+    body: `Thank you, I have received what you sent for the {{job}} project{{at_address}} and have been through it.
 
 The next step is a site visit so we can measure up, check levels and falls, and look at the access for machinery and materials. We do visits on Fridays and they take about 30 to 45 minutes.
 
-I have {{slot}} available — does that suit? If not, tell me which Friday and whether morning or afternoon is better, and I will fit around you.
+I have {{slot}} available. Does that suit? If not, tell me which Friday and whether morning or afternoon is better, and I will fit around you.
 
 After the visit your itemised quote follows within 48 hours.`,
-    sms: `Estate Landscapers: drawings received, thanks {{name}}. Next is a site visit. Does {{slot}} suit? Reply or call {{phone}}. {{me}}`,
+    sms: `I have your drawings, thank you. Next is a site visit of about 30 to 45 minutes. Does {{slot}} suit?`,
   },
   visitbooked: {
     subject: 'Site visit confirmed {{slot}}',
-    body: `Hi {{name}},
-
-Confirming your site visit {{slot}}{{at_address}}.
+    body: `Confirming your site visit {{slot}}{{at_address}}.
 
 On the day we will:
 • measure each area for the {{job}}
@@ -197,26 +186,22 @@ On the day we will:
 
 It takes about 30 to 45 minutes. It helps if we can get to the whole area, including the side access, and if any pets are secured. If you have drawings we have not seen yet, please have them handy.
 
-Your itemised quote follows within 48 hours of the visit. If you need to change the time, call me on {{phone}}.`,
-    sms: `Estate Landscapers: Hi {{name}}, site visit confirmed {{slot}}. Please keep the side access clear. Changes: {{phone}}. {{me}}`,
+Your itemised quote follows within 48 hours of the visit. If you need to change the time, call me.`,
+    sms: `Your site visit is confirmed {{slot}}. Please keep the side access clear. Call me if you need to change it.`,
   },
   visitdone: {
     subject: 'Thanks for having us out — your quote is next',
-    body: `Hi {{name}},
-
-Thank you for your time on site today. I have the measurements, levels and photos I need for the {{job}}.
+    body: `Thank you for your time on site today. I have the measurements, levels and photos I need for the {{job}}.
 
 Your quote will be with you within 48 hours. It is itemised element by element and shows three levels of finish, so you can see exactly what each option includes and add, remove or stage items to suit the budget.
 
-If anything comes to mind in the meantime that we did not cover on site, reply here or call me on {{phone}} so I can include it.`,
-    sms: `Estate Landscapers: thanks for today {{name}}. Your itemised quote, with three levels of finish, will be with you within 48 hours. Questions? {{phone}}. {{me}}`,
+If anything comes to mind in the meantime that we did not cover on site, reply here or call me so I can include it.`,
+    sms: `Thank you for your time on site today. Your itemised quote, with three levels of finish, will be with you within 48 hours.`,
   },
   // ---- Step 4: quote ----------------------------------------------------------------
   quotesent: {
     subject: 'Your quote {{quote}} — Estate Landscapers',
-    body: `Hi {{name}},
-
-Your quote for the {{job}}{{at_address}} is ready:
+    body: `Your quote for the {{job}}{{at_address}} is ready:
 
 {{quotelink}}
 
@@ -225,54 +210,47 @@ A few pointers for reading it:
 • Every item is priced separately, so you can add, remove or stage parts of the work.
 • When you are happy, you can accept and sign on the same page.
 
-I will give you a call to check it came through and to walk you through anything that is unclear. If you would rather go through it sooner, I am on {{phone}}.`,
-    sms: `Estate Landscapers: Hi {{name}}, your quote {{quote}} is ready: {{quotelink}} I will call to go through it. {{me}}`,
+I will give you a call to check it came through and to walk you through anything that is unclear. If you would rather go through it sooner, call me.`,
+    sms: `Your quote {{quote}} is ready: {{quotelink}}
+I will call to walk you through it.`,
   },
   quotechase1: {
     subject: 'Your quote {{quote}} — any questions?',
-    body: `Hi {{name}},
-
-{{me}} from Estate Landscapers. I wanted to check you have had a chance to look through the quote for your {{job}}:
+    body: `I wanted to check you have had a chance to look through the quote for your {{job}}:
 
 {{quotelink}}
 
 If something is not quite right — an item you want changed, a different finish, or a figure you would like explained — tell me and I will revise it. Quotes usually go through one or two rounds before they are final, so changes are no trouble.
 
-Happy to talk it through on {{phone}} whenever suits.`,
-    sms: `Estate Landscapers: Hi {{name}}, any questions on quote {{quote}}? Happy to adjust it. {{quotelink}} {{me}}, {{phone}}`,
+I am happy to talk it through whenever suits.`,
+    sms: `Have you had a chance to look at quote {{quote}}? I am happy to adjust anything or explain a figure. {{quotelink}}`,
   },
   quotechase2: {
     subject: 'Your quote {{quote}} — how is it looking?',
-    body: `Hi {{name}},
-
-Following up on the quote for your {{job}}:
+    body: `Following up on the quote for your {{job}}:
 
 {{quotelink}}
 
 I would like to know where you have landed, whichever way it is going. If the total is higher than you planned for, we can stage the work or change the finish to bring it in. If you are comparing quotes, I am glad to go through ours line by line so you can compare like for like.
 
-Our schedule fills a few weeks ahead, so if you have a start date in mind it is worth locking in. Call me on {{phone}} or reply here.`,
-    sms: `Estate Landscapers: Hi {{name}}, checking in on quote {{quote}}. If the price or scope needs work we can stage or adjust it. Call {{phone}}. {{me}}`,
+Our schedule fills a few weeks ahead, so if you have a start date in mind it is worth locking in. Call me or reply here.`,
+    sms: `Checking in on quote {{quote}}. If the price or scope needs work, we can stage or adjust it. Call me any time.`,
   },
   quotefinal: {
     subject: 'Last check-in on your quote {{quote}}',
-    body: `Hi {{name}},
-
-This is my last check-in on the quote for your {{job}}:
+    body: `This is my last check-in on the quote for your {{job}}:
 
 {{quotelink}}
 
 If you would like to go ahead, you can accept and sign on that page and I will get you into the schedule. If you need a change first, tell me what and I will revise it.
 
-If it is not going ahead, that is completely fine — a short reply lets me close the file. I will switch the quote link off at the end of the week, and it can be reopened any time by calling {{phone}}.`,
-    sms: `Estate Landscapers: Hi {{name}}, last check-in on quote {{quote}}. Going ahead, need a change, or not proceeding? A quick reply or call to {{phone}} helps. {{me}}`,
+If it is not going ahead, that is completely fine. A short reply lets me close the file. I will switch the quote link off at the end of the week, and it can be reopened any time with a call.`,
+    sms: `Last check-in on quote {{quote}}. Going ahead, need a change, or not proceeding? A quick reply or call helps me close it off properly.`,
   },
   // ---- Step 5: outcome ---------------------------------------------------------------
   won: {
     subject: 'Thank you — next steps for your project',
-    body: `Hi {{name}},
-
-Thank you for going ahead with the {{job}}{{at_address}} — we appreciate the trust.
+    body: `Thank you for going ahead with the {{job}}{{at_address}}. We appreciate the trust.
 
 Here is what happens next:
 
@@ -281,30 +259,24 @@ Here is what happens next:
 3. We give you a start date and an outline of the program.
 4. One point of contact through the job, with progress photos as we go.
 
-I will be in touch shortly with the start date. In the meantime, call me on {{phone}} with any questions.`,
-    sms: `Estate Landscapers: thank you {{name}}, great to have you on board. I will be in touch shortly with selections and a start date. {{me}}, {{phone}}.`,
+I will be in touch shortly with the start date. In the meantime, call me with any questions.`,
+    sms: `Thank you for going ahead with us. I will be in touch shortly with your selections and a start date.`,
   },
   lost: {
     subject: 'Thanks for the opportunity',
-    body: `Hi {{name}},
+    body: `Thank you for the opportunity to quote on your {{job}}, and for letting us know your decision.
 
-Thank you for the opportunity to quote on your {{job}}, and for letting us know your decision.
-
-I have closed the quote on our side. If anything changes, or you would like a second look later, call me on {{phone}} — your details and the site information stay on file, so we can pick it up quickly.
+I have closed the quote on our side. If anything changes, or you would like a second look later, call me. Your details and the site information stay on file, so we can pick it up quickly.
 
 All the best with the project.`,
-    sms: `Estate Landscapers: thanks for the opportunity {{name}}, and all the best with the project. If anything changes, call {{phone}}. {{me}}`,
+    sms: `Thank you for the opportunity to quote, and all the best with the project. If anything changes, call me.`,
   },
   closeout: {
     subject: 'Closing off your enquiry',
-    body: `Hi {{name}},
+    body: `I have not been able to reach you about your {{job}} enquiry, so I will close it off for now rather than keep following up.
 
-I have not been able to reach you about your {{job}} enquiry, so I will close it off for now rather than keep following up.
-
-Nothing is lost — your details stay on file. If the project comes back around, call me on {{phone}} or reply to this message and we will pick it straight up.
-
-All the best.`,
-    sms: `Estate Landscapers: Hi {{name}}, I have closed your {{jobshort}} enquiry for now. If it comes back around, call {{phone}} any time. {{me}}`,
+Nothing is lost. Your details stay on file. If the project comes back around, call me or reply to this message and we will pick it straight up.`,
+    sms: `I have closed your {{jobshort}} enquiry for now as I could not reach you. If it comes back around, call me any time.`,
   },
 };
 // Stage names used before the 5-phase board. A lead or a saved template still carrying one
@@ -312,6 +284,18 @@ All the best.`,
 const OLD_KEYS = { noanswer: 'call1', details: 'qualified', follow1: 'docsasked', follow2: 'docsasked', propose: 'docsin',
   confirm: 'visitbooked', remind: 'visitbooked', aftervisit: 'visitdone', quotechase: 'quotechase1' };
 
+// The number as a client dials it: +61 414 147 008 becomes 0414147008.
+function localPhone(p) {
+  const d = String(p || '').replace(/[^\d]/g, '');
+  if (d.length === 11 && d.startsWith('61')) return '0' + d.slice(2);
+  return d.length >= 8 ? d : String(p || '').trim();
+}
+// What an email keeps of the sign-off: "Thanks", then the styled signature takes over from
+// the name down, so the name and number are not printed twice.
+function forEmail(body, signoff) {
+  const b = String(body || '').replace(/\s+$/, '');
+  return signoff && b.endsWith(signoff) ? b.slice(0, b.length - signoff.length).replace(/\s+$/, '') : b;
+}
 function niceDate(d) {
   if (!d) return '';
   try {
@@ -344,7 +328,7 @@ function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber,
     suburb: lead.suburb || lead.address || '', address: addr, at_address: addr ? ` at ${addr}` : '',
     me, date: d, time: time || '', slot,
     email: settingGet('company_email') || 'info@estatelandscapers.com.au',
-    phone: settingGet('company_phone') || '',
+    phone: localPhone(settingGet('company_phone') || ''),
     quotelink: quoteLink || '', quote: quoteNumber || '',
     estlink: estLink || '', code: lead.est_code || '', ref: lead.enquiry_ref || '',
   };
@@ -354,8 +338,13 @@ function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber,
   const have = { estlink: !!vals.estlink, quotelink: !!vals.quotelink };
   const paras = String(body || '').split('\n\n').filter(p => !(/\{\{estlink\}\}/.test(p) && !have.estlink) && !(p.trim() === '{{quotelink}}' && !have.quotelink));
   const tidy = s => s.replace(/[ \t]{2,}/g, ' ').replace(/ +([.,])/g, '$1').replace(/\n{3,}/g, '\n\n').trim();
-  return { subject: fill(subject).replace(/\s{2,}/g, ' ').trim(), body: tidy(fill(paras.join('\n\n'))), sms: fill(sms).replace(/\s{2,}/g, ' ').replace(/ +([.,])/g, '$1').trim(),
-    signoff: [me, 'Estate Landscapers', vals.phone].filter(Boolean).join('\n'), template: key };
+  // Every message, long or short, has the same shape: greeting, message, sign-off.
+  const signoff = [me, 'Estate Landscapers', vals.phone].filter(Boolean).join('\n');
+  const wrap = text => `Hi ${vals.name},\n\n${text}\n\nThanks\n${signoff}`;
+  // A template saved with its own greeting or sign-off is left exactly as written.
+  const shaped = text => /^\s*(hi|hello|dear)\b/i.test(text) ? text : wrap(text);
+  return { subject: fill(subject).replace(/\s{2,}/g, ' ').trim(), body: shaped(tidy(fill(paras.join('\n\n')))),
+    sms: shaped(fill(sms).replace(/[ \t]{2,}/g, ' ').replace(/ +([.,])/g, '$1').trim()), signoff, template: key };
 }
 
 // What must be known before a lead can sensibly move to the next phase.
@@ -428,4 +417,4 @@ function derivedStage(lead, quote, docsIn) {
   const ph = evidencePhase(lead, docsIn);
   return phaseOf(cur) === ph ? cur : PHASE_DEFAULT[ph];
 }
-module.exports = { STAGES, PHASES, GATES, normalise, derivedStage, evidencePhase, DEFAULTS, buildMessage, niceDate, gapsFor, stageById, phaseOf, nextDueFrom };
+module.exports = { localPhone, forEmail, STAGES, PHASES, GATES, normalise, derivedStage, evidencePhase, DEFAULTS, buildMessage, niceDate, gapsFor, stageById, phaseOf, nextDueFrom };

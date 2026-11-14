@@ -915,7 +915,11 @@ router.post('/:id/message', async (req, res) => {
     if (bad) return res.status(400).json({ error: bad, field: 'to' });
     const { shell, esc } = require('../utils/quoteEmail');
     const { signatureHtml } = require('../utils/quoteEmail');
-    const html = shell(String(b.body || '').split(/\n{2,}/).map(p => `<p style="margin:0 0 14px;">${esc(p).replace(/\n/g, '<br>')}</p>`).join('') + signatureHtml());
+    // The message ends "Thanks / name / Estate Landscapers / phone". In an email the styled
+    // signature follows straight after "Thanks", so the plain name and number are left off.
+    const { forEmail, localPhone } = require('../utils/leadTemplates');
+    const plainSign = [String(who || 'Smit').trim().split(/\s+/)[0], 'Estate Landscapers', localPhone(settingGet('company_phone') || '')].filter(Boolean).join('\n');
+    const html = shell(forEmail(b.body, plainSign).split(/\n{2,}/).map(p => `<p style="margin:0 0 14px;">${esc(p).replace(/\n/g, '<br>')}</p>`).join('') + signatureHtml());
     try {
       await sendMail({ to, subject: b.subject || 'Estate Landscapers', html, track: msgId });
       outcome = 'sent';

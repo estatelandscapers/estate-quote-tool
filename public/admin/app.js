@@ -117,7 +117,8 @@ function ensureDrawer() {
   const d = document.createElement('aside'); d.className = 'drawer'; d.id = 'drawer'; d.innerHTML = '<button class="x" id="drawerX" aria-label="Close">×</button><div id="drawerBody"></div>'; document.body.appendChild(d);
   const close = () => { d.classList.remove('on'); s.classList.remove('on'); };
   s.addEventListener('click', close); $('#drawerX').addEventListener('click', close);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  // Escape closes this window only. With a lead open underneath, the lead stays open.
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && d.classList.contains('on')) { e.stopImmediatePropagation(); close(); } });
 }
 // ---- Lead drawer: a lead opens over the board, half the screen, instead of its own page.
 // leadConsole() renders into the drawer body exactly as it rendered into the page; any
@@ -892,7 +893,7 @@ async function leadsSummary(v) {
       <div class="q">${l.quoteNumber ? `<b>${esc(l.quoteNumber)}</b><small>${l.value != null && USER.role === 'admin' ? money(l.value) : ''}${l.revisionOf ? (l.value != null && USER.role === 'admin' ? ' · ' : '') + 'rev of ' + esc(l.revisionOf) : ''}</small>` : `<b>No quote yet</b><small>${l.estRange ? esc(l.estRange) : ''}</small>`}</div>
       <div class="st"><span class="pill">${l.phase || ''} · ${esc(l.stageLabel || '')}</span><small>${l.via === 'estimate' ? 'Estimator' : 'Quote link'}</small></div>
       <div class="why" title="${esc(l.why || '')}">${l.called ? `<em>✓ Called ${agoOf(l.called.at)}${l.called.by ? ' (' + esc(l.called.by) + ')' : ''}</em> · ` : ''}${l.visit && !/Site visit/.test(l.why || '') ? `<em>${esc(l.visit.text)}</em> · ` : ''}${esc(l.why || '')}</div>
-      <div class="when">${agoOf(l.lastAt)}<small>${l.via === 'link' ? 'last opened' : 'last activity'}</small></div>
+      <div class="when">${l.lastAt ? `${agoOf(l.lastAt)}<small>${l.via === 'link' ? 'last opened' : 'last activity'}</small>` : `<span class="none">${l.via === 'link' ? 'not opened yet' : 'not started yet'}</span>`}</div>
       <div class="btns">${l.phone ? `<a class="btn-call ${l.called ? 'called' : ''}" href="tel:${esc(String(l.phone).replace(/\s+/g, ''))}" data-call="${l.id}" title="${esc(l.phone)} — dials and logs the call">${l.called ? '✓ Called' : '📞 Call'}</a>` : '<span class="muted" style="font-size:11px;">no number</span>'}${l.quoteId ? `<button data-q="${l.quoteId}">Quote</button><button data-bh="${l.quoteId}">Record</button>` : `<button data-open="${l.id}">Lead</button>`}</div></div>`;
     if (!hot.length && !warm.length) {
       el.innerHTML = `<div class="head"><span class="lbl">Hot right now</span><span class="cnt">nothing hot — ${board.cards.filter(c => c.quoteNumber).length} quote${board.cards.filter(c => c.quoteNumber).length === 1 ? '' : 's'} out, none opened in the last 48 h</span></div>`;

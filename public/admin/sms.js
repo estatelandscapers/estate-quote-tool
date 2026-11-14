@@ -22,6 +22,8 @@ async function smsSettings(host) {
       <div class="field" style="margin:0;flex:1;min-width:240px;"><label for="smsTrial">Trial numbers</label>
         <input id="smsTrial" value="${esc(s.trialNumbers)}" placeholder="0412 345 678, 0498 765 432">
         <div class="hint">In Trial mode only these mobiles receive anything. Use your own phone and the dummy leads' numbers.</div></div>
+      <div class="field" style="margin:0;width:150px;"><label for="smsSign">Sign-off name</label><input id="smsSign" maxlength="30" value="${esc(s.signName || '')}">
+        <div class="hint">The name under "Thanks".</div></div>
     </div>
     <div class="sms-actions">
       <button class="btn btn-ghost btn-sm" id="smsCheck">Check connection</button>
@@ -30,12 +32,14 @@ async function smsSettings(host) {
       <span class="muted" id="smsCheckOut" style="font-size:11.5px;"></span>
     </div>
     <div class="alab" style="margin-top:16px;">Messages</div>
+    <div class="muted" style="font-size:11.5px;margin-bottom:4px;">You write the middle only. Every text is sent as: <b>Hi (first name),</b> your wording, then <b>Thanks / ${esc(s.signName || 'Smit')} / Estate Landscapers / phone</b>. The counts below include those lines.</div>
     ${s.types.map(t => `<div class="sms-type" data-k="${t.key}">
       <div class="sms-head">
         <label class="inv-switch"><input type="checkbox" class="smsOn" ${t.on ? 'checked' : ''}><span class="track"></span><span><b>${esc(t.label)}</b> <span class="muted" style="font-weight:500;">${esc(t.when)}</span></span></label>
         ${t.days != null ? `<label class="sms-days">after <input type="number" class="smsDays" min="1" max="30" step="1" value="${esc(t.days)}"> days</label>` : ''}
       </div>
       <textarea class="smsText" rows="2" maxlength="600">${esc(t.text)}</textarea>
+      <details class="sms-prev"><summary>See it as the client gets it</summary><pre>${esc(t.preview || '')}</pre></details>
       <div class="sms-foot"><span class="muted smsMeas">${meas(t.measure)}</span><span class="muted">Fills in: ${t.vars.map(v => `{{${v}}}`).join(' ')}</span><a href="#" class="smsReset">Reset wording</a></div>
     </div>`).join('')}
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;"><button class="btn btn-blue" id="smsSave">Save text message settings</button>
@@ -57,12 +61,12 @@ async function smsSettings(host) {
   host.querySelectorAll('.sms-type').forEach(box => {
     const t = s.types.find(x => x.key === box.dataset.k), ta = box.querySelector('.smsText');
     let timer = null;
-    const remeasure = () => { clearTimeout(timer); timer = setTimeout(async () => { const m = await api('/sms/measure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: ta.value }) }).catch(() => null); if (m && !m.error) box.querySelector('.smsMeas').textContent = meas(m) + ' (before names and links are filled in)'; }, 350); };
+    const remeasure = () => { clearTimeout(timer); timer = setTimeout(async () => { const m = await api('/sms/measure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: ta.value }) }).catch(() => null); if (m && !m.error) box.querySelector('.smsMeas').textContent = meas(m) + ' (with a typical name and link)'; }, 350); };
     ta.addEventListener('input', remeasure);
     box.querySelector('.smsReset').addEventListener('click', e => { e.preventDefault(); ta.value = t.def; remeasure(); });
   });
   host.querySelector('#smsSave').addEventListener('click', async () => {
-    const body = { mode: modeNow, trialNumbers: host.querySelector('#smsTrial').value,
+    const body = { mode: modeNow, signName: host.querySelector('#smsSign').value, trialNumbers: host.querySelector('#smsTrial').value,
       types: [...host.querySelectorAll('.sms-type')].map(box => ({ key: box.dataset.k, on: box.querySelector('.smsOn').checked, text: box.querySelector('.smsText').value, days: box.querySelector('.smsDays') ? box.querySelector('.smsDays').value : undefined })) };
     const r = await api('/sms', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
     if (!r || r.error) return toast((r && r.error) || 'Could not save');

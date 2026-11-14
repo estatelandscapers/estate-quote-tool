@@ -1087,3 +1087,17 @@ th{border-bottom-width:1px;}
 .sms-days input{width:64px;padding:5px 8px;}
 .sms-foot{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;margin-top:6px;align-items:center;}
 .sms-foot a{margin-left:auto;}
+
+/* ---- v47 ---- */
+/* Hot right now: every row is its own grid, so a flexible last column made each row's
+   columns land in a different place. All six columns now have a set width or share. */
+.hrow{grid-template-columns:minmax(150px,1.1fr) 124px 196px minmax(180px,2fr) 92px 232px;}
+.hrow .st .pill{max-width:none;overflow:visible;text-overflow:clip;}
+.hrow .st{min-width:0;}
+.hrow .when .none{color:var(--grey);font-weight:600;text-transform:none;letter-spacing:0;}
+@media(max-width:1180px){.hrow{grid-template-columns:minmax(130px,1fr) 110px 176px minmax(140px,1.4fr) 84px 214px;}}
+@media(max-width:820px){.hrow{grid-template-columns:1fr auto;}.hrow .st .pill{display:inline-block;}}
+/* The figure and link-behaviour window opens ON TOP of an open lead, not behind it. */
+#scrim{z-index:70;} #drawer{z-index:71;}
+.sms-prev{margin-top:6px;font-size:11.5px;} .sms-prev summary{cursor:pointer;color:var(--blue);font-weight:700;}
+.sms-prev pre{white-space:pre-wrap;font-family:inherit;font-size:12px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:6px 0 0;max-width:420px;line-height:1.45;}
