@@ -781,18 +781,18 @@ async function costingTab(v) {
       <div class="grid4" style="margin-top:10px;">
         ${tile('built', 'Quotes built (30d)', d.builtMonth || 0, d.revisionsMonth > d.builtMonth ? `${d.revisionsMonth} revisions → ${d.builtMonth} jobs` : 'current revisions')}
         ${tile('quoted', 'Value quoted (30d)', money(d.quotedValueMonth), 'excl. GST · current revisions')}
-        <div class="stat tap" data-fig="win" role="button" tabindex="0"><div class="k">Win rate (FY)</div><div class="pair"><div><div class="v">${d.winRateValue || 0}%</div><div class="n">by value · ${money(d.fySecured || 0)} of ${money(d.fyQuoted || 0)}</div></div><div class="r"><div class="v">${fc && fc.winCount != null ? fc.winCount : 0}%</div><div class="n">by count · ${fc && fc.wonCount != null ? fc.wonCount : 0} of ${fc && fc.quotedCount != null ? fc.quotedCount : 0}</div></div></div></div>
+        <div class="stat tap" data-fig="${fc && !fc.error ? 'fc_win' : 'win'}" role="button" tabindex="0"><div class="k">Win rate (FY) · decided jobs</div><div class="pair"><div><div class="v">${fc && fc.winValue != null ? fc.winValue : (d.winRateValue || 0)}%</div><div class="n">by value · ${money((fc && fc.wonValue) || 0)} of ${money((fc && fc.decidedValue) || 0)}</div></div><div class="r"><div class="v">${fc && fc.winCount != null ? fc.winCount : 0}%</div><div class="n">by count · ${fc && fc.wonCount != null ? fc.wonCount : 0} of ${fc && fc.decidedCount != null ? fc.decidedCount : 0}</div></div></div><div class="n" style="margin-top:4px;">won ÷ (won + lost) · open quotes are not counted as losses</div></div>
         ${tile('lost', 'Lost this FY', money(d.lostValueFY || 0), `${d.lostFY || 0} job${d.lostFY === 1 ? '' : 's'} · counted once each`)}
       </div>
       ${fc && !fc.error ? `<div class="grid4" style="margin-top:10px;">
         ${isAdmin ? `<div class="stat tap" data-fig="fc_margin" role="button" tabindex="0"><div class="k">Average margin</div>${trio(
           { v: pc(m.won.pct), n: `won jobs this FY · ${money(m.won.perJob)} a job`, color: m.won.pct != null ? (m.won.pct >= m.target ? 'var(--green)' : 'var(--red)') : '' },
           { v: pc(m.open.pct), n: `open quotes (${m.open.n} priced)` },
-          { v: pc(m.built30.pct), n: 'quotes built, last 30 days' })}<div class="n" style="margin-top:6px;">Target ${m.target}% (${esc(m.targetTier || '')})${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).length ? ` · ${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).join(', ')} not counted (no costing yet)` : ''}</div></div>` : ''}
+          { v: pc(m.built30.pct), n: 'quotes built, last 30 days' })}<div class="n" style="margin-top:6px;">Target ${m.target}% (${esc(m.targetTier || '')})${m.won.flagged && m.won.flagged.length ? ` · <span style="color:var(--amber);">${m.won.flagged.map(esc).join(', ')} left out — check the costing</span>` : ''}${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).length ? ` · ${[...m.open.excluded, ...m.built30.excluded].filter((x, i, a) => a.indexOf(x) === i).join(', ')} not counted (no costing yet)` : ''}</div></div>` : ''}
         <div class="stat tap" data-fig="fc_conv" role="button" tabindex="0"><div class="k">Lead conversion</div>${trio(
-          { v: `${fc.leadToQuote.fy}%`, n: `lead → quote, FY (${fc.leadToQuote.fyQ} of ${fc.leadToQuote.fyN})` },
-          { v: `${fc.leadToQuote.d30}%`, n: `lead → quote, 30 d (${fc.leadToQuote.d30Q} of ${fc.leadToQuote.d30N})`, color: fc.leadToQuote.d30 < fc.leadToQuote.fy - 5 ? 'var(--red)' : '' },
-          { v: `${fc.leadToWin.pct}%`, n: `lead → win, FY (${fc.leadToWin.won} of ${fc.leadToWin.n})` })}<div class="n" style="margin-top:6px;">${fc.leadToWin.leadsPerWin ? `1 win ≈ ${fc.leadToWin.leadsPerWin} leads` : 'no wins from this FY\'s leads yet'}${fc.winCount ? ` ≈ ${Math.round(100 / fc.winCount)} quotes` : ''}</div></div>
+          { v: `${fc.leadToQuote.fy}%`, n: `lead → quote (${fc.leadToQuote.fyQ} of ${fc.leadToQuote.fyN})` },
+          { v: `${fc.leadToQuote.d30}%`, n: `last 30 d so far (${fc.leadToQuote.d30Q} of ${fc.leadToQuote.d30N})` },
+          { v: `${fc.leadToWin.pct}%`, n: `lead → win (${fc.leadToWin.won} of ${fc.leadToWin.n})` })}<div class="n" style="margin-top:6px;">Measured on ${esc(fc.leadToQuote.basis || 'leads this FY')}, so new leads do not drag it down. ${fc.leadToWin.leadsPerWin ? `1 win ≈ ${fc.leadToWin.leadsPerWin} leads` : 'No wins from these leads yet'}${fc.winCount ? ` ≈ ${Math.round(100 / fc.winCount)} quotes` : ''}</div></div>
         <div class="stat tap" data-fig="fc_avgwon" role="button" tabindex="0"><div class="k">Average job</div><div class="pair"><div><div class="v">${money(fc.avgWon)}</div><div class="n">won, FY · ${fc.wonCount} job${fc.wonCount === 1 ? '' : 's'}</div></div><div class="r"><div class="v">${money(fc.avgQuote)}</div><div class="n">quoted, FY · ${fc.quotedCount}</div></div></div><div class="n" style="margin-top:4px;">${fc.wonCount ? (fc.avgWon > fc.avgQuote ? 'bigger jobs are winning' : 'smaller jobs are winning') : ''}</div></div>
         ${tile('fc_window', 'Decision window', w.wonMedian != null ? `${w.wonMedian} d → ${w.lostMedian != null ? w.lostMedian + ' d' : '—'}` : '—', w.wonMedian != null ? `median days from sending: won ${w.wonMedian} (max ${w.wonMax}) · lost ${w.lostMedian != null ? w.lostMedian : '—'} · ${w.wonN} won, ${w.lostN} lost on record` : 'no signed quotes on record yet')}
       </div>` : ''}`;
@@ -811,19 +811,31 @@ async function costingTab(v) {
         return `<div class="grid4">
           <div class="stat hero tap" data-fig="fc_target" role="button" tabindex="0"><div class="k">FY target</div><div class="v">${tpct != null ? tpct + '%' : '—'}</div>
             <div class="n">${money(fc.securedFY)} of ${isAdmin ? `<input class="tgt" id="fyTarget" value="${fc.target ? fc.target.toLocaleString('en-AU') : ''}" placeholder="set target" title="FY target, ex GST — saved when you leave the box">` : (fc.target ? money(fc.target) : 'no target set')} · ${fc.monthsLeft} months left</div>
-            <div class="bar"><i style="width:${tpct != null ? Math.min(100, tpct) : 0}%"></i></div></div>
-          ${tile('fc_runrate', 'Run rate · secured, 90 d', `${k(fc.runRate)} / month`, `${money(fc.secured90)} in 90 d · at this pace FY ends ≈ <b>${money(fc.projected)}</b>`)}
-          ${isAdmin ? `<div class="stat profit tap" data-fig="fc_profit" role="button" tabindex="0"><div class="k">Forecast profit, FY</div><div class="pair"><div><div class="v">${P.atTarget != null ? k(P.atTarget) : '—'}</div><div class="n">${P.atTarget != null ? `at the ${k(fc.target)} target × ${mw.pct != null ? mw.pct + '%' : '—'} margin` : 'set a target'}</div></div><div class="r"><div class="v">${k(P.atRunRate)}</div><div class="n">at run rate (${k(fc.projected)})</div></div></div>
-            <div class="bar"><i style="width:${P.atTarget ? Math.min(100, Math.round(P.banked / P.atTarget * 100)) : 0}%"></i></div><div class="n">${money(P.banked)} banked so far${P.atTarget ? ` · ${Math.round(P.banked / P.atTarget * 100)}% of target profit` : ''}</div></div>` : ''}
-          ${tile('fc_open', 'Quotes out, awaiting decision', `${fc.open.count} · ${money(fc.open.value)}`, `${fc.open.fresh.count} fresh (≤${fc.staleDays} d) ${money(fc.open.fresh.value)} · ${fc.open.stale.count} stale ${money(fc.open.stale.value)}${fc.open.unsent.count ? ` · ${fc.open.unsent.count} not sent ${money(fc.open.unsent.value)}` : ''}`)}
+            <div class="bar pacebar"><i style="width:${tpct != null ? Math.min(100, tpct) : 0}%"></i>${fc.pace ? `<u style="left:${Math.min(100, fc.pace.elapsedPct)}%" title="Where an even pace would put you today"></u>` : ''}</div>
+            ${fc.pace ? `<div class="n">${fc.pace.elapsedPct}% of the year gone · ${fc.pace.gap >= 0 ? `<b>${k(fc.pace.gap)} ahead</b> of pace` : `<b>${k(-fc.pace.gap)} behind</b> pace`}</div>` : ''}</div>
+          ${tile('fc_runrate', 'Run rate · secured, 90 d', `${k(fc.runRate)} / month`, `${money(fc.secured90)} in 90 d · if that repeats, FY ends ≈ <b>${money(fc.projected)}</b>`)}
+          ${isAdmin ? `<div class="stat profit tap" data-fig="fc_profit" role="button" tabindex="0"><div class="k">Forecast profit, FY · after overheads</div><div class="pair"><div><div class="v">${P.atTargetNet != null ? k(P.atTargetNet) : '—'}</div><div class="n">${P.atTarget != null ? `at the ${k(fc.target)} target · ${mw.pct != null ? mw.pct + '%' : '—'} margin` : 'set a target'}</div></div><div class="r"><div class="v">${k(P.atOutlookNet)}</div><div class="n">at the outlook (${k(fc.outlook.likely)})</div></div></div>
+            <div class="bar"><i style="width:${P.atTarget ? Math.min(100, Math.round(P.banked / P.atTarget * 100)) : 0}%"></i></div><div class="n">${money(P.banked)} gross banked · overheads ${P.overheads ? money(P.overheads) : 'not entered'}${P.flagged && P.flagged.length ? ` · ${P.flagged.length} costing to check` : ''}</div></div>` : ''}
+          ${tile('fc_open', 'Quotes out, awaiting decision', `${fc.open.count} · ${money(fc.open.value)}`, `${fc.open.fresh.count} fresh (≤${fc.staleDays} d) ${money(fc.open.fresh.value)} · ${fc.open.stale.count} stale ${money(fc.open.stale.value)}${fc.open.unsent.count ? ` · ${fc.open.unsent.count} not sent ${money(fc.open.unsent.value)}` : ''}${fc.hold.count ? ` · ${fc.hold.count} on hold not counted` : ''}`)}
         </div>
         <div class="grid4" style="margin-top:10px;">
-          ${tile('fc_needed', 'Needed from here', needed ? `${k(fc.needed)} / month` : '—', needed ? `≈ ${fc.needWins != null ? fc.needWins.toFixed(1) : '—'} wins · ${fc.needQuotes != null ? Math.round(fc.needQuotes) : '—'} quotes · ${fc.needLeads != null ? Math.round(fc.needLeads) : '—'} leads a month at today's rates${isAdmin && P.needed != null ? ` · <b>${k(P.needed)} profit</b> a month` : ''}` : 'set an FY target to see this')}
-          <div class="stat tap" data-fig="fc_expected" role="button" tabindex="0"><div class="k">Expected to land</div><div class="pair"><div><div class="v">≈ ${k(fc.expected.value)} · ${fc.expected.jobs} job${fc.expected.jobs === 1 ? '' : 's'}</div><div class="n">fresh × ${fc.winValue}% + stale × ${fc.staleRate}% + not sent × ${fc.winValue}%</div></div>${isAdmin ? `<div class="r"><div class="v" style="color:var(--green);">≈ ${k(P.expected)}</div><div class="n">profit · ${mo.pct != null ? mo.pct + '%' : (mw.pct != null ? mw.pct + '%' : '—')}</div></div>` : ''}</div></div>
+          ${tile('fc_needed', 'Needed from here', needed ? `${k(fc.needed)} / month` : '—', needed ? `after ${k(fc.expected.value)} expected from open quotes · ≈ ${fc.needWins != null ? fc.needWins.toFixed(1) : '—'} wins · ${fc.needQuotes != null ? Math.round(fc.needQuotes) : '—'} quotes · ${fc.needLeads != null ? Math.round(fc.needLeads) : '—'} leads a month${isAdmin && P.needed != null ? ` · <b>${k(P.needed)} gross profit</b> a month` : ''}` : 'set an FY target to see this')}
+          <div class="stat tap" data-fig="fc_expected" role="button" tabindex="0"><div class="k">Expected to land</div><div class="pair"><div><div class="v">≈ ${k(fc.expected.value)} · ${fc.expected.jobs} job${fc.expected.jobs === 1 ? '' : 's'}</div><div class="n">each open quote × its own win chance, by job size and days waited</div></div>${isAdmin ? `<div class="r"><div class="v" style="color:var(--green);">≈ ${k(P.expected)}</div><div class="n">profit · ${mo.pct != null ? mo.pct + '%' : (mw.pct != null ? mw.pct + '%' : '—')}</div></div>` : ''}</div></div>
           <div class="stat tap ${fc.stale.count ? 'warnbox' : ''}" data-fig="fc_stale" role="button" tabindex="0"><div class="k">Stale — chase or close</div><div class="v">${fc.stale.count} · ${money(fc.stale.value)}</div><div class="n">${fc.stale.rows.slice(0, 2).map(r => `${esc(r.quoteNumber)} ${esc((r.client || '').split(' ')[0])}`).join(' · ') || `nothing older than ${fc.staleDays} days`}</div></div>
           <div class="stat tap" data-fig="fc_lost" role="button" tabindex="0"><div class="k">Why we lose (FY, ${fc.lostCount})</div><div class="reasons">${reasons.map((r, i) => `<div><div><span>${esc(r.reason)}</span><div class="bar"><i class="${i === 0 ? 'hot' : ''}" style="width:${Math.round(r.count / maxR * 100)}%"></i></div></div><b>${r.count}</b></div>`).join('') || '<span class="muted">nothing lost this FY</span>'}</div></div>
         </div>
-        <div class="legend" style="margin-top:10px;">Margin is each quote's own gross margin (sell − materials, labour, subcontract, plant); overheads come off at year end on Projects. Forecast profit = FY target × average margin on won jobs this FY. Expected = each open quote × the win rate for its age band (fresh and not-yet-sent at the FY rate by value, stale at ${fc.staleRate}%). Run rate = secured in the last 90 days ÷ 3. Needed = (target − secured) ÷ months left, then ÷ average won job, ÷ win rate by count, ÷ lead-to-quote. Stale cut-off and stale rate are in Editor → Forecast.</div>`;
+        <div class="grid4" style="margin-top:10px;">
+          <div class="stat tap span2" data-fig="fc_outlook" role="button" tabindex="0"><div class="k">FY outlook · from the pipeline and lead flow</div>
+            <div class="pair"><div><div class="v">≈ ${k(fc.outlook.likely)}</div><div class="n">likely · range ${k(fc.outlook.low)} to ${k(fc.outlook.high)}</div></div>
+              <div class="r"><div class="v" style="font-size:13px;">${fc.target > 0 ? Math.round(fc.outlook.likely / fc.target * 100) + '% of target' : ''}</div><div class="n">run rate says ${k(fc.projected)}</div></div></div>
+            <div class="oparts">${[['Secured', fc.outlook.part.secured, 'var(--blue)'], ['Open quotes', fc.outlook.part.open, 'var(--s4)'], ['Enquiries in hand', fc.outlook.part.inHand, 'var(--s3)'], ['Enquiries to come', fc.outlook.part.toCome, 'var(--grey)']].map(x => `<i style="flex:${Math.max(1, x[1])};background:${x[2]};" title="${x[0]}: ${money(x[1])}"></i>`).join('')}</div>
+            <div class="n">secured ${k(fc.outlook.part.secured)} · open quotes ${k(fc.outlook.part.open)} · ${fc.outlook.warmLeads} enquiries in hand ${k(fc.outlook.part.inHand)} · ${fc.outlook.leadRate} new leads a month ${k(fc.outlook.part.toCome)}</div></div>
+          <div class="stat tap" data-fig="fc_hold" role="button" tabindex="0"><div class="k">On hold · future pipeline</div><div class="v">${fc.hold.count} · ${money(fc.hold.value)}</div>
+            <div class="n">${fc.hold.count ? `next back ${fc.hold.next ? holdDate(new Date(fc.hold.next + "T00:00:00")) : ""} · not in open quotes or expected` : 'nothing on hold'}</div></div>
+          <div class="stat tap" data-fig="fc_win" role="button" tabindex="0"><div class="k">Win rate by job size · ${fc.decidedAll} decided</div>
+            <div class="bandrows">${(fc.bands || []).map(b => `<div><span>${esc(b.label)}</span><b>${b.n ? b.won + ' of ' + b.n : '—'}</b><em>${b.rate}%</em></div>`).join('')}</div></div>
+        </div>
+        <div class="legend" style="margin-top:10px;">Win rate = won ÷ (won + lost), counted per job, so a job with a later variation is one win. Expected = each open quote × its own win chance: how often jobs of that size were won, lowered for the days it has waited, both from your own decided jobs. A quote the client has opened counts as sent even if it was shared by link. FY outlook = secured + expected from open quotes + enquiries in hand and still to come at each lead source's own conversion; the range is wide while few jobs have been decided. Run rate = secured in the last 90 days ÷ 3. Needed = (target − secured − expected from open quotes) ÷ months left. Profit = gross margin less this FY's overheads from Projects. Jobs on hold are left out of open quotes, expected, stale and win rate.</div>`;
       })()}
     </div>
     ${USER && USER.role === 'admin' ? '<div class="card" id="cfCard"><h2>Forecast cashflow</h2><div class="sub">Works revenue and profit by month, straight from the Timeline: actuals where they have been entered, the plan everywhere else. Ex GST.</div><div class="rule"></div><div id="cfBody" class="muted">Loading…</div></div>' : ''}
@@ -840,7 +852,7 @@ async function costingTab(v) {
 
 async function leadsSummary(v) {
   if (LEAD_DRAWER.body && v === LEAD_DRAWER.body) { closeLeadDrawer(); return leadsSummary($('#view')); }
-  const [board, stageData, act, hotFeed] = await Promise.all([api('/leads/board' + (state.showParked ? '?parked=1' : '')), api('/leads/stages'), api('/leads/link-activity?limit=40'), api('/leads/hot')]);
+  const [board, stageData, act, hotFeed] = await Promise.all([api('/leads/board'), api('/leads/stages'), api('/leads/link-activity?limit=40'), api('/leads/hot')]);
   if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
   const today = localYmd();
   const tile = (key, label, value, note, hero) => `<div class="stat ${hero ? 'hero' : ''} tap" data-fig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
@@ -853,14 +865,14 @@ async function leadsSummary(v) {
       <div class="boardtools">
         <input type="search" id="boardSearch" placeholder="Search all columns — name, suburb, quote number" value="${esc(state.boardSearch || '')}">
         <label class="chk"><input type="checkbox" id="smallOnly" ${state.smallOnly ? 'checked' : ''}> Small projects only</label>
-        <label class="chk"><input type="checkbox" id="showParked" ${state.showParked ? 'checked' : ''}> Show parked${board.parkedCount ? ` (${board.parkedCount})` : ''}</label>
-        <span class="muted" style="font-size:11px;margin-left:auto;">Drag onto the bar at the bottom for Lost · Not a fit · Parked</span>
+        <span class="muted" style="font-size:11px;margin-left:auto;">Drag a card to Future projects to put it on hold · onto the bar at the bottom for Lost or Not a fit</span>
       </div>
       <div class="board" id="board">${[1, 2, 3, 4, 5].map(p => `<div class="col" style="--sc:var(--s${p})" data-stage="${p}">
         <div class="h"><span class="t">${p} · ${esc((board.phases.find(x => x.id === p) || {}).label || '')}</span><span class="c"></span><span class="sum"></span>
           <button class="ic" data-csearch="${p}" title="Search this column">⌕</button><button class="ic" data-csort="${p}" title="Sort: next action · newest · oldest · value · A–Z">≡</button></div>
-        <div class="csearch" hidden><input type="search" placeholder="Search step ${p}" data-cq="${p}"></div><div class="list"></div></div>`).join('')}</div>
-      ${state.showParked ? `<div class="phasebox" style="margin-top:10px;"><b style="font-size:11.5px;">Parked (${board.parked.length})</b> ${board.parked.map(l => `<span class="chip" style="margin-left:6px;">${esc(l.name)}${l.suburb ? ' · ' + esc(l.suburb) : ''} <a href="#" data-unpark="${l.id}" style="margin-left:4px;">unpark</a></span>`).join('') || '<span class="muted">none</span>'}</div>` : ''}
+        <div class="csearch" hidden><input type="search" placeholder="Search step ${p}" data-cq="${p}"></div><div class="list"></div></div>`).join('')}
+        <div class="col fut" style="--sc:var(--hold)" data-stage="hold">
+          <div class="h"><span class="t">Future projects</span><span class="c"></span><span class="sum"></span></div><div class="list"></div></div></div>
     </div>
 
     <div class="card" id="estFunnelCard"><h2>Estimator emails, last 30 days</h2><div class="sub">Is the code email working? Sent → opened → code used → ballpark seen → Friday booked. Opens are indicative (Gmail and Apple Mail can hide or fake them); code used is the hard number.</div><div class="rule"></div><div id="estFunnel" class="muted">Loading…</div></div>
@@ -868,7 +880,7 @@ async function leadsSummary(v) {
       <div style="overflow-x:auto;"><table class="feedtbl"><thead><tr><th>When (Sydney)</th><th>Quote</th><th>Client</th><th>Device · place</th><th class="right">Reading</th><th>What they did</th><th>Signal</th></tr></thead><tbody>
       ${(act.rows || []).map(r => `<tr class="row" data-q="${esc(r.quoteId)}"><td class="muted" style="white-space:nowrap;">${esc(sydTime(r.when))}</td><td><b>${esc(r.quoteNumber)}</b></td><td>${esc(r.client || '')}</td><td class="muted">${esc(r.device)}${r.city ? ' · ' + esc(r.city) : ''}</td><td class="right" style="white-space:nowrap;">${esc(r.activeLabel)}</td><td style="font-size:11.5px;">${esc(r.summary)}</td><td><span class="signal sig-${r.signal}">${SIG_LABEL[r.signal] || r.signal}</span></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No client opens recorded yet.</td></tr>'}
       </tbody></table></div></div>
-    <div class="dropbar" id="dropbar"><div data-drop="lost">Not proceeding — lost</div><div data-drop="nofit">Not a fit</div><div data-drop="park">Parked</div></div>`;
+    <div class="dropbar" id="dropbar"><div data-drop="lost">Not proceeding — lost</div><div data-drop="nofit">Not a fit</div><div data-drop="park">On hold until a date</div></div>`;
   api('/leads/estimator-funnel?days=30').then(f => {
     const el = document.getElementById('estFunnel'); if (!el) return;
     const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '–';
@@ -882,7 +894,6 @@ async function leadsSummary(v) {
   // ---- figures ----
   $$('[data-fig]').forEach(el => { const go = () => openFigure(el.dataset.fig); el.addEventListener('click', go); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
   $$('#leadBody .feedtbl tr.row').forEach(r => r.addEventListener('click', () => openBehaviour(r.dataset.q)));
-  $$('[data-unpark]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); await api('/leads/' + a.dataset.unpark + '/unpark', { method: 'POST' }); toast('Back on the board'); leadsSummary(v); }));
 
   // ---- Hot right now: hot first, then warm, latest activity first ----
   const paintHot = () => {
@@ -962,7 +973,23 @@ async function leadsSummary(v) {
       const sum = rows.reduce((a, c) => a + (c.value || 0), 0); $('.sum', col).textContent = sum ? money(sum) : '';
       $(`[data-csort="${p}"]`).classList.toggle('on', srt !== 'next'); $(`[data-csort="${p}"]`).title = 'Sort: ' + { next: 'next action soonest', newest: 'newest first', oldest: 'oldest first', value: 'highest value', az: 'A–Z' }[srt];
     });
-    $$('#board .lead').forEach(el => {
+    // Future projects: jobs on hold, soonest back first.
+    const held = board.held || [], fut = $('.col.fut');
+    const hrows = held.filter(h => !term || `${h.name} ${h.suburb} ${h.quoteNumber || ''}`.toLowerCase().includes(term));
+    $('.list', fut).innerHTML = hrows.map(h => `<div class="lead heldcard ${h.soon ? 'soon' : ''}" draggable="${h.id ? 'true' : 'false'}" data-kind="held" data-hold="${esc(h.id || '')}" data-id="${esc(h.leadId || '')}" data-q="${esc(h.quoteId || '')}">
+        <div class="nm"><span>${esc(h.name || '—')}</span>${h.value != null ? `<span class="val">${money(h.value)}</span>` : ''}</div>
+        <div class="where">${esc(h.suburb || '')}${h.quoteNumber ? ' · quote ' + esc(h.quoteNumber) : ''}${h.stageLabel ? ' · was at ' + esc(h.stageLabel) : ''}</div>
+        ${h.reason ? `<div class="where">${esc(h.reason)}</div>` : ''}
+        <div class="chips">${h.noDate ? '<span class="chip" style="background:var(--warn-soft);color:var(--warn-ink);">no date — set one</span>' : `<span class="chip ${h.soon ? 'soonchip' : ''}">${h.soon ? 'back in ' + h.daysLeft + ' day' + (h.daysLeft === 1 ? '' : 's') : 'back ' + esc(h.untilLabel)}</span>`}${h.checkin ? '<span class="chip">check-ins on</span>' : ''}</div></div>`).join('')
+      || '<div class="muted" style="font-size:11.5px;padding:8px;">Nothing on hold. Drag a card here to put it away until a date.</div>';
+    $('.c', fut).textContent = held.length; const hsum = held.reduce((a, h) => a + (h.value || 0), 0); $('.sum', fut).textContent = hsum ? money(hsum) : '';
+    $$('#board .heldcard').forEach(el => {
+      const h = held.find(x => (x.id || '') === el.dataset.hold && (x.leadId || '') === el.dataset.id);
+      el.addEventListener('click', () => { if (h.leadId) openLeadDrawer(h.leadId); else { state.tab = 'quotes'; state.quoteId = h.quoteId; state.scrollY = 0; shell(); } });
+      el.addEventListener('dragstart', e => { dragHold = h; el.classList.add('drag'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', h.id); } catch (x) {} });
+      el.addEventListener('dragend', () => { el.classList.remove('drag'); dragHold = null; $$('.col.over').forEach(x => x.classList.remove('over')); });
+    });
+    $$('#board .lead:not(.heldcard)').forEach(el => {
       el.addEventListener('click', e => { if (e.target.closest('[data-bh]')) return; if (el.dataset.kind === 'won') { state.tab = 'quotes'; state.quoteId = el.dataset.q; state.leadId = null; state.scrollY = 0; shell(); } else { openLeadDrawer(el.dataset.id); } });
       if (el.dataset.kind !== 'lead') return;
       el.addEventListener('dragstart', e => { dragId = el.dataset.id; el.classList.add('drag'); $('#dropbar').classList.add('on'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', dragId); } catch (x) {} });
@@ -970,11 +997,16 @@ async function leadsSummary(v) {
     });
     $$('#board [data-bh]').forEach(ch => ch.addEventListener('click', e => { e.stopPropagation(); openBehaviour(ch.dataset.bh); }));
   };
-  let dragId = null;
+  let dragId = null, dragHold = null;
+  const holdCard = c => holdDialog({ leadId: c.id, name: c.name, sub: [c.suburb, c.quoteNumber ? 'quote ' + c.quoteNumber : ''].filter(Boolean).join(' · ') }, () => leadsSummary(v));
   $$('.col').forEach(col => {
     col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('over'); });
     col.addEventListener('dragleave', () => col.classList.remove('over'));
-    col.addEventListener('drop', async e => { e.preventDefault(); col.classList.remove('over'); const to = +col.dataset.stage; const c = cards.find(x => x.id === dragId && x.kind === 'lead'); if (!c || c.phase === to) return;
+    col.addEventListener('drop', async e => { e.preventDefault(); col.classList.remove('over');
+      // Into Future projects: ask for the date. Out of it: the job comes back to its step.
+      if (col.dataset.stage === 'hold') { const c0 = cards.find(x => x.id === dragId && x.kind === 'lead'); if (c0 && !dragHold) holdCard(c0); return; }
+      if (dragHold) { const h = dragHold; dragHold = null; return holdWake(h.id, h.name, () => leadsSummary(v)); }
+      const to = +col.dataset.stage; const c = cards.find(x => x.id === dragId && x.kind === 'lead'); if (!c || c.phase === to) return;
       const r = await api('/leads/' + c.id + '/step', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ step: to }) });
       toast(r.error || `${c.name} moved to step ${to}`); if (!r.error) leadsSummary(v); });
   });
@@ -982,12 +1014,12 @@ async function leadsSummary(v) {
     z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('over'); }); z.addEventListener('dragleave', () => z.classList.remove('over'));
     z.addEventListener('drop', async e => { e.preventDefault(); const c = cards.find(x => x.id === dragId && x.kind === 'lead'); if (!c) return;
       const o = z.dataset.drop;
+      if (o === 'park') return holdCard(c);
       const r = o === 'park' ? await api('/leads/' + c.id + '/park', { method: 'POST' }) : await api('/leads/' + c.id + '/outcome', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ outcome: o }) });
       toast(r.error || (o === 'park' ? `${c.name} parked` : o === 'nofit' ? `${c.name} marked not a fit — open the lead to send the email` : `${c.name} marked lost`)); leadsSummary(v); });
   });
   $('#boardSearch').addEventListener('input', e => { state.boardSearch = e.target.value; paint(); });
   $('#smallOnly').addEventListener('change', e => { state.smallOnly = e.target.checked; paint(); });
-  $('#showParked').addEventListener('change', e => { state.showParked = e.target.checked; leadsSummary(v); });
   $$('[data-csearch]').forEach(b => b.addEventListener('click', () => { const box = $(`.col[data-stage="${b.dataset.csearch}"] .csearch`); box.hidden = !box.hidden; if (!box.hidden) $('input', box).focus(); }));
   $$('[data-cq]').forEach(i => i.addEventListener('input', () => { state.colQ[i.dataset.cq] = i.value; paint(); }));
   $$('[data-csort]').forEach(b => b.addEventListener('click', () => { const p = b.dataset.csort; const cur = state.colSort[p] || 'next'; state.colSort[p] = SORTS[(SORTS.indexOf(cur) + 1) % SORTS.length]; paint(); toast('Sorted by ' + { next: 'next action', newest: 'newest', oldest: 'oldest', value: 'value', az: 'name' }[state.colSort[p]]); }));
@@ -1915,6 +1947,7 @@ async function leadConsole(v) {
         <button class="btn btn-blue btn-big" id="ld_call" style="width:100%;margin-bottom:9px;">📞 Discovery Call Script</button>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="ld_snooze">😴 Snooze 3 days</button>
+          ${!['Won', 'Lost'].includes(l.status) ? '<button class="btn btn-ghost btn-sm" id="ld_hold" title="Put this enquiry away until a date. It comes back by itself.">⏸ Put on hold</button>' : ''}
           ${l.status === 'Lost' ? '<button class="btn btn-blue btn-sm" id="ld_reopen" title="Puts this enquiry back at the step it had reached, with a follow-up due today">↺ Reopen this enquiry</button>' : '<button class="btn btn-ghost btn-sm" id="ld_close">✕ Close this enquiry</button>'}
           <button class="btn btn-ghost btn-big" id="ld_stepback">← Step back</button>
           ${st.phase < 4 ? '<button class="btn btn-ghost btn-big" id="ld_skip">⏭ Skip ahead</button>' : ''}
@@ -2021,6 +2054,22 @@ async function leadConsole(v) {
     const r = await api(`/leads/${l.id}/snooze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 3 }) });
     toast('Snoozed until ' + r.until); leadConsole(v);
   });
+  const lh = $('#ld_hold');
+  if (lh) {
+    const who = { leadId: l.id, name: l.name, sub: [l.suburb || l.address, l.quoteNumber ? 'quote ' + l.quoteNumber : ''].filter(Boolean).join(' · ') };
+    const again = () => { if (LEAD_DRAWER.body && v === LEAD_DRAWER.body) { closeLeadDrawer(); } else leadConsole(v); };
+    lh.addEventListener('click', () => holdDialog(who, again));
+    api('/holds').then(hd => {
+      const h = ((hd && hd.holds) || []).find(x => x.leadId === l.id);
+      if (!h || !$('#ld_hold')) return;
+      const host = $('#ld_hold').parentElement;
+      $('#ld_hold').remove();
+      host.insertAdjacentHTML('afterend', h.id ? holdBanner(h) : `<div class="holdbar"><div><b>Parked with no date</b><br><span class="muted">Set a date so it comes back by itself.</span></div><div class="btns"><button class="btn btn-blue btn-sm" data-holdedit>Set a date</button></div></div>`);
+      const bar = host.parentElement.querySelector('.holdbar');
+      bar.querySelector('[data-holdedit]').addEventListener('click', () => holdDialog(h.id ? { ...who, hold: h } : who, () => leadConsole(v)));
+      const w = bar.querySelector('[data-holdwake]'); if (w) w.addEventListener('click', () => holdWake(h.id, l.name, () => leadConsole(v)));
+    }).catch(() => {});
+  }
   const reo = $('#ld_reopen'); if (reo) reo.addEventListener('click', async () => {
     reo.disabled = true;
     const r = await api(`/leads/${l.id}/reopen`, { method: 'POST' });
@@ -2294,6 +2343,65 @@ async function leadConsole(v) {
 
 // ---------------- QUOTES ----------------
 const AGE = { fresh: ['age-fresh', d => d + 'd'], flag: ['age-flag', d => d + 'd — follow up'], chase: ['age-chase', d => d + 'd — chase'], dead: ['age-dead', d => d + 'd — dead'] };
+// ---- On hold -----------------------------------------------------------------------------
+// One dialog from everywhere: the lead, the quote page, a row on the Quotes list, a drag on
+// the board. A wake-up date is required — there is no hold without one.
+const holdDate = d => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+function holdDialog(t, done) {
+  // t: { leadId?, quoteId?, name, sub?, hold? }  (hold = the existing hold, to change it)
+  const ed = t.hold && t.hold.id ? t.hold : null;
+  const addM = n => { const d = new Date(); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d; };
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const tomorrow = iso(new Date(Date.now() + 864e5));
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal" style="max-width:500px;" role="dialog" aria-modal="true">
+    <h2 style="margin:0 0 3px;">${ed ? 'Change the hold' : 'Put on hold'}: ${esc(t.name || '')}</h2>
+    <div class="sub">${esc(t.sub || '')}${t.sub ? '. ' : ''}It leaves the pipeline, follow-ups and forecast until the date, then comes back to the step it was at. The client's quote link stays open and nothing is marked lost.</div><div style="height:12px"></div>
+    <div class="field"><label>Bring it back in</label><div class="seg" id="hd_m">${[3, 6, 8, 12].map(m => `<button type="button" data-m="${m}">${m} months</button>`).join('')}</div></div>
+    <div class="field" data-field="until"><label for="hd_until">Or on this date <span class="reqmark">required</span></label><input type="date" id="hd_until" min="${tomorrow}" value="${ed ? esc(ed.until) : ''}"></div>
+    <div class="field"><label for="hd_reason">Reason</label><input id="hd_reason" maxlength="200" placeholder="e.g. House under construction, landscaping after handover" value="${ed ? esc(ed.reason || '') : ''}"></div>
+    <label class="chk" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;"><input type="checkbox" id="hd_warn" ${!ed || ed.warn ? 'checked' : ''} style="width:auto;margin-top:2px;"><span>Warn me 2 weeks before it comes back</span></label>
+    <label class="chk" style="display:flex;gap:8px;align-items:flex-start;"><input type="checkbox" id="hd_chk" ${ed && ed.checkin ? 'checked' : ''} style="width:auto;margin-top:2px;"><span>Send the client a check-in by email and text, halfway and every 3 months</span></label>
+    <div class="holdout" id="hd_out"></div>
+    <div class="inv-err" role="alert" hidden id="hd_err"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;"><button class="btn btn-ghost" id="hd_x">Cancel</button><button class="btn btn-blue" id="hd_go">${ed ? 'Save' : 'Put on hold'}</button></div></div>`;
+  document.body.appendChild(bg);
+  const q = sel => bg.querySelector(sel), close = () => bg.remove();
+  const until = q('#hd_until'), out = q('#hd_out'), err = q('#hd_err');
+  let seq = 0;
+  const paint = async () => {
+    bg.querySelectorAll('#hd_m button').forEach(b => b.classList.toggle('on', until.value === iso(addM(+b.dataset.m))));
+    err.hidden = true;
+    if (!until.value) { out.innerHTML = '<span class="muted">Pick how long, or a date. It cannot go on hold without one.</span>'; return; }
+    const d = new Date(until.value + 'T00:00:00'), w = new Date(d.getTime() - 14 * 864e5);
+    let line = `Comes back <b>${holdDate(d)}</b>.${q('#hd_warn').checked ? ` Warning on ${holdDate(w)}.` : ''}`;
+    out.innerHTML = line;
+    if (q('#hd_chk').checked) { const my = ++seq; const pv = await api('/holds/preview?until=' + until.value).catch(() => null); if (my !== seq) return;
+      out.innerHTML = line + (pv && pv.checkins && pv.checkins.length ? ` Check-in ${pv.checkins.length === 1 ? 'message' : 'messages'}: ${pv.checkins.map(x => holdDate(new Date(x + 'T00:00:00'))).join(', ')}.` : ' Too short a hold for a check-in message.'); }
+  };
+  bg.querySelectorAll('#hd_m button').forEach(b => b.addEventListener('click', () => { until.value = iso(addM(+b.dataset.m)); paint(); }));
+  [until, q('#hd_warn'), q('#hd_chk')].forEach(el => el.addEventListener('change', paint));
+  q('#hd_x').addEventListener('click', close); bg.addEventListener('mousedown', e => { if (e.target === bg) close(); });
+  q('#hd_go').addEventListener('click', async () => {
+    if (!until.value) { err.textContent = 'Enter the date this should come back. A job cannot go on hold without one.'; err.hidden = false; return; }
+    const body = { leadId: t.leadId || undefined, quoteId: t.quoteId || undefined, until: until.value, reason: q('#hd_reason').value, warn: q('#hd_warn').checked, checkin: q('#hd_chk').checked };
+    const go = q('#hd_go'); go.disabled = true;
+    const r = await api(ed ? '/holds/' + ed.id : '/holds', { method: ed ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => ({ error: 'No connection. Nothing was changed.' }));
+    go.disabled = false;
+    if (r.error) { err.textContent = r.error; err.hidden = false; return; }
+    close(); toast(`${t.name || 'Job'} on hold until ${holdDate(new Date(until.value + 'T00:00:00'))}`); if (done) done(r);
+  });
+  paint();
+}
+async function holdWake(id, name, done) {
+  const r = await api('/holds/' + id + '/wake', { method: 'POST' });
+  if (r.error) return toast(r.error);
+  toast(`${name || 'Job'} is back, follow-up due today`); if (done) done();
+}
+// The banner a held lead or quote shows, with its two actions.
+const holdBanner = h => `<div class="holdbar"><div><b>On hold until ${esc(h.untilLabel || h.until)}</b>${h.daysLeft != null ? ` <span class="muted">· ${h.daysLeft} day${h.daysLeft === 1 ? '' : 's'}</span>` : ''}${h.reason ? `<br><span class="muted">${esc(h.reason)}</span>` : ''}${h.checkin ? '<br><span class="muted">Check-in messages are on</span>' : ''}</div>
+  <div class="btns"><button class="btn btn-ghost btn-sm" data-holdedit>Change date</button><button class="btn btn-blue btn-sm" data-holdwake>Take off hold</button></div></div>`;
+
 // Quotes, split the way the work moves: Drafts (built, not sent) · Sent (waiting on the
 // client, with what they have done with the link) · Accepted · All. Above every tab, the
 // leads whose site visit is done but whose quote has not gone out yet.
@@ -2301,7 +2409,7 @@ const QSIG = { hot: ['Hot', 'sig-hot'], warm: ['Warm', 'sig-warm'], cold: ['Cold
 const QFAR = { signed: 'Signed', signature: 'Reached the signature, did not sign', contract: 'Opened the contract, did not continue', compared: 'Compared packages', read: 'Read it', none: '—' };
 async function quotesList(v) {
   const tab = state.quotesTab || 'sent';
-  const tabs = [['drafts', 'Drafts'], ['sent', 'Sent'], ['accepted', 'Accepted'], ['all', 'All']];
+  const tabs = [['drafts', 'Drafts'], ['sent', 'Sent'], ['hold', 'On hold'], ['accepted', 'Accepted'], ['all', 'All']];
   v.innerHTML = `<div class="card" style="padding:12px 16px;"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
       <div class="seg" id="qSeg">${tabs.map(t => `<button data-v="${t[0]}" class="${tab === t[0] ? 'on' : ''}">${t[1]} <span class="qn" data-n="${t[0]}"></span></button>`).join('')}</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
@@ -2353,8 +2461,9 @@ async function quotesList(v) {
   if (data.lostCount && $('#lostN')) $('#lostN').textContent = `(${data.lostCount})`;
   const isLive = q => !['accepted', 'lost', 'superseded'].includes(q.status);
   const pick = {
-    drafts: q => !q.isSample && !q.sentAt && isLive(q),
-    sent: q => !q.isSample && q.sentAt && isLive(q),
+    drafts: q => !q.isSample && !q.sentAt && isLive(q) && !q.hold,
+    sent: q => !q.isSample && q.sentAt && isLive(q) && !q.hold,
+    hold: q => !!q.hold,
     accepted: q => q.status === 'accepted',
     all: () => true,
   };
@@ -2382,16 +2491,23 @@ async function quotesList(v) {
     if (state.qSig) list = state.qSig === 'stuck' ? stuck : list.filter(q => sig(q) === state.qSig);
   }
 
-  const empty = { drafts: 'No unsent quotes. Everything built has gone out.', sent: 'No quotes waiting on a client.', accepted: 'No accepted quotes yet.', all: 'No quotes yet.' }[tab];
-  const head = tab === 'sent'
+  const empty = { drafts: 'No unsent quotes. Everything built has gone out.', hold: 'Nothing on hold. Use Hold on a quote or a lead to put a job away until a date.', sent: 'No quotes waiting on a client.', accepted: 'No accepted quotes yet.', all: 'No quotes yet.' }[tab];
+ if (tab === 'hold') list.sort((a, b) => String(a.hold.until).localeCompare(String(b.hold.until)));
+  const head = tab === 'hold' ? '<th>Quote</th><th>Client</th><th class="right">Value</th><th>On hold since</th><th>Comes back</th><th>Reason</th><th></th>' : tab === 'sent'
     ? '<th>Quote</th><th>Client</th><th class="right">Value</th><th>Sent</th><th>Signal</th><th class="right">Opens</th><th>Last opened</th><th class="right">Reading</th><th>Furthest</th><th></th>'
     : '<th>Quote</th><th>Client</th><th>Tier</th><th class="right">Value</th><th>Status</th><th>Age</th><th class="right">Views</th><th></th>';
   const actions = q => { const isLost = q.status === 'lost', isSup = q.status === 'superseded';
     return `${q.isSample ? `<span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);margin-right:6px;">SAMPLE</span>` : ''}${q.behaviour ? `<button class="btn btn-ghost btn-sm" data-bh="${q.id}">Behaviour</button> ` : ''}<button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
+      ${!isLost && !isSup && q.status !== 'accepted' && !q.isSample ? (q.hold ? `<button class="btn btn-ghost btn-sm" data-hedit="${q.id}">Change date</button> <button class="btn btn-ghost btn-sm" data-hwake="${q.id}">Take off hold</button>` : `<button class="btn btn-ghost btn-sm" data-hold="${q.id}" title="Put this job away until a date">Hold</button>`) : ''}
       ${isLost ? `<button class="btn btn-ghost btn-sm" data-reopen="${q.id}">Reopen</button>` : (q.status === 'accepted' || isSup ? '' : `<button class="btn btn-ghost btn-sm" data-lost="${q.id}">Lost</button>`)}
       <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button>`; };
   const row = q => {
     const a = AGE[q.ageBand] || AGE.fresh, isLost = q.status === 'lost';
+    if (tab === 'hold') { const h = q.hold;
+      return `<tr><td data-l="Quote"><b>${esc(q.quoteNumber)}</b></td><td data-l="Client">${esc(q.client || '—')}</td><td data-l="Value" class="right">${q.value ? money(q.value) : '—'}</td>
+        <td data-l="On hold since">${esc(h.since || '')}</td><td data-l="Comes back"><span class="tag ${h.soon ? 'age-flag' : 'tag-draft'}">${h.soon ? 'in ' + h.daysLeft + ' days' : esc(h.untilLabel)}</span>${h.soon ? `<br><span class="muted" style="font-size:10px;">${esc(h.untilLabel)}</span>` : ''}</td>
+        <td data-l="Reason">${esc(h.reason || '—')}${h.checkin ? '<br><span class="muted" style="font-size:10px;">check-in messages on</span>' : ''}</td>
+        <td class="right" style="white-space:nowrap;">${actions(q)}</td></tr>`; }
     if (tab === 'sent') { const b = q.behaviour || { signal: 'unopened', opens: 0, activeLabel: '0s', furthest: 'none' }; const sg = QSIG[b.signal] || QSIG.unopened;
       return `<tr class="qrow" data-bhrow="${q.id}"><td data-l="Quote"><b>${esc(q.quoteNumber)}</b></td><td data-l="Client">${esc(q.client || '—')}</td><td data-l="Value" class="right">${q.value ? money(q.value) : '—'}</td>
         <td data-l="Sent"><span class="tag ${a[0]}" title="${q.sentByLink ? 'Shared by link, not with Send to client. Counted from the first time the client opened it.' : ''}">${q.sentDays === 0 ? 'today' : q.sentDays + ' d ago'}</span>${q.sentByLink ? '<br><span class="muted" style="font-size:10px;">by link</span>' : ''}</td>
@@ -2410,6 +2526,10 @@ async function quotesList(v) {
     ${tab === 'sent' ? '<div class="legend" style="margin-top:8px;">Signal and reading time come from the client link. Tap a row for the full behaviour record.</div>' : ''}`;
   v.querySelectorAll('[data-qsig]').forEach(t => { const go = () => { state.qSig = state.qSig === t.dataset.qsig ? null : t.dataset.qsig; quotesList(v); };
     t.addEventListener('click', go); t.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
+  const qById = id => all.find(x => x.id === id);
+  v.querySelectorAll('[data-hold]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const q = qById(b.dataset.hold); holdDialog({ quoteId: q.id, name: q.client || 'Quote ' + q.quoteNumber, sub: `Quote ${q.quoteNumber}${q.value ? ' · ' + money(q.value) : ''}` }, () => quotesList(v)); }));
+  v.querySelectorAll('[data-hedit]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const q = qById(b.dataset.hedit); holdDialog({ quoteId: q.id, name: q.client || 'Quote ' + q.quoteNumber, sub: `Quote ${q.quoteNumber}`, hold: q.hold }, () => quotesList(v)); }));
+  v.querySelectorAll('[data-hwake]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const q = qById(b.dataset.hwake); holdWake(q.hold.id, q.client, () => quotesList(v)); }));
   v.querySelectorAll('[data-bh]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); openBehaviour(b.dataset.bh); }));
   v.querySelectorAll('tr[data-bhrow]').forEach(r => r.addEventListener('click', e => { if (e.target.closest('button')) return; openBehaviour(r.dataset.bhrow); }));
   v.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => { state.quoteId = b.dataset.open; state.scrollY = 0; route(); }));
@@ -2504,6 +2624,7 @@ async function quoteEditor(v) {
       ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
         : `<button class="btn btn-ghost" id="lostQuote">Mark lost</button>`) : ''}
+      ${q.status !== 'accepted' && !q.isSample && !q.lostAt ? '<button class="btn btn-ghost" id="holdQuote" title="Put this job away until a date">⏸ Put on hold</button>' : ''}
       ${isAdmin() && q.status !== 'accepted' && !q.isSample && !q.lostAt ? `<button class="btn btn-ghost" id="markWon" style="border-color:var(--green);color:var(--green);">✓ Mark won — PO / contract</button>` : ''}
       ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete || q.lostAt || reviewOpen ? 'disabled title="' + (q.lostAt ? 'This quote is marked lost' : reviewOpen ? 'Confirm the copied-quote review list first' : 'Finish the surcharge settings first') + '" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
       <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
@@ -2715,6 +2836,21 @@ async function quoteEditor(v) {
     toast(r.linkOff ? 'Link off — client sees "call us"' : 'Link back on'); reload();
   });
   const lq = $('#lostQuote'); if (lq) lq.addEventListener('click', () => markLost(q.id, () => { state.quoteId = null; state.tab = 'quotes'; shell(); }));
+  // On hold: the button, and a banner when this job is already held.
+  const hq = $('#holdQuote');
+  if (hq) {
+    const who = { quoteId: q.id, name: q.client || 'Quote ' + q.quoteNumber, sub: 'Quote ' + q.quoteNumber };
+    hq.addEventListener('click', () => holdDialog(who, reload));
+    api('/holds').then(hd => {
+      const fam = x => String(x || '').split('.')[0];
+      const h = ((hd && hd.holds) || []).find(x => x.id && (x.quoteId === q.id || (x.quoteNumber && fam(x.quoteNumber) === fam(q.quoteNumber))));
+      if (!h || !$('#holdQuote')) return;
+      $('#holdQuote').remove();
+      const card = $('#saveStatus').closest('.card'); card.insertAdjacentHTML('beforeend', holdBanner(h));
+      card.querySelector('[data-holdedit]').addEventListener('click', () => holdDialog({ ...who, hold: h }, reload));
+      card.querySelector('[data-holdwake]').addEventListener('click', () => holdWake(h.id, q.client, reload));
+    }).catch(() => {});
+  }
   const rq = $('#reopenQuote'); if (rq) rq.addEventListener('click', async () => {
     await api('/quotes/' + q.id + '/lost', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lost: false }) });
     toast('Quote reopened'); reload();

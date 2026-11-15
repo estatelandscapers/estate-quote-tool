@@ -247,7 +247,9 @@ router.get('/board', (req, res) => {
     phaseCounts[p] = (phaseCounts[p] || 0) + 1;
   });
   const all = [...overdue, ...dueToday, ...thisWeek, ...rows.filter(l => l.next_followup && l.next_followup > weekEnd).map(decorate), ...undated];
-  res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES, cards: all, won, parked,
+  // Future projects: jobs on hold until a date, soonest first.
+  let held = []; try { held = require('../utils/holds').list().sort((a, b) => String(a.until || '0').localeCompare(String(b.until || '0'))); } catch (e) {}
+  res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES, cards: all, won, parked, held,
     parkedCount: db.prepare('SELECT COUNT(*) c FROM leads WHERE COALESCE(parked,0)=1').get().c });
 });
 

@@ -271,6 +271,8 @@ function sentInfo(q, status) {
 }
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM quotes ORDER BY parent_number DESC, created_at DESC').all();
+  let heldMap = new Map(); try { heldMap = require('../utils/holds').heldParents(); } catch (e) {}
+  const holdOf = q => { const h = heldMap.get(q.parent_number); if (!h) return null; try { const d = require('../utils/holds').describe(h); return { id: d.id, until: d.until, untilLabel: d.untilLabel, daysLeft: d.daysLeft, soon: d.soon, since: d.sinceLabel, reason: d.reason, checkin: d.checkin, warn: d.warn }; } catch (e) { return null; } };
   const mapped = rows.map(q => {
     const views = db.prepare("SELECT COUNT(*) c FROM quote_events WHERE quote_id=? AND event_type='view'").get(q.id).c;
     const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
@@ -302,7 +304,7 @@ router.get('/', (req, res) => {
       lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
       value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand: q.is_sample ? 'fresh' : ageBand, customerTier: q.customer_tier || 'Silver',
       views, updatedAt: q.updated_at, isSample: !!q.is_sample,
-      leadId: q.lead_id || null, ...sentInfo(q, status) };
+      leadId: q.lead_id || null, hold: ['accepted', 'superseded', 'lost'].includes(status) ? null : holdOf(q), ...sentInfo(q, status) };
   });
   // Superseded and lost quotes are kept forever but hidden from the working list,
   // so what you see is the work that's actually live.

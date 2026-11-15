@@ -49,7 +49,8 @@ app.use('/api/public', require('./routes/publicEnquiry')); // website enquiry fo
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/marketing', require('./routes/marketing'));
 app.use('/api/search', require('./routes/search'));
-app.use('/api/sms', require('./routes/sms'));                       // text messages: settings, test, log                 // universal search (read-only)
+app.use('/api/sms', require('./routes/sms'));
+app.use('/api/holds', require('./routes/holds'));                   // on hold until a date                       // text messages: settings, test, log                 // universal search (read-only)
 app.use('/api/timeline', require('./routes/timeline'));            // works timeline (admin)          // Meta / Google Ads performance (admin)
 app.use('/api/public/marketing', require('./routes/publicMarketing')); // Google Ads script push + Meta webhooks (key-guarded)
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
@@ -286,6 +287,7 @@ app.listen(PORT, () => {
   try { require('./utils/releaseArchive').start(); } catch (e) { console.error('[release] failed to start:', e.message); }
   try { require('./utils/marketing').start(); } catch (e) { console.error('[marketing] failed to start:', e.message); }
   try { require('./utils/contractValue').backfill(); } catch (e) { console.error('[contract] backfill failed:', e.message); }
+  try { require('./utils/holds').start(); } catch (e) { console.error('[hold] failed to start:', e.message); }
   try { require('./utils/sms').start(); } catch (e) { console.error('[sms] failed to start:', e.message); }
   try { require('./utils/timeline').start(); } catch (e) { console.error('[timeline] failed to start:', e.message); }
 });

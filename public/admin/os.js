@@ -55,7 +55,9 @@ async function osWelcome(force) {
   const overdue = board ? (board.overdue || []).length : 0;
   const visits = ((cal && cal.visits) || []).filter(v => v.date === today && v.status !== 'done');
   const qlist = (quotes && (quotes.quotes || quotes)) || [];
-  const chase = Array.isArray(qlist) ? qlist.filter(q => !q.isSample && ['flag', 'chase'].includes(q.ageBand) && !['accepted', 'lost', 'superseded'].includes(q.status)) : [];
+  const chase = Array.isArray(qlist) ? qlist.filter(q => !q.isSample && !q.hold && ['flag', 'chase'].includes(q.ageBand) && !['accepted', 'lost', 'superseded'].includes(q.status)) : [];
+  // Jobs on hold that come back within two weeks.
+  const backSoon = ((board && board.held) || []).filter(h => h.soon && h.id);
   const since = Date.now() - 48 * 3600e3;
   const won = ((board && board.won) || []).filter(w => w.acceptedAt && new Date(String(w.acceptedAt).replace(' ', 'T') + 'Z').getTime() > since);
   const uncalled = ((slow && slow.rows) || []).filter(r => /never contacted/i.test(r.note || ''));
@@ -67,6 +69,7 @@ async function osWelcome(force) {
     ['amb', chase.length, 'Quotes to chase', chase.length ? chase.slice(0, 2).map(q => q.client || q.quoteNumber).join(', ') + (chase.length > 2 ? ` +${chase.length - 2}` : '') : 'No quotes past the follow-up age', toQuotes],
     ['gr', won.length, won.length === 1 ? 'Quote accepted, last 48 h' : 'Quotes accepted, last 48 h', won.length ? won.map(w => w.name).slice(0, 2).join(', ') : 'None in the last two days', toLeads('summary')]
   ];
+  if (backSoon.length) cards.push(['bl', backSoon.length, backSoon.length === 1 ? 'Job coming off hold' : 'Jobs coming off hold', backSoon.slice(0, 2).map(h => `${h.name} in ${h.daysLeft} d`).join(', '), toLeads('summary')]);
   const total = hotRows.length + uncalled.length + visits.length + due + chase.length;
   el.querySelector('#oswDate').textContent += total ? ` · ${total} thing${total === 1 ? '' : 's'} need${total === 1 ? 's' : ''} you today` : ' · all clear';
   el.querySelector('#oswCards').innerHTML = cards.map((c, i) => `<button class="${c[1] ? c[0] : 'zero'}" data-i="${i}" style="animation-delay:${i * 0.06}s"><div class="n">${c[1]}</div><div class="t">${c[2]}</div><div class="d">${esc(c[3])}</div></button>`).join('');

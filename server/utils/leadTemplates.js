@@ -278,6 +278,16 @@ All the best with the project.`,
 Nothing is lost. Your details stay on file. If the project comes back around, call me or reply to this message and we will pick it straight up.`,
     sms: `I have closed your {{jobshort}} enquiry for now as I could not reach you. If it comes back around, call me any time.`,
   },
+  // ---- not a board stage: the check-in sent while a job is on hold ---------------------
+  holdcheckin: {
+    subject: 'Checking in on your landscaping project',
+    body: `I hope everything is going well with the build. I am checking in on your {{job}} project{{at_address}}, which we have on hold until {{holdmonth}} as you asked.
+
+If your timing has changed, earlier or later, let me know and I will update our schedule. Your quote stays on file with us in the meantime.
+
+When you are closer to being ready, we will review the quote against current prices and confirm a start date with you.`,
+    sms: `Checking in on your landscaping project, on hold with us until {{holdmonth}}. If your timing has changed, call me and I will update our schedule.`,
+  },
 };
 // Stage names used before the 5-phase board. A lead or a saved template still carrying one
 // gets the message of the stage it became.
@@ -307,7 +317,7 @@ function niceDate(d) {
 // Returns the full message (email / WhatsApp), the short SMS version, and the sign-off
 // WhatsApp adds. A stage with no message of its own no longer falls back to a generic
 // "following up": it gets the message of the step it belongs to.
-function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber, estLink }) {
+function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber, estLink, extra }) {
   const key = DEFAULTS[stage] ? stage : (OLD_KEYS[stage] || 'call1');
   const custom = settingGet('lead_tpl_' + stage) || settingGet('lead_tpl_' + key);
   const base = DEFAULTS[key];
@@ -331,6 +341,7 @@ function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber,
     phone: localPhone(settingGet('company_phone') || ''),
     quotelink: quoteLink || '', quote: quoteNumber || '',
     estlink: estLink || '', code: lead.est_code || '', ref: lead.enquiry_ref || '',
+    ...(extra || {}),
   };
   const fill = s => String(s || '').replace(/\{\{(\w+)\}\}/g, (_, k) => vals[k] != null ? vals[k] : '');
   // A paragraph that only exists to carry a link we do not have (no estimator page set, no
