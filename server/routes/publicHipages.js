@@ -5,6 +5,10 @@ const F = require('../utils/leadFiles');
 const router = express.Router();
 
 router.get('/ping', (req, res) => res.json({ ok: F.keyOk(req.get('x-hipages-key')), onedrive: require('../utils/onedrive').configured() }));
+router.post('/match', express.json({ limit: '50kb' }), (req, res) => {
+  if (!F.keyOk(req.get('x-hipages-key'))) return res.status(401).json({ error: 'bad key' });
+  res.json({ wanted: F.wanted(String((req.body || {}).description || '').slice(0, 600)) });
+});
 router.put('/photo', express.raw({ type: () => true, limit: '25mb' }), async (req, res) => {
   if (!F.keyOk(req.get('x-hipages-key'))) return res.status(401).json({ error: 'bad key' });
   const q = req.query, s = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);

@@ -92,7 +92,7 @@ function link() {
   let n = 0;
   for (const j of db.prepare("SELECT * FROM hip_jobs WHERE lead_id IS NULL AND created_at > datetime('now','-30 days')").all()) {
     const cands = db.prepare(`SELECT id, notes, job_type FROM leads WHERE lower(source)='hipages' AND hip_job_id IS NULL
-      AND created_at > datetime(?, '-30 days') AND (suburb LIKE ? OR address LIKE ?)`).all(j.created_at, '%' + j.postcode + '%', '%' + j.postcode + '%');
+      AND (suburb LIKE ? OR address LIKE ?)`).all('%' + j.postcode + '%', '%' + j.postcode + '%');
     const d = norm(j.description).slice(0, 60);
     let hit = d.length >= 12 ? cands.filter(c => norm(c.notes).includes(d)) : [];
     if (!hit.length && d.length < 12) hit = cands.filter(c => norm(c.job_type) === norm(j.category));
@@ -103,6 +103,14 @@ function link() {
     console.log(`[files] hipages job ${j.job_id} linked to lead ${hit[0].id} (${names.length} photo(s))`); n++;
   }
   return n;
+}
+
+// Catch-up for leads that were in the tool before photos were sent: the bot asks, per
+// portal job, whether any hipages lead here still without photos carries that description.
+function wanted(description) {
+  const d = norm(description).slice(0, 60);
+  if (d.length < 12) return false;
+  return db.prepare("SELECT notes FROM leads WHERE lower(source)='hipages' AND hip_job_id IS NULL").all().some(l => norm(l.notes).includes(d));
 }
 
 async function ingestHip({ jobId, suburb, postcode, category, description, index, mime, buf }) {
@@ -121,4 +129,4 @@ async function ingestHip({ jobId, suburb, postcode, category, description, index
   return { ok: true, name };
 }
 
-module.exports = { list, session, owned, ingestHip, link, keyOk, kindOf };
+module.exports = { list, session, owned, ingestHip, link, keyOk, kindOf, wanted };
