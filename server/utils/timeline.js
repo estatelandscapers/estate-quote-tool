@@ -35,12 +35,14 @@ const r1 = x => Math.round(x * 10) / 10;
 
 // ---- job figures from the quote ------------------------------------------------------------------
 function quoteValue(q) {
+  if (q.status === 'accepted') { const v = require('./contractValue').contractEx(q); if (v != null) return v; }
   if (q.won_method === 'manual' && q.won_value != null) return q.won_value;
   if (q.quoted_sell != null) return q.quoted_sell;
   try { return require('../routes/quotes').cachedTotals(q).ex; } catch (e) { return null; }
 }
 function quoteMargin(q) {
-  if (q.quoted_sell > 0 && q.quoted_cost > 0) return r1((q.quoted_sell - q.quoted_cost) / q.quoted_sell * 100);
+  // Margin on the final price: surcharges and Scope 2 count as income, cost is the costed cost.
+  if (q.quoted_sell > 0 && q.quoted_cost > 0) { const v = quoteValue(q) || q.quoted_sell; return r1((v - q.quoted_cost) / v * 100); }
   try {
     const c = require('./costing').costQuote(q, { useSelections: true });
     if (c.selected && c.selected.sell > 0 && c.selected.cost > 0) return r1((c.selected.sell - c.selected.cost) / c.selected.sell * 100);

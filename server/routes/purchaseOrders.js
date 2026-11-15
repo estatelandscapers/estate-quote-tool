@@ -87,7 +87,9 @@ function poView(po, admin) {
     view.costItems = costItems.map(i => ({ id: i.id, code: i.code, name: i.name, qty: i.qty, unit: i.unit,
       unitCost: i.unit_cost, total: Math.round(i.qty * (i.unit_cost || 0) * 100) / 100, vendor: i.vendor_name, kind: i.kind }));
     view.actualCost = Math.round(actualCost * 100) / 100;
-    const q = db.prepare('SELECT quoted_sell, quoted_cost FROM quotes WHERE id=?').get(po.quote_id);
+    const q0 = db.prepare('SELECT * FROM quotes WHERE id=?').get(po.quote_id);
+    // Sell = final contract price ex GST, so the PO's margin matches Projects and Costing.
+    const q = q0 ? { quoted_cost: q0.quoted_cost, quoted_sell: require('../utils/contractValue').contractEx(q0) != null ? require('../utils/contractValue').contractEx(q0) : q0.quoted_sell } : null;
     if (q) { view.sellExGst = q.quoted_sell; view.quotedCost = q.quoted_cost;
       view.actualGM = q.quoted_sell != null ? Math.round((q.quoted_sell - actualCost) * 100) / 100 : null;
       view.actualGMPct = q.quoted_sell > 0 ? Math.round((q.quoted_sell - actualCost) / q.quoted_sell * 1000) / 10 : null; }

@@ -366,7 +366,7 @@ function summary(days = 30) {
   const adWon = (channels.meta.w || 0) + (channels.google.w || 0);
   const spend = meta.s + google.s;
   // Won value from ad-channel leads (quotes accepted, linked by lead_id)
-  const wonValue = db.prepare("SELECT COALESCE(SUM(COALESCE(q.quoted_sell, q.cached_value_ex, 0)),0) v FROM quotes q JOIN leads l ON l.id=q.lead_id WHERE q.status='accepted' AND l.channel IN ('meta','google') AND l.created_at>=?").get(since).v;
+  const wonValue = db.prepare(`SELECT COALESCE(SUM(${require('./contractValue').SQL}),0) v FROM quotes q JOIN leads l ON l.id=q.lead_id WHERE q.status='accepted' AND l.channel IN ('meta','google') AND l.created_at>=?`).get(since).v;
   const budgetDaily = db.prepare("SELECT COALESCE(SUM(daily_budget),0) b FROM ad_campaigns WHERE status='ACTIVE'").get().b;
   // Speed to lead: ad leads first contacted within 2 h (first call/message after creation)
   const slowRows = slowLeads(since);
@@ -409,8 +409,8 @@ function figure(key, days = 30) {
   const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
   const money = n => '$' + Math.round(n || 0).toLocaleString('en-AU');
   const leadRow = (l, note) => {
-    const q = l.quote_id ? db.prepare('SELECT id, quote_number, cached_value_ex, quoted_sell FROM quotes WHERE id=?').get(l.quote_id) : null;
-    return { leadId: l.id, quoteId: q ? q.id : null, quoteNumber: q ? q.quote_number : '—', client: l.name, package: [l.suburb, l.source].filter(Boolean).join(' · '), note, value: q ? Math.round(q.quoted_sell || q.cached_value_ex || 0) : null };
+    const q = l.quote_id ? db.prepare('SELECT id, quote_number, cached_value_ex, quoted_sell, contract_ex, won_method, won_value, status FROM quotes WHERE id=?').get(l.quote_id) : null;
+    return { leadId: l.id, quoteId: q ? q.id : null, quoteNumber: q ? q.quote_number : '—', client: l.name, package: [l.suburb, l.source].filter(Boolean).join(' · '), note, value: q ? Math.round(require('./contractValue').contractEx(q) || q.quoted_sell || q.cached_value_ex || 0) : null };
   };
   const campRows = (filter) => {
     const S = summary(days);

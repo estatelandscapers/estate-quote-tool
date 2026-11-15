@@ -666,6 +666,7 @@ router.post('/:id/mark-won', (req, res) => {
     const costSel = cc.mixed ? cc.selected.cost : Object.values(cc.perLine).reduce((a, l) => a + l.tiers[tier].cost, 0);
     db.prepare('UPDATE quotes SET quoted_sell=?, quoted_cost=?, accepted_mixed=? WHERE id=?').run(Math.round(sellSel * 100) / 100, Math.round(costSel * 100) / 100, JSON.stringify(cc.changes || []), q.id);
   } catch (e) { console.error('quoted snapshot failed', e.message); }
+  require('../utils/contractValue').snapshot(q.id);
   // Earlier accepted revisions of the same job are superseded, as on signing.
   try {
     db.prepare("SELECT id FROM quotes WHERE parent_number=? AND id<>? AND status='accepted' AND created_at < ?").all(q.parent_number, q.id, q.created_at)
@@ -687,7 +688,7 @@ router.post('/:id/unwin', (req, res) => {
   if (!q) return res.status(404).json({ error: 'Not found' });
   if (q.status !== 'accepted' || q.won_method !== 'manual') return res.status(400).json({ error: 'Only a job marked won by PO/contract can be reverted. An e-signed contract stands.' });
   const back = ['draft', 'sent', 'viewed'].includes(q.won_prev_status) ? q.won_prev_status : 'sent';
-  db.prepare(`UPDATE quotes SET status=?, accepted_package=NULL, accepted_at=NULL, quoted_sell=NULL, quoted_cost=NULL, accepted_mixed=NULL, selections_locked=0,
+  db.prepare(`UPDATE quotes SET status=?, accepted_package=NULL, accepted_at=NULL, quoted_sell=NULL, quoted_cost=NULL, contract_ex=NULL, accepted_mixed=NULL, selections_locked=0,
       won_reverted_at=datetime('now'), link_off=0, updated_at=datetime('now') WHERE id=?`).run(back, q.id);
   if (q.lead_id) db.prepare("UPDATE leads SET stage='quotesent', status='Quoted', next_followup=date('now'), updated_at=datetime('now') WHERE id=?").run(q.lead_id);
   db.prepare('INSERT INTO audit_log (id,entity_type,entity_id,actor,action,detail) VALUES (?,?,?,?,?,?)')

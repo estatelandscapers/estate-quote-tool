@@ -61,7 +61,8 @@ router.get('/', (req, res) => {
     const act = actualCostOf(q.id);
     const po = act ? db.prepare('SELECT status, closed_at FROM purchase_orders WHERE id=?').get(act.poId) : null;
     const po2 = act ? db.prepare('SELECT site_hours, crew_size FROM purchase_orders WHERE id=?').get(act.poId) : null;
-    const sell = q.quoted_sell || 0, qc = q.quoted_cost || 0;
+    // Sell = the final contract price ex GST (surcharges and Scope 2 included).
+    const sell = require('../utils/contractValue').contractEx(q) || q.quoted_sell || 0, qc = q.quoted_cost || 0;
     const ac = act ? act.cost : null;
     const pct = c => sell > 0 ? Math.round((sell - c) / sell * 1000) / 10 : null;
     const crewDays = po2 && po2.site_hours ? po2.site_hours / Math.max(1, po2.crew_size || 2) / 8 : 0;
@@ -103,7 +104,7 @@ router.get('/yearend/:fy', (req, res) => {
   const rows = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0").all().filter(q => fyOf(q.accepted_at) === fy);
   let revenue = 0, quotedCost = 0, actualCost = 0, withActuals = 0;
   rows.forEach(q => {
-    revenue += q.quoted_sell || 0; quotedCost += q.quoted_cost || 0;
+    revenue += require('../utils/contractValue').contractEx(q) || q.quoted_sell || 0; quotedCost += q.quoted_cost || 0;
     const a = actualCostOf(q.id);
     if (a) { actualCost += a.cost; withActuals++; } else { actualCost += q.quoted_cost || 0; }
   });

@@ -925,6 +925,8 @@ CREATE INDEX IF NOT EXISTS inv_photos_item ON inv_photos(item_id, uploaded_at);
   try { db.prepare('INSERT OR IGNORE INTO inv_locations (id,name,created_by) VALUES (?,?,?)').run(crypto.randomUUID(), n, 'system'); } catch (e) {}
 });
 
+// v50: the final contract price ex GST of an accepted quote (deliverables + surcharges + Scope 2).
+addColumn('quotes', 'contract_ex', 'REAL');
 // v44: stock level for items kept in numbers (blades, fuel, PPE). NULL = not counted.
 addColumn('inv_items', 'qty', 'REAL');
 addColumn('inv_items', 'min_qty', 'REAL');

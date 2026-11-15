@@ -270,6 +270,8 @@ router.post('/:token/sign', async (req, res) => {
     db.prepare('UPDATE quotes SET quoted_sell=?, quoted_cost=?, accepted_mixed=? WHERE id=?')
       .run(Math.round(sellSel * 100) / 100, Math.round(costSel * 100) / 100, JSON.stringify(cc.changes || []), q.id);
   } catch (e) { console.error('quoted snapshot failed', e.message); }
+  // The contract price as signed: deliverables + surcharges + Scope 2, ex GST.
+  require('../utils/contractValue').snapshot(q.id);
 
   // The client has signed a newer revision: any EARLIER accepted revision of the same quote
   // is now superseded, so the job is not counted twice.

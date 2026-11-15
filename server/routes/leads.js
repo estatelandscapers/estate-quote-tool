@@ -226,7 +226,7 @@ router.get('/board', (req, res) => {
   // Won jobs sit in the fifth column: accepted quotes (not superseded, not samples).
   const won = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0 ORDER BY accepted_at DESC LIMIT 40").all().map(q => {
     const lead = q.lead_id ? db.prepare('SELECT id, suburb, address, source FROM leads WHERE id=?').get(q.lead_id) : null;
-    let value = null; try { value = q.won_method === 'manual' && q.won_value != null ? q.won_value : (q.quoted_sell != null ? q.quoted_sell : require('./quotes').cachedTotals(q).ex); } catch (e) {}
+    let value = null; try { value = require('../utils/contractValue').contractEx(q); if (value == null) value = require('./quotes').cachedTotals(q).ex; } catch (e) {}
     return { id: lead ? lead.id : null, quoteId: q.id, name: q.client_name, suburb: (lead && (lead.suburb || lead.address)) || q.address || '', source: lead ? lead.source : '',
       stage: 'won', stageLabel: 'Won', phase: 5, nextAction: q.selections_locked ? 'Purchase order raised' : 'Lock selections', due: null,
       quoteNumber: q.quote_number, quoteStatus: 'accepted', value: value != null ? Math.round(value) : null, acceptedAt: q.accepted_at,

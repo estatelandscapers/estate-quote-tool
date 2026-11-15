@@ -26,8 +26,8 @@ function isSuperseded(q) {
 // engine for every quote made this endpoint the slowest thing in the app.
 function quoteValue(q) {
   // A job won by PO carries the value as approved on the PO; that is the contract figure.
-  if (q.status === 'accepted' && q.won_method === 'manual' && q.won_value != null) return q.won_value;
-  if (q.quoted_sell != null && q.status === 'accepted') return q.quoted_sell;
+  // A won job is worth its final contract price: deliverables, surcharges and Scope 2.
+  if (q.status === 'accepted') { const v = require('../utils/contractValue').contractEx(q); if (v != null) return v; }
   try { return require('./quotes').cachedTotals(q).ex; }
   catch (e) { console.error('[dashboard] quoteValue failed for', q.quote_number, e.message); return 0; }
 }
@@ -38,7 +38,10 @@ function quoteValue(q) {
 function marginOf(q) {
   try {
     const c = require('../utils/costing').costQuote(q, { useSelections: true });
-    const sell = Math.round(c.selected.sell || 0), cost = Math.round(c.selected.cost || 0);
+    // Margin = the final price ex GST (surcharges and Scope 2 included) less the costed cost,
+    // for won and open quotes alike, so the two can be compared.
+    const full = Math.round(quoteValue(q) || 0);
+    const sell = full > 0 ? full : Math.round(c.selected.sell || 0), cost = Math.round(c.selected.cost || 0);
     return { sell, cost, margin: sell - cost, pct: sell > 0 ? Math.round((sell - cost) / sell * 1000) / 10 : null, priced: cost > 0 };
   } catch (e) { return { sell: 0, cost: 0, margin: 0, pct: null, priced: false }; }
 }

@@ -285,6 +285,7 @@ app.listen(PORT, () => {
   try { require('./utils/linkAnalytics').start(); } catch (e) { console.error('[links] failed to start:', e.message); }
   try { require('./utils/releaseArchive').start(); } catch (e) { console.error('[release] failed to start:', e.message); }
   try { require('./utils/marketing').start(); } catch (e) { console.error('[marketing] failed to start:', e.message); }
+  try { require('./utils/contractValue').backfill(); } catch (e) { console.error('[contract] backfill failed:', e.message); }
   try { require('./utils/sms').start(); } catch (e) { console.error('[sms] failed to start:', e.message); }
   try { require('./utils/timeline').start(); } catch (e) { console.error('[timeline] failed to start:', e.message); }
 });
