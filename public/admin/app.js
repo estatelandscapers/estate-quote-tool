@@ -262,7 +262,7 @@ function shell() {
   const initials = String(USER.name || '?').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
   $('#app').innerHTML = `
     <aside class="dock" id="dock">
-      <div class="dockbrand" title="Estate Landscapers — Business Management Tool">${LOGO}</div>
+      <button type="button" class="dockbrand" data-home title="Go to Leads">${LOGO}</button>
       <div class="launchhead"><b>All sections</b><button class="x" id="launchX" aria-label="Close">×</button></div>
       <nav class="nav" id="nav" aria-label="Sections">
         ${main.map((t, i) => `${(t[0] === 'quotes' || t[0] === 'jobs') && i > 0 ? '<span class="navsep"></span>' : ''}${btn(t)}`).join('')}
@@ -270,7 +270,7 @@ function shell() {
       </nav>
     </aside>
     <div class="top">
-      <div class="brand">${LOGO}<div><b id="pageTitle"></b><span>Estate Landscapers</span></div></div>
+      <div class="brand"><button type="button" class="brandlogo" data-home title="Go to Leads">${LOGO}</button><div><b id="pageTitle"></b><span>Estate Landscapers</span></div></div>
       <button type="button" class="osearch" id="osSearch" title="Search everything (Ctrl K)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.500-3.500"/></svg><span>Search leads, quotes, projects, orders, stock…</span><kbd>Ctrl K</kbd></button>
       <div class="acct">
         <button type="button" class="avatar" id="acctBtn" title="${esc(USER.name)} · ${isAdmin() ? 'Admin' : 'Estimator'}" aria-haspopup="true">${esc(initials)}</button>
@@ -293,6 +293,8 @@ function shell() {
     route();
   };
   document.querySelectorAll('.nav button[data-tab], .tabbar button[data-tab]').forEach(b => b.addEventListener('click', () => goTab(b.dataset.tab)));
+  // The logo (dock, and the top bar on a phone) goes to the Leads summary.
+  document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => goTab('leads')));
   if ($('#setupBtn')) $('#setupBtn').addEventListener('click', e => { e.stopPropagation(); $('#setupGrp').classList.toggle('open'); $('.acct').classList.remove('open'); });
   $('#moreBtn').addEventListener('click', () => document.body.classList.toggle('launch'));
   $('#launchX').addEventListener('click', () => document.body.classList.remove('launch'));
