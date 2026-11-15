@@ -59,7 +59,7 @@ function view(l) {
     jobType: l.job_type || '', suburb: l.suburb || '',
     parked: !!l.parked, overridden: !!l.stage_override,
     msgCount: db.prepare('SELECT COUNT(*) c FROM lead_messages WHERE lead_id=?').get(l.id).c,
-    smallProject: !!l.small_project, enquiryRef: l.enquiry_ref || null, declinedReason: l.declined_reason || null,
+    filesCount: l.files_count || 0, smallProject: !!l.small_project, enquiryRef: l.enquiry_ref || null, declinedReason: l.declined_reason || null,
     quoteId: l.quote_id, quoteNumber: q ? q.quote_number : null, quoteStatus: q ? q.status : null,
     quoteMissing: !!(l.quote_id && !q),
     createdAt: l.created_at };
@@ -217,6 +217,7 @@ router.get('/board', (req, res) => {
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '', source: l.source || '',
       phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase, overridden: !!l.stage_override,
       nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup, small: !!l.small_project, createdAt: l.created_at,
+      files: l.files_count || 0,
       quoteMissing: !!(l.quote_id && !quote),
       quoteId: fullQ ? fullQ.id : null, quoteNumber: fullQ ? fullQ.quote_number : null, quoteStatus: fullQ ? fullQ.status : null,
       value: value != null ? Math.round(value) : null,
@@ -671,6 +672,51 @@ router.post('/ingest/preview', (req, res) => {
 router.post('/ingest/:id/reviewed', (req, res) => {
   db.prepare('UPDATE mail_ingest SET reviewed=1 WHERE id=?').run(req.params.id);
   res.json({ ok: true });
+});
+
+// ---- FILES (v52): photos and documents, kept in OneDrive, shown here ----------
+const LF = require('../utils/leadFiles');
+const leadOr404 = (req, res) => { const l = db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id); if (!l) res.status(404).json({ error: 'not found' }); return l; };
+router.get('/:id/files', async (req, res) => {
+  const l = leadOr404(req, res); if (!l) return;
+  try { res.json({ ...(await LF.list(l)), canDelete: req.user.role === 'admin' }); }
+  catch (e) { console.error('[files] list', e.message); res.status(502).json({ error: 'OneDrive could not be reached. Try again in a moment.' }); }
+});
+router.post('/:id/files/session', async (req, res) => {
+  const l = leadOr404(req, res); if (!l) return;
+  const name = String((req.body || {}).name || '').trim().slice(0, 150), size = +(req.body || {}).size || 0;
+  if (!name) return res.status(400).json({ error: 'file name missing' });
+  if (size > 250 * 1024 * 1024) return res.status(400).json({ error: 'That file is over 250 MB.' });
+  try { res.json(await LF.session(l, name, req.user.name || req.user.username)); }
+  catch (e) { console.error('[files] session', e.message); res.status(502).json({ error: 'OneDrive could not be reached. Try again in a moment.' }); }
+});
+for (const which of ['view', 'thumb']) router.get('/:id/files/:item/' + which, async (req, res) => {
+  const l = leadOr404(req, res); if (!l) return;
+  try {
+    const m = await LF.owned(l, req.params.item); if (!m) return res.status(404).end();
+    const od = require('../utils/onedrive');
+    const r = await (which === 'thumb' ? od.thumbOf(m.id) : od.contentOf(m.id));
+    if (!r.ok) return res.status(r.status === 404 ? 404 : 502).end();
+    const kind = LF.kindOf(m.name, (m.file && m.file.mimeType) || '');
+    res.setHeader('Content-Type', which === 'thumb' ? (r.headers.get('content-type') || 'image/jpeg')
+      : kind === 'pdf' ? 'application/pdf' : (m.file && m.file.mimeType) || r.headers.get('content-type') || 'application/octet-stream');
+    // Only photos, PDFs and video open in the page; anything else downloads, so an
+    // uploaded HTML file can never run as part of the tool.
+    res.setHeader('Content-Disposition', `${which === 'thumb' || ['image', 'pdf', 'video'].includes(kind) && !req.query.dl ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(m.name)}`);
+    res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Cache-Control', 'private, max-age=3600');
+    const len = r.headers.get('content-length'); if (len) res.setHeader('Content-Length', len);
+    require('stream').Readable.fromWeb(r.body).on('error', () => res.end()).pipe(res);
+  } catch (e) { console.error('[files] ' + which, e.message); if (!res.headersSent) res.status(502).end(); }
+});
+router.delete('/:id/files/:item', async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  const l = leadOr404(req, res); if (!l) return;
+  try {
+    const m = await LF.owned(l, req.params.item); if (!m) return res.status(404).json({ error: 'not found' });
+    await require('../utils/onedrive').removeItem(m.id);
+    db.prepare('UPDATE leads SET files_count=MAX(0,COALESCE(files_count,1)-1) WHERE id=?').run(l.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(502).json({ error: 'OneDrive could not be reached. Try again in a moment.' }); }
 });
 
 // ---- DOCUMENTATION (Step 3) --------------------------------------------------

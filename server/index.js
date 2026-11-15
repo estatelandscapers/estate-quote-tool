@@ -52,6 +52,7 @@ app.use('/api/search', require('./routes/search'));
 app.use('/api/sms', require('./routes/sms'));
 app.use('/api/holds', require('./routes/holds'));                   // on hold until a date                       // text messages: settings, test, log                 // universal search (read-only)
 app.use('/api/timeline', require('./routes/timeline'));            // works timeline (admin)          // Meta / Google Ads performance (admin)
+app.use('/api/public/hipages', require('./routes/publicHipages'));     // hipages bot pushes job photos (key-guarded)
 app.use('/api/public/marketing', require('./routes/publicMarketing')); // Google Ads script push + Meta webhooks (key-guarded)
 app.use('/api/purchase-orders', require('./routes/purchaseOrders').router);
 app.use('/api/inventory', require('./routes/inventory'));               // equipment register + photo-on-use log

@@ -958,7 +958,7 @@ async function leadsSummary(v) {
       <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:var(--warn-soft);color:var(--warn-ink);">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : ''}</div>
       <div class="where">${esc(c.suburb || '')}${c.quoteNumber ? ' · quote ' + esc(c.quoteNumber) : ''}</div>
       <div class="next">${dueLabel(c)}<span>${esc(c.nextAction || '')}</span></div>
-      <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.est ? estChip(c.est) : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
+      <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.est ? estChip(c.est) : ''}${c.files ? `<span class="chip filechip" title="${c.files} photo${c.files === 1 ? '' : 's'} or file${c.files === 1 ? '' : 's'} on this lead">📎 ${c.files}</span>` : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
   const paint = () => {
     const term = (state.boardSearch || '').toLowerCase(), small = !!state.smallOnly;
     [1, 2, 3, 4, 5].forEach(p => {
@@ -1976,6 +1976,7 @@ async function leadConsole(v) {
       </div>
     </div>
     <div id="estPanel"></div>
+    <div id="filesPanel"></div>
     <div id="answersPanel"></div>
     <div id="docsPanel"></div>
     <div class="rule" style="margin-top:14px;"></div>
@@ -2176,6 +2177,8 @@ async function leadConsole(v) {
       toast('Code ' + r.code + ' sent'); leadConsole(v);
     });
   }).catch(() => {});
+
+  leadFilesPanel(l.id);
 
   // What the client told us — and how the quote compares.
   api(`/leads/${l.id}/answers`).then(A => {
@@ -4354,3 +4357,83 @@ async function settingsTab(v) {
 }
 
 boot();
+
+
+/* ---- v52: a lead's photos and files, kept in OneDrive, shown here ---- */
+const lfSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+async function leadFilesPanel(leadId) {
+  const box = document.getElementById('filesPanel'); if (!box) return;
+  const base = `/api/leads/${leadId}/files`;
+  const head = (n, extra) => `<div class="lfhead"><h2>Photos &amp; files${n ? ` <span class="lfn">${n}</span>` : ''}</h2>${extra || ''}</div>`;
+  box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">Loading…</p></div>`;
+  const d = await api(`/leads/${leadId}/files`);
+  if (!document.body.contains(box)) return;
+  if (d.error) { box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">${esc(d.error)} <a href="#" id="lf_retry">Try again</a></p></div>`; $('#lf_retry', box).addEventListener('click', e => { e.preventDefault(); leadFilesPanel(leadId); }); return; }
+  if (d.configured === false) { box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">OneDrive is not connected, so files cannot be shown here yet.</p></div>`; return; }
+  const files = d.files || [];
+  const tile = (f, i) => `<button type="button" class="lft" data-i="${i}" title="${esc(f.name)}">
+      <span class="lfpic">${f.thumb ? `<img loading="lazy" alt="" data-ext="${esc((f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase())}" src="${base}/${encodeURIComponent(f.id)}/thumb">` : `<span class="lfext">${esc((f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase())}</span>`}${f.kind === 'video' ? '<span class="lfplay">▶</span>' : ''}</span>
+      <span class="lfname">${esc(f.name)}</span><span class="lffrom">${esc(f.from)} · ${lfSize(f.size)}</span></button>`;
+  box.innerHTML = `<div class="card lfcard" id="lf_card">
+    ${head(files.length, `<div><input type="file" id="lf_in" multiple hidden><button class="btn btn-ghost btn-sm" id="lf_add">＋ Add photos or files</button></div>`)}
+    <div class="lfgrid" id="lf_grid">${files.map(tile).join('') || '<p class="muted lfnone">Nothing here yet. Add site photos, drawings or anything the client sent, or drop them on this box.</p>'}</div>
+    <div class="lfnote" id="lf_note" hidden></div></div>`;
+  const card = $('#lf_card', box), note = $('#lf_note', box);
+  $$('.lft', box).forEach(b => b.addEventListener('click', () => lfViewer(leadId, files, +b.dataset.i, d.canDelete)));
+  // A file OneDrive has no thumbnail for yet shows its type instead of a broken picture.
+  $$('.lft img', box).forEach(im => im.addEventListener('error', () => { const sp = document.createElement('span'); sp.className = 'lfext'; sp.textContent = im.dataset.ext; im.replaceWith(sp); }));
+  // Straight from this browser to OneDrive, in 5 MB pieces, the same way the website form does it.
+  const send = async list => {
+    const fl = [...list].filter(f => f && f.size); if (!fl.length) return;
+    note.hidden = false; let done = 0, bad = [];
+    for (const f of fl) {
+      note.textContent = `Adding ${done + 1} of ${fl.length}: ${f.name}`;
+      try {
+        const s = await api(`/leads/${leadId}/files/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: f.name, size: f.size }) });
+        if (s.error || !s.uploadUrl) throw new Error(s.error || 'no upload address');
+        const CH = 327680 * 16;
+        for (let o = 0; o < f.size; o += CH) {
+          const end = Math.min(f.size, o + CH);
+          const r = await fetch(s.uploadUrl, { method: 'PUT', headers: { 'Content-Range': `bytes ${o}-${end - 1}/${f.size}` }, body: f.slice(o, end) });
+          if (!r.ok) throw new Error('upload stopped (' + r.status + ')');
+          note.textContent = `Adding ${done + 1} of ${fl.length}: ${f.name} · ${Math.round(end / f.size * 100)}%`;
+        }
+        done++;
+      } catch (e) { bad.push(f.name + ' — ' + e.message); }
+    }
+    if (bad.length) toast('Not added: ' + bad.join('; ')); else toast(done === 1 ? 'File added' : done + ' files added');
+    leadFilesPanel(leadId);
+  };
+  $('#lf_add', box).addEventListener('click', () => $('#lf_in', box).click());
+  $('#lf_in', box).addEventListener('change', e => send(e.target.files));
+  ['dragenter', 'dragover'].forEach(ev => card.addEventListener(ev, e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); card.classList.add('lfover'); } }));
+  ['dragleave', 'drop'].forEach(ev => card.addEventListener(ev, e => { if (ev === 'drop' && e.dataTransfer && e.dataTransfer.files.length) { e.preventDefault(); send(e.dataTransfer.files); } card.classList.remove('lfover'); }));
+}
+// Full-size viewer: photos, PDFs and video open here; anything else offers a download.
+function lfViewer(leadId, files, at, canDelete) {
+  const base = `/api/leads/${leadId}/files`;
+  const bg = document.createElement('div'); bg.className = 'lfview'; document.body.appendChild(bg);
+  const close = () => { document.removeEventListener('keydown', key, true); bg.remove(); };
+  const go = n => { at = (at + n + files.length) % files.length; paint(); };
+  const key = e => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); } else if (e.key === 'ArrowRight') go(1); else if (e.key === 'ArrowLeft') go(-1); };
+  const paint = () => {
+    const f = files[at], src = `${base}/${encodeURIComponent(f.id)}/view`;
+    bg.innerHTML = `<div class="lfvbar"><div class="lfvt"><b>${esc(f.name)}</b><span>${esc(f.from)} · ${lfSize(f.size)}${files.length > 1 ? ` · ${at + 1} of ${files.length}` : ''}</span></div>
+        <div class="lfvb"><a class="btn btn-ghost btn-sm" href="${src}?dl=1">Download</a>${canDelete ? '<button class="btn btn-ghost btn-sm" id="lfv_del">Delete</button>' : ''}<button class="btn btn-blue btn-sm" id="lfv_x">Close</button></div></div>
+      <div class="lfvbody">${files.length > 1 ? '<button class="lfnav prev" aria-label="Previous">‹</button><button class="lfnav next" aria-label="Next">›</button>' : ''}
+        ${f.kind === 'image' ? `<img src="${src}" alt="${esc(f.name)}">` : f.kind === 'pdf' ? `<iframe src="${src}" title="${esc(f.name)}"></iframe>`
+          : f.kind === 'video' ? `<video src="${src}" controls playsinline></video>`
+          : `<div class="lfvnone"><b>${esc(f.name)}</b><p>This kind of file cannot be shown here.</p><a class="btn btn-blue" href="${src}?dl=1">Download it</a></div>`}</div>`;
+    bg.querySelector('#lfv_x').addEventListener('click', close);
+    const p = bg.querySelector('.prev'), n = bg.querySelector('.next'); if (p) { p.addEventListener('click', () => go(-1)); n.addEventListener('click', () => go(1)); }
+    bg.querySelector('.lfvbody').addEventListener('mousedown', e => { if (e.target.classList.contains('lfvbody')) close(); });
+    const del = bg.querySelector('#lfv_del');
+    if (del) del.addEventListener('click', async () => {
+      if (!del.dataset.sure) { del.dataset.sure = 1; del.textContent = 'Delete this file?'; del.classList.add('danger'); return; }
+      del.disabled = true; const r = await api(`/leads/${leadId}/files/${encodeURIComponent(f.id)}`, { method: 'DELETE' });
+      if (r.error) { toast(r.error); del.disabled = false; return; }
+      toast('Deleted. It stays in the OneDrive recycle bin for a while.'); close(); leadFilesPanel(leadId);
+    });
+  };
+  document.addEventListener('keydown', key, true); paint();
+}

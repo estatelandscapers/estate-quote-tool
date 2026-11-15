@@ -33,7 +33,7 @@ function configured() {
 let TOKEN = null, TOKEN_EXP = 0;
 async function token() {
   if (TOKEN && Date.now() < TOKEN_EXP - 300000) return TOKEN;
-  const r = await fetch(`https://login.microsoftonline.com/${process.env.GRAPH_TENANT_ID}/oauth2/v2.0/token`, {
+  const r = await fetch(`${process.env.GRAPH_LOGIN_URL || 'https://login.microsoftonline.com'}/${process.env.GRAPH_TENANT_ID}/oauth2/v2.0/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -49,7 +49,7 @@ async function token() {
   return TOKEN;
 }
 
-const drive = () => `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(process.env.ONEDRIVE_USER)}/drive`;
+const drive = () => `${process.env.GRAPH_API_URL || 'https://graph.microsoft.com/v1.0'}/users/${encodeURIComponent(process.env.ONEDRIVE_USER)}/drive`;
 // Encode each path segment but keep the separators — Graph addresses items by path.
 const encPath = p => p.split('/').map(s => encodeURIComponent(s).replace(/'/g, '%27')).join('/');
 // Characters OneDrive will not accept in a file or folder name.
@@ -133,5 +133,61 @@ async function listFolder(meta) {
   }
 }
 
+// ---- v52: lead files shown inside the tool ------------------------------------
+// Everything below addresses folders and files by their OneDrive ID, so a folder renamed
+// or moved by hand in OneDrive still belongs to its lead.
+async function folderByPath(path) {
+  try { const r = await gfetch(`${drive()}/root:/${encPath(path)}?$select=id,webUrl,folder`); return r.id ? { id: r.id, webUrl: r.webUrl || '' } : null; }
+  catch (e) { if (/ 404/.test(e.message)) return null; throw e; }
+}
+// Make (or find) a folder under the root, one level at a time. Returns { id, webUrl }.
+async function ensurePath(segments) {
+  let path = ROOT, last = null;
+  for (const seg of segments.map(safeName).filter(Boolean)) {
+    last = await gfetch(`${drive()}/root:/${encPath(path)}:/children`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: seg, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }),
+    }).catch(() => null);
+    path += '/' + seg;
+    if (!last) last = await folderByPath(path);
+  }
+  if (!last || !last.id) throw new Error('could not create the OneDrive folder');
+  return { id: last.id, webUrl: last.webUrl || '' };
+}
+async function childrenOf(folderId) {
+  const out = []; let url = `${drive()}/items/${folderId}/children?$top=200&$select=id,name,size,file,folder,createdDateTime,webUrl&$expand=thumbnails($select=medium)`;
+  for (let i = 0; url && i < 5; i++) { const r = await gfetch(url); out.push(...(r.value || [])); url = r['@odata.nextLink'] || null; }
+  return out.filter(x => !x.folder && (x.size || 0) > 0).map(x => ({
+    id: x.id, name: x.name, size: x.size || 0, mime: (x.file && x.file.mimeType) || '', created: x.createdDateTime || '',
+    thumb: !!(x.thumbnails && x.thumbnails[0] && x.thumbnails[0].medium) }));
+}
+async function itemMeta(id) { return gfetch(`${drive()}/items/${id}?$select=id,name,size,file,parentReference`); }
+async function sessionIn(folderId, fileName) {
+  const name = safeName(fileName) || 'file';
+  const sess = await gfetch(`${drive()}/items/${folderId}:/${encPath(name)}:/createUploadSession`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'rename', name } }),
+  });
+  return { name, uploadUrl: sess.uploadUrl };
+}
+// Server-side upload of bytes already in memory (hipages photos pushed by the bot).
+// Nothing touches the volume. Chunks are multiples of 320 KiB, as Graph requires.
+async function putBytes(folderId, fileName, buf) {
+  const { uploadUrl, name } = await sessionIn(folderId, fileName);
+  const CH = 327680 * 16; let last = null;
+  for (let o = 0; o < buf.length; o += CH) {
+    const part = buf.subarray(o, Math.min(buf.length, o + CH));
+    const r = await fetch(uploadUrl, { method: 'PUT', body: part,
+      headers: { 'Content-Length': String(part.length), 'Content-Range': `bytes ${o}-${o + part.length - 1}/${buf.length}` } });
+    if (!r.ok) throw new Error('OneDrive upload failed: ' + r.status);
+    last = await r.json().catch(() => ({}));
+  }
+  return { id: last && last.id, name: (last && last.name) || name };
+}
+async function removeItem(id) { const r = await graphRaw(`${drive()}/items/${id}`, { method: 'DELETE' }); if (!r.ok && r.status !== 404) throw new Error('OneDrive delete failed: ' + r.status); }
+const contentOf = id => graphRaw(`${drive()}/items/${id}/content`);
+const thumbOf = id => graphRaw(`${drive()}/items/${id}/thumbnails/0/medium/content`);
+
 module.exports = { configured, ensureFolder, uploadUrlFor, folderPathFor, listFolder, selfTest, ROOT,
+  folderByPath, ensurePath, childrenOf, itemMeta, sessionIn, putBytes, removeItem, contentOf, thumbOf,
   graphJson: gfetch, graphRaw, safeName, driveRoot: drive, encodePath: encPath };
