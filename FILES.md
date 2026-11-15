@@ -18,3 +18,8 @@ Variables: tool `HIPAGES_FILES_KEY`; bot `QUOTE_TOOL_URL` and `QUOTE_TOOL_KEY` (
 Limits: only jobs accepted after this went live; a job accepted purely by the overnight email path, never seen in the portal list, has no photos to send — add those by hand.
 
 Code: `server/utils/leadFiles.js`, `server/routes/publicHipages.js`, routes under `/api/leads/:id/files`.
+
+## Email leads from Zoho (v53)
+The tool also watches one folder of the Zoho mailbox (default `Leads`). Any email moved into that folder becomes a lead: the sender is the client, the message is the notes, a mobile in the message is picked up, and attachments go into Photos & files. Nothing else in the mailbox is read and nothing is marked or moved.
+
+Variables: `ZOHO_IMAP_USER`, `ZOHO_IMAP_PASS` (a Zoho app-specific password); optional `ZOHO_IMAP_FOLDER` (default `Leads`), `ZOHO_IMAP_HOST` (default `imappro.zoho.com.au`), `ZOHO_POLL_MINUTES` (default 2).

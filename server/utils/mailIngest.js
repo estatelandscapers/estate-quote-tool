@@ -162,9 +162,17 @@ function alreadySeen(messageId) {
   return !!db.prepare('SELECT id FROM mail_ingest WHERE message_id=?').get(messageId);
 }
 
-function createFromEmail({ messageId, from, subject, text, html, receivedAt }) {
-  const platform = detectPlatform(from, subject);
-  const p = parseEnquiry(text, subject);
+function createFromEmail({ messageId, from, subject, text, html, receivedAt, direct }) {
+  const platform = detectPlatform(from, subject) || (direct ? 'Email' : null);
+  const p = parseEnquiry(direct ? direct.description : text, subject);
+  // A customer's own email (the Zoho "Leads" folder): the sender IS the lead, and the
+  // message is the description. Labelled patterns above still win where they matched.
+  if (direct) {
+    // The sender's own name and address always win over anything pattern-matched in the body.
+    for (const k of ['name', 'email']) if (direct[k]) { if (!p[k]) p.confidence++; p[k] = direct[k]; }
+    if (!p.phone && direct.phone) { p.phone = direct.phone; p.confidence++; }
+    if (!p.description && direct.description) { p.description = direct.description; p.confidence++; }
+  }
   // Platform-specific parser wins on any field it found. The generic patterns stay as the
   // safety net for platforms without a real sample yet.
   const pp = PLATFORM_PARSERS[String(platform || '').toLowerCase()];
@@ -215,6 +223,103 @@ function createFromEmail({ messageId, from, subject, text, html, receivedAt }) {
   try { require('./estimator').autoInvite(id, { reason: 'new' }).catch(() => {}); } catch (e) {}
   return { leadId: id, platform, parsed: p, needsReview };
 }
+
+// ---- second mailbox: the Zoho "Leads" folder ----------------------------------
+// Customers who email the business directly. Nothing in the main inbox is read: only
+// mail a person has moved into the Leads folder becomes a lead, so invoices, supplier
+// mail and client replies never do. The mailbox is left exactly as found.
+function zohoConfig() {
+  return { host: process.env.ZOHO_IMAP_HOST || 'imappro.zoho.com.au', port: parseInt(process.env.ZOHO_IMAP_PORT || '993', 10),
+    user: process.env.ZOHO_IMAP_USER || '', pass: process.env.ZOHO_IMAP_PASS || '', folder: process.env.ZOHO_IMAP_FOLDER || 'Leads' };
+}
+const zohoConfigured = () => { const c = zohoConfig(); return !!(c.user && c.pass); };
+const zoho = { lastOk: null, lastError: null, created: 0 };
+const PHONE_RE = /(?:\+?61[\s-]?|\(?0)[2-478]\)?(?:[\s-]?\d){8}/;
+// The customer's own words: drop the quoted thread underneath and the signature image noise.
+function ownWords(text) {
+  let t = String(text || '').replace(/\r/g, '');
+  const cut = t.search(/\n(?:On .{5,80} wrote:|-{2,}\s*Original Message|From:\s.+\n(?:Sent|Date):|_{10,})/i);
+  if (cut > 40) t = t.slice(0, cut);
+  return t.replace(/\[cid:[^\]]+\]/g, '').replace(/\n{3,}/g, '\n\n').trim().slice(0, 3000);
+}
+// Someone on the team forwarded it: the real sender is in the forwarded header.
+function forwardedSender(text) {
+  const m = String(text || '').match(/From:\s*\*?\s*"?([^"<\n]{0,60}?)"?\s*<?([\w.+-]+@[\w.-]+\.\w+)>?/i);
+  return m ? { name: m[1].replace(/[*]/g, '').trim(), email: m[2] } : null;
+}
+function directFields(parsed) {
+  const f = (parsed.from && parsed.from.value && parsed.from.value[0]) || {};
+  const text = parsed.text || String(parsed.html || '').replace(/<[^>]+>/g, '\n');
+  let name = (f.name || '').replace(/["']/g, '').trim(), email = (f.address || '').toLowerCase();
+  const ours = (process.env.ZOHO_IMAP_USER || '').split('@')[1];
+  if (ours && email.endsWith('@' + ours.toLowerCase())) { const fw = forwardedSender(text); if (fw) { name = fw.name || name; email = fw.email.toLowerCase(); } }
+  if (!name && email) name = email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const body = ownWords(text);
+  const ph = body.match(PHONE_RE) || text.match(PHONE_RE);
+  const subject = String(parsed.subject || '').replace(/^(?:\s*(?:re|fw|fwd):\s*)+/i, '').trim();
+  return { name, email, phone: ph ? ph[0] : '', description: [subject, body].filter(Boolean).join('\n') };
+}
+// Real attachments only: skip the logos and icons embedded in signatures.
+function realAttachments(parsed) {
+  return (parsed.attachments || []).filter(a => a && Buffer.isBuffer(a.content) && a.content.length <= 25 * 1024 * 1024
+    && !(a.contentDisposition === 'inline' && a.content.length < 40000) && a.content.length > 2000).slice(0, 15);
+}
+async function attachToLead(leadId, parsed) {
+  const atts = realAttachments(parsed); if (!atts.length) return 0;
+  const LF = require('./leadFiles'); let n = 0;
+  for (const a of atts) { try { await LF.addBytes(leadId, a.filename || ('attachment-' + (n + 1)), a.content, 'Email'); n++; } catch (e) { console.error('[mail] attachment not saved:', e.message); } }
+  return n;
+}
+async function pollZoho({ limit = 30 } = {}) {
+  if (!zohoConfigured()) return { ok: false, reason: 'Zoho mailbox not configured — set ZOHO_IMAP_USER and ZOHO_IMAP_PASS.' };
+  const c = zohoConfig();
+  const { ImapFlow } = require('imapflow'); const { simpleParser } = require('mailparser');
+  const client = new ImapFlow({ host: c.host, port: c.port, secure: true, auth: { user: c.user, pass: c.pass }, logger: false });
+  client.on('error', () => {});
+  const created = [];
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(c.folder);
+    try {
+      const uids = await client.search({ since: new Date(Date.now() - BACKFILL_DAYS * 864e5) }, { uid: true });
+      for (const uid of (uids || []).slice(-limit)) {
+        const head = await client.fetchOne(String(uid), { envelope: true }, { uid: true });
+        if (!head) continue;
+        const envId = head.envelope && head.envelope.messageId;
+        if (envId && alreadySeen(envId)) continue;
+        const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+        if (!msg) continue;
+        const parsed = await simpleParser(msg.source);
+        const messageId = parsed.messageId || envId || null;
+        if (alreadySeen(messageId)) continue;
+        const text = parsed.text || String(parsed.html || '').replace(/<[^>]+>/g, '\n');
+        const r = createFromEmail({ messageId, from: (parsed.from && parsed.from.text) || '', subject: parsed.subject || '', text,
+          html: parsed.html || '', receivedAt: parsed.date, direct: directFields(parsed) });
+        const n = await attachToLead(r.leadId, parsed);
+        console.log(`[mail] Zoho Leads folder: lead ${r.leadId} created${n ? ` with ${n} attachment(s)` : ''}`);
+        created.push(r);
+      }
+    } finally { lock.release(); }
+    await client.logout();
+    zoho.lastOk = new Date().toISOString(); zoho.lastError = null; zoho.created += created.length;
+  } catch (e) {
+    zoho.lastError = /mailbox|folder|nonexistent|doesn.t exist/i.test(e.message || '') ? `Folder "${c.folder}" not found — create it in Zoho and tick it under IMAP folder settings.` : e.message;
+    console.error('[mail] Zoho check failed:', e.message);
+    return { ok: false, reason: zoho.lastError };
+  }
+  return { ok: true, created: created.length };
+}
+let zohoChain = Promise.resolve(), zohoTimer = null;
+function startZoho() {
+  if (!zohoConfigured()) return false;
+  const mins = parseFloat(process.env.ZOHO_POLL_MINUTES || '2');
+  const tick = () => { zohoChain = zohoChain.then(() => pollZoho()).catch(() => {}); };
+  if (zohoTimer) clearInterval(zohoTimer);
+  zohoTimer = setInterval(tick, Math.max(1, mins) * 60000); setTimeout(tick, 12000);
+  console.log(`[mail] also watching the "${zohoConfig().folder}" folder of ${zohoConfig().user} every ${mins} min`);
+  return true;
+}
+const zohoState = () => ({ configured: zohoConfigured(), user: zohoConfig().user, folder: zohoConfig().folder, host: zohoConfig().host, ...zoho });
 
 // ---- the mailbox -------------------------------------------------------------
 function mailConfig() {
@@ -396,4 +501,4 @@ function startPolling() {
   return true;
 }
 
-module.exports = { idleState, pollOnce, startPolling, configured, mailConfig, parseEnquiry, detectPlatform, createFromEmail, PLATFORMS, parseHipages, testConnection };
+module.exports = { pollZoho, startZoho, zohoState, directFields, ownWords, realAttachments, idleState, pollOnce, startPolling, configured, mailConfig, parseEnquiry, detectPlatform, createFromEmail, PLATFORMS, parseHipages, testConnection };

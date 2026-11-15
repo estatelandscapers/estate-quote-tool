@@ -274,6 +274,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 // Watch the enquiry mailbox, if one is configured.
 try { require('./utils/mailIngest').startPolling(); } catch (e) { console.error('[mail] not started:', e.message); }
+try { require('./utils/mailIngest').startZoho(); } catch (e) { console.error('[mail] Zoho not started:', e.message); }
 
 try { require('./utils/estimator').seedDefaults(); } catch (e) { console.error('[estimator] defaults:', e.message); }
 try { require('./utils/estimator').startScheduler(); } catch (e) { console.error('[estimator] scheduler:', e.message); }

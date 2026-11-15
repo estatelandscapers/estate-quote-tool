@@ -74,6 +74,15 @@ async function session(l, name, by) {
   db.prepare('INSERT INTO lead_files_added (lead_id,name,by) VALUES (?,?,?)').run(l.id, s.name, by || '');
   return s;
 }
+// Bytes the server already holds (an email attachment) filed against a lead.
+async function addBytes(leadId, name, buf, by) {
+  if (!od.configured()) throw new Error('OneDrive is not configured');
+  const l = db.prepare('SELECT * FROM leads WHERE id=?').get(leadId); if (!l) throw new Error('lead not found');
+  const r = await od.putBytes(await targetFolder(l), name, buf);
+  db.prepare('INSERT INTO lead_files_added (lead_id,name,by) VALUES (?,?,?)').run(l.id, r.name, by || '');
+  db.prepare('UPDATE leads SET files_count=COALESCE(files_count,0)+1 WHERE id=?').run(l.id);
+  return r;
+}
 // A file may only be opened or deleted through the lead whose folder holds it.
 async function owned(l, itemId) {
   if (!/^[A-Za-z0-9!_-]{6,80}$/.test(itemId)) return null;
@@ -142,4 +151,4 @@ async function ingestHip({ jobId, suburb, postcode, category, description, phone
   return { ok: true, name };
 }
 
-module.exports = { list, session, owned, ingestHip, link, keyOk, kindOf, wanted };
+module.exports = { list, session, owned, addBytes, ingestHip, link, keyOk, kindOf, wanted };
