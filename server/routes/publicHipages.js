@@ -7,7 +7,7 @@ const router = express.Router();
 router.get('/ping', (req, res) => res.json({ ok: F.keyOk(req.get('x-hipages-key')), onedrive: require('../utils/onedrive').configured() }));
 router.post('/match', express.json({ limit: '50kb' }), (req, res) => {
   if (!F.keyOk(req.get('x-hipages-key'))) return res.status(401).json({ error: 'bad key' });
-  res.json({ wanted: F.wanted(String((req.body || {}).description || '').slice(0, 600)) });
+  res.json(F.wanted(String((req.body || {}).description || '').slice(0, 600)));
 });
 router.put('/photo', express.raw({ type: () => true, limit: '25mb' }), async (req, res) => {
   if (!F.keyOk(req.get('x-hipages-key'))) return res.status(401).json({ error: 'bad key' });
@@ -17,7 +17,7 @@ router.put('/photo', express.raw({ type: () => true, limit: '25mb' }), async (re
   if (!Buffer.isBuffer(req.body) || req.body.length < 200) return res.status(400).json({ error: 'empty file' });
   try {
     res.json(await F.ingestHip({ jobId, index, suburb: s(q.suburb, 60), postcode: s(q.postcode, 4).replace(/\D/g, ''),
-      category: s(q.category, 80), description: s(q.description, 600), mime: s(req.get('content-type'), 40), buf: req.body }));
+      category: s(q.category, 80), phone: s(q.phone, 20), description: s(q.description, 600), mime: s(req.get('content-type'), 40), buf: req.body }));
   } catch (e) { console.error('[files] hipages photo', jobId, e.message); res.status(502).json({ error: e.message }); }
 });
 module.exports = router;

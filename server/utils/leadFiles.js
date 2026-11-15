@@ -25,6 +25,8 @@ try { for (const l of db.prepare("SELECT id, enquiry_files FROM leads WHERE file
   db.prepare('UPDATE leads SET files_count=? WHERE id=?').run(n, l.id);
 } } catch (e) {}
 
+try { db.exec('ALTER TABLE hip_jobs ADD COLUMN phone TEXT'); } catch (e) {}
+const digits = s => String(s || '').replace(/\D/g, '').slice(-9);
 const year = () => require('./refs').sydneyParts().year;
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const EXT = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'image/gif': 'gif', 'application/pdf': 'pdf' };
@@ -94,7 +96,10 @@ function link() {
     const cands = db.prepare(`SELECT id, notes, job_type FROM leads WHERE lower(source)='hipages' AND hip_job_id IS NULL
       AND (suburb LIKE ? OR address LIKE ?)`).all('%' + j.postcode + '%', '%' + j.postcode + '%');
     const d = norm(j.description).slice(0, 60);
-    let hit = d.length >= 12 ? cands.filter(c => norm(c.notes).includes(d)) : [];
+    // The customer's mobile, when the bot knows it (nightly sweep), settles it outright.
+    const ph = digits(j.phone);
+    let hit = ph.length === 9 ? db.prepare("SELECT id, notes, job_type, phone FROM leads WHERE lower(source)='hipages' AND hip_job_id IS NULL").all().filter(c => digits(c.phone) === ph) : [];
+    if (hit.length !== 1) hit = d.length >= 12 ? cands.filter(c => norm(c.notes).includes(d)) : [];
     if (!hit.length && d.length < 12) hit = cands.filter(c => norm(c.job_type) === norm(j.category));
     if (hit.length !== 1) continue;
     db.prepare('UPDATE hip_jobs SET lead_id=? WHERE job_id=?').run(hit[0].id, j.job_id);
@@ -107,17 +112,25 @@ function link() {
 
 // Catch-up for leads that were in the tool before photos were sent: the bot asks, per
 // portal job, whether any hipages lead here still without photos carries that description.
+// Returns { wanted, have }: `have` is how many photos the tool already holds for that job,
+// so the nightly sweep only sends when hipages now has more (the customer added some later).
 function wanted(description) {
   const d = norm(description).slice(0, 60);
-  if (d.length < 12) return false;
-  return db.prepare("SELECT notes FROM leads WHERE lower(source)='hipages' AND hip_job_id IS NULL").all().some(l => norm(l.notes).includes(d));
+  if (d.length < 12) return { wanted: false, have: 0 };
+  const rows = db.prepare(`SELECT notes, hip_job_id FROM leads WHERE lower(source)='hipages'
+    AND (hip_job_id IS NULL OR created_at > datetime('now','-45 days'))`).all().filter(l => norm(l.notes).includes(d));
+  if (!rows.length) return { wanted: false, have: 0 };
+  if (rows.some(l => !l.hip_job_id)) return { wanted: true, have: 0 };
+  let have = 0; try { have = JSON.parse((db.prepare('SELECT names FROM hip_jobs WHERE job_id=?').get(rows[0].hip_job_id) || {}).names || '[]').length; } catch (e) {}
+  return { wanted: true, have };
 }
 
-async function ingestHip({ jobId, suburb, postcode, category, description, index, mime, buf }) {
+async function ingestHip({ jobId, suburb, postcode, category, description, phone, index, mime, buf }) {
   if (!od.configured()) throw new Error('OneDrive is not configured');
   let j = db.prepare('SELECT * FROM hip_jobs WHERE job_id=?').get(jobId);
   if (!j) { db.prepare('INSERT INTO hip_jobs (job_id,suburb,postcode,category,description) VALUES (?,?,?,?,?)').run(jobId, suburb, postcode, category, description);
     j = db.prepare('SELECT * FROM hip_jobs WHERE job_id=?').get(jobId); }
+  if (phone && !j.phone) { db.prepare('UPDATE hip_jobs SET phone=? WHERE job_id=?').run(phone, jobId); j.phone = phone; }
   if (!j.folder_id) { const f = await od.ensurePath([year(), `HIP-${jobId} — hipages — ${suburb} ${postcode}`]);
     db.prepare('UPDATE hip_jobs SET folder_id=? WHERE job_id=?').run(f.id, jobId); j.folder_id = f.id; }
   let names = []; try { names = JSON.parse(j.names || '[]'); } catch (e) {}
