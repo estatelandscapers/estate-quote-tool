@@ -244,6 +244,21 @@ function quick(q) {
     firstOpened: sessions.length ? sessions[sessions.length - 1].started_at : null, signal: sig.signal, signalWhy: sig.why };
 }
 
+// quick() plus how far the client got, for the Sent tab of the Quotes list. One pass over
+// the sessions, no line names, so it is cheap enough to run for every open quote.
+function brief(q) {
+  const sessions = allSessions(q.id);
+  const sig = signalFor(sessions, q.sent_at);
+  const active = sessions.reduce((a, s) => a + s.active_seconds, 0);
+  const compared = sessions.reduce((a, s) => a + Object.values(s.package_clicks || {}).reduce((x, y) => x + y, 0), 0);
+  const signStep = Math.max(0, ...sessions.map(s => s.sign_step || 0));
+  const reachedAccept = sessions.some(s => s.reached_accept);
+  const furthest = sessions.some(s => s.signed) ? 'signed' : signStep >= 2 ? 'signature' : reachedAccept ? 'contract' : compared >= 3 ? 'compared' : sessions.length ? 'read' : 'none';
+  return { signal: sessions.length ? sig.signal : 'unopened', signalWhy: sessions.length ? sig.why : 'not opened yet', opens: sessions.length,
+    devices: new Set(sessions.map(s => s.visitor_key)).size, activeSeconds: active, activeLabel: fmt(active),
+    lastOpened: sessions.length ? sessions[0].started_at : null, firstOpened: sessions.length ? sessions[sessions.length - 1].started_at : null, compared, furthest };
+}
+
 // ---- rollup: raw events older than N days become one row per session ----------------------
 function rollup() {
   const days = n('events_rollup_days', 30);
@@ -271,4 +286,4 @@ function start() {
   setInterval(() => { try { rollup(); } catch (e) { console.error('[links] rollup failed:', e.message); } }, 24 * 3600e3).unref();
 }
 
-module.exports = { noteVisitor, record, feed, quick, signalFor, allSessions, rollup, start, deviceLabel, fmt };
+module.exports = { brief, noteVisitor, record, feed, quick, signalFor, allSessions, rollup, start, deviceLabel, fmt };

@@ -288,6 +288,8 @@ function shell() {
     state.tab = t; state.quoteId = null; state.poId = null; state.selQuoteId = null;
     // Leads from the bar is always the Summary — never the lead or sub-view you left.
     if (t === 'leads') { state.leadId = null; state.leadFull = false; state.leadsSub = 'summary'; state.leadPhase = null; closeLeadDrawer(); }
+    // Quotes from the bar always opens on Sent.
+    if (t === 'quotes') { state.quotesTab = 'sent'; state.qSig = null; }
     document.body.classList.remove('launch'); const sp = $('#setupGrp'); if (sp) sp.classList.remove('open');
     window.scrollTo(0, 0);
     route();
@@ -2292,35 +2294,124 @@ async function leadConsole(v) {
 
 // ---------------- QUOTES ----------------
 const AGE = { fresh: ['age-fresh', d => d + 'd'], flag: ['age-flag', d => d + 'd — follow up'], chase: ['age-chase', d => d + 'd — chase'], dead: ['age-dead', d => d + 'd — dead'] };
+// Quotes, split the way the work moves: Drafts (built, not sent) · Sent (waiting on the
+// client, with what they have done with the link) · Accepted · All. Above every tab, the
+// leads whose site visit is done but whose quote has not gone out yet.
+const QSIG = { hot: ['Hot', 'sig-hot'], warm: ['Warm', 'sig-warm'], cold: ['Cold', 'sig-cold'], unopened: ['Not opened', 'sig-unopened'] };
+const QFAR = { signed: 'Signed', signature: 'Reached the signature, did not sign', contract: 'Opened the contract, did not continue', compared: 'Compared packages', read: 'Read it', none: '—' };
 async function quotesList(v) {
-  v.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-    <div><h2>Quotes</h2><div class="sub">Colour = quote age (thresholds in Settings). Latest revision is the live link.</div></div>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-      <label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showSup" ${state.showSuperseded ? 'checked' : ''} style="width:auto;"> Show superseded <span id="supN" class="muted"></span></label>
-      <label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showLost" ${state.showLost ? 'checked' : ''} style="width:auto;"> Show lost <span id="lostN" class="muted"></span></label>
-      <button class="btn btn-blue" id="newQuote">+ New quote</button></div></div>
-    <div class="rule"></div><div id="qtable">Loading…</div></div>`;
+  const tab = state.quotesTab || 'sent';
+  const tabs = [['drafts', 'Drafts'], ['sent', 'Sent'], ['accepted', 'Accepted'], ['all', 'All']];
+  v.innerHTML = `<div class="card" style="padding:12px 16px;"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div class="seg" id="qSeg">${tabs.map(t => `<button data-v="${t[0]}" class="${tab === t[0] ? 'on' : ''}">${t[1]} <span class="qn" data-n="${t[0]}"></span></button>`).join('')}</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        ${tab === 'all' ? `<label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showSup" ${state.showSuperseded ? 'checked' : ''} style="width:auto;"> Show superseded <span id="supN" class="muted"></span></label>
+        <label style="font-size:10.5px;color:var(--grey);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="showLost" ${state.showLost ? 'checked' : ''} style="width:auto;"> Show lost <span id="lostN" class="muted"></span></label>` : ''}
+        <button class="btn btn-blue" id="newQuote">+ New quote</button></div></div></div>
+    <div id="qBuild"></div>
+    <div class="card"><div id="qtable">Loading…</div></div>`;
   $('#newQuote').addEventListener('click', async () => { const q = await api('/quotes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: '', projectTitle: 'Landscape Works' }) }); state.quoteId = q.id; state.scrollY = 0; route(); });
-  $('#showSup').addEventListener('change', e => { state.showSuperseded = e.target.checked; quotesList(v); });
-  $('#showLost').addEventListener('change', e => { state.showLost = e.target.checked; quotesList(v); });
+  $('#qSeg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { state.quotesTab = b.dataset.v; state.qSig = null; quotesList(v); }));
+  if ($('#showSup')) $('#showSup').addEventListener('change', e => { state.showSuperseded = e.target.checked; quotesList(v); });
+  if ($('#showLost')) $('#showLost').addEventListener('change', e => { state.showLost = e.target.checked; quotesList(v); });
+
+  // ---- Quotes to build (every tab) ----
+  api('/quotes/to-build').then(tb => {
+    const box = $('#qBuild'); if (!box || !tb || tb.error) return;
+    const rows = tb.rows || [];
+    if (!rows.length) { box.innerHTML = ''; return; }
+    const late = rows.filter(r => r.overdue).length;
+    box.innerHTML = `<div class="card qbuild"><div class="cardhead"><h2>Quotes to build <span class="muted" style="font-weight:600;">· ${rows.length}</span></h2>
+        <span class="muted" style="font-size:11.5px;">Site visit done, quote not sent yet. Target: within 48 hours of the visit.${late ? ` <b style="color:var(--red);">${late} past 48 h.</b>` : ''}</span></div>
+      <div class="qb-rows">${rows.map(r => `<div class="qb-row ${r.overdue ? 'late' : ''}">
+        <div class="who"><b>${esc(r.name || '—')}</b><small>${esc(r.suburb || '')}${r.job ? ' · ' + esc(r.job) : ''}</small></div>
+        <div class="vis">Visit ${esc(r.visitDate ? new Date(r.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' }) : '—')}${r.visitTime ? ' ' + esc(r.visitTime) : ''}${r.notMarked ? '<small>not marked done on the calendar</small>' : ''}</div>
+        <div class="age"><span class="tag ${r.overdue ? 'age-dead' : r.days >= 2 ? 'age-flag' : 'age-fresh'}">${r.days == null ? '—' : r.days === 0 ? 'today' : r.days + ' d ago'}</span></div>
+        <div class="qs">${r.quoteId ? `Quote <b>${esc(r.quoteNumber)}</b> <span class="muted">${r.quoteComplete ? 'ready to send' : 'in progress'}</span>` : '<span class="muted">No quote started</span>'}</div>
+        <div class="btns">${r.quoteId ? `<button class="btn btn-blue btn-sm" data-qbopen="${r.quoteId}">Open quote</button>` : `<button class="btn btn-blue btn-sm" data-qbstart="${r.leadId}">Start quote</button>`}<button class="btn btn-ghost btn-sm" data-qblead="${r.leadId}">Lead</button></div>
+      </div>`).join('')}</div></div>`;
+    box.querySelectorAll('[data-qbopen]').forEach(b => b.addEventListener('click', () => { state.quoteId = b.dataset.qbopen; state.scrollY = 0; route(); }));
+    box.querySelectorAll('[data-qblead]').forEach(b => b.addEventListener('click', () => { state.tab = 'leads'; state.leadsSub = 'summary'; state.leadId = b.dataset.qblead; state.leadFull = false; route(); }));
+    box.querySelectorAll('[data-qbstart]').forEach(b => b.addEventListener('click', () => {
+      const r = rows.find(x => x.leadId === b.dataset.qbstart);
+      convertDialog({ id: r.leadId, name: r.name }, async fromQuoteId => {
+        const x = await api('/leads/' + r.leadId + '/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fromQuoteId ? { fromQuoteId } : {}) });
+        if (x.error) return toast(x.error);
+        toast('Quote ' + x.quoteNumber + ' started'); state.quoteId = x.quoteId; state.scrollY = 0; route();
+      });
+    }));
+  }).catch(() => {});
+
+  // ---- the list ----
   const qs = [];
-  if (state.showLost) qs.push('lost=1');
-  if (state.showSuperseded) qs.push('superseded=1');
+  if (tab === 'all' && state.showLost) qs.push('lost=1');
+  if (tab === 'all' && state.showSuperseded) qs.push('superseded=1');
   const data = await api('/quotes' + (qs.length ? '?' + qs.join('&') : ''));
-  const list = data.quotes || data;
-  if (data.supersededCount) $('#supN').textContent = `(${data.supersededCount})`;
-  if (data.lostCount) $('#lostN').textContent = `(${data.lostCount})`;
-  $('#qtable').innerHTML = list.length ? `<table><thead><tr><th>Quote</th><th>Client</th><th>Tier</th><th>Value</th><th>Status</th><th>Age</th><th>Views</th><th></th></tr></thead><tbody>
-    ${list.map(q => { const a = AGE[q.ageBand] || AGE.fresh; const isLost = q.status === 'lost'; const isSup = q.status === 'superseded';
-      return `<tr class="${isLost ? 'row-lost' : ''}"><td><b>${esc(q.quoteNumber)}</b></td><td>${esc(q.client || '—')}</td><td><span class="tag tag-tier">${esc(q.customerTier || 'Silver')}</span></td><td>${q.value ? money(q.value) : '—'}</td>
-      <td><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>
-        ${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
-      <td>${q.status === 'accepted' || isLost ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td>${q.views}</td>
-      <td class="right">${q.isSample ? `<span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);margin-right:6px;">SAMPLE</span>` : ``}<button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
-        ${isLost ? `<button class="btn btn-ghost btn-sm" data-reopen="${q.id}">Reopen</button>`
-          : (q.status === 'accepted' || isSup ? '' : `<button class="btn btn-ghost btn-sm" data-lost="${q.id}">Lost</button>`)}
-        <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button></td></tr>`; }).join('')}
-    </tbody></table>` : '<p class="muted">No quotes yet.</p>';
+  if (state.tab !== 'quotes' || state.quoteId) return;
+  const all = data.quotes || data;
+  if (data.supersededCount && $('#supN')) $('#supN').textContent = `(${data.supersededCount})`;
+  if (data.lostCount && $('#lostN')) $('#lostN').textContent = `(${data.lostCount})`;
+  const isLive = q => !['accepted', 'lost', 'superseded'].includes(q.status);
+  const pick = {
+    drafts: q => !q.isSample && !q.sentAt && isLive(q),
+    sent: q => !q.isSample && q.sentAt && isLive(q),
+    accepted: q => q.status === 'accepted',
+    all: () => true,
+  };
+  Object.entries(pick).forEach(([k, f]) => { const el = v.querySelector(`.qn[data-n="${k}"]`); if (el) el.textContent = k === 'all' ? '' : String(all.filter(f).length); });
+  let list = all.filter(pick[tab]);
+
+  // Sent: behaviour tiles, hottest first.
+  let tiles = '';
+  if (tab === 'sent') {
+    const rank = { hot: 0, warm: 1, cold: 2, unopened: 3 };
+    const sig = q => (q.behaviour && q.behaviour.signal) || 'unopened';
+    const at = q => String((q.behaviour && q.behaviour.lastOpened) || q.sentAt || '');
+    list.sort((a, b) => rank[sig(a)] - rank[sig(b)] || at(b).localeCompare(at(a)));
+    const group = k => list.filter(q => sig(q) === k);
+    const sum = arr => arr.reduce((t, q) => t + (q.value || 0), 0);
+    const stuck = list.filter(q => q.behaviour && ['signature', 'contract'].includes(q.behaviour.furthest));
+    const tile = (k, label, arr, note) => `<div class="stat tap ${state.qSig === k ? 'sel' : ''} qt-${k}" data-qsig="${k}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${arr.length} <span class="qv">${money(sum(arr))}</span></div><div class="n">${note}</div></div>`;
+    tiles = `<div class="qtiles">
+      ${tile('hot', 'Hot', group('hot'), 'reading it now — call today')}
+      ${tile('warm', 'Warm', group('warm'), 'opened this week')}
+      ${tile('cold', 'Cold', group('cold'), 'gone quiet')}
+      ${tile('unopened', 'Not opened', group('unopened'), 'check it arrived')}
+      ${tile('stuck', 'Stopped at the contract', stuck, 'opened Accept, did not sign')}
+    </div>`;
+    if (state.qSig) list = state.qSig === 'stuck' ? stuck : list.filter(q => sig(q) === state.qSig);
+  }
+
+  const empty = { drafts: 'No unsent quotes. Everything built has gone out.', sent: 'No quotes waiting on a client.', accepted: 'No accepted quotes yet.', all: 'No quotes yet.' }[tab];
+  const head = tab === 'sent'
+    ? '<th>Quote</th><th>Client</th><th class="right">Value</th><th>Sent</th><th>Signal</th><th class="right">Opens</th><th>Last opened</th><th class="right">Reading</th><th>Furthest</th><th></th>'
+    : '<th>Quote</th><th>Client</th><th>Tier</th><th class="right">Value</th><th>Status</th><th>Age</th><th class="right">Views</th><th></th>';
+  const actions = q => { const isLost = q.status === 'lost', isSup = q.status === 'superseded';
+    return `${q.isSample ? `<span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);margin-right:6px;">SAMPLE</span>` : ''}${q.behaviour ? `<button class="btn btn-ghost btn-sm" data-bh="${q.id}">Behaviour</button> ` : ''}<button class="btn btn-ghost btn-sm" data-open="${q.id}">Open</button>
+      ${isLost ? `<button class="btn btn-ghost btn-sm" data-reopen="${q.id}">Reopen</button>` : (q.status === 'accepted' || isSup ? '' : `<button class="btn btn-ghost btn-sm" data-lost="${q.id}">Lost</button>`)}
+      <button class="btn btn-danger btn-sm" data-del="${q.id}">✕</button>`; };
+  const row = q => {
+    const a = AGE[q.ageBand] || AGE.fresh, isLost = q.status === 'lost';
+    if (tab === 'sent') { const b = q.behaviour || { signal: 'unopened', opens: 0, activeLabel: '0s', furthest: 'none' }; const sg = QSIG[b.signal] || QSIG.unopened;
+      return `<tr class="qrow" data-bhrow="${q.id}"><td data-l="Quote"><b>${esc(q.quoteNumber)}</b></td><td data-l="Client">${esc(q.client || '—')}</td><td data-l="Value" class="right">${q.value ? money(q.value) : '—'}</td>
+        <td data-l="Sent"><span class="tag ${a[0]}" title="${q.sentByLink ? 'Shared by link, not with Send to client. Counted from the first time the client opened it.' : ''}">${q.sentDays === 0 ? 'today' : q.sentDays + ' d ago'}</span>${q.sentByLink ? '<br><span class="muted" style="font-size:10px;">by link</span>' : ''}</td>
+        <td data-l="Signal"><span class="signal ${sg[1]}" title="${esc(b.signalWhy || '')}">${sg[0]}</span></td>
+        <td data-l="Opens" class="right">${b.opens}${b.devices > 1 ? ` <span class="muted" style="font-size:10.5px;">· ${b.devices} devices</span>` : ''}</td>
+        <td data-l="Last opened">${b.lastOpened ? esc(sydTime(b.lastOpened)) : '<span class="muted">—</span>'}</td>
+        <td data-l="Reading" class="right">${esc(b.activeLabel || '0s')}</td>
+        <td data-l="Furthest" class="${['signature', 'contract'].includes(b.furthest) ? 'qfar-warn' : ''}">${esc(QFAR[b.furthest] || '—')}</td>
+        <td class="right" style="white-space:nowrap;">${actions(q)}</td></tr>`; }
+    return `<tr class="${isLost ? 'row-lost' : ''}"><td data-l="Quote"><b>${esc(q.quoteNumber)}</b></td><td data-l="Client">${esc(q.client || '—')}</td><td data-l="Tier"><span class="tag tag-tier">${esc(q.customerTier || 'Silver')}</span></td><td data-l="Value" class="right">${q.value ? money(q.value) : '—'}</td>
+      <td data-l="Status"><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
+      <td data-l="Age">${q.status === 'accepted' || isLost ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td data-l="Views" class="right">${q.views}</td>
+      <td class="right" style="white-space:nowrap;">${actions(q)}</td></tr>`; };
+  $('#qtable').innerHTML = `${tiles}${list.length ? `<div style="overflow-x:auto;"><table class="resp qtbl"><thead><tr>${head}</tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`
+    : `<p class="muted" style="margin:6px 0;">${state.qSig ? 'Nothing in this group. Tap the tile again to show all.' : empty}</p>`}
+    ${tab === 'sent' ? '<div class="legend" style="margin-top:8px;">Signal and reading time come from the client link. Tap a row for the full behaviour record.</div>' : ''}`;
+  v.querySelectorAll('[data-qsig]').forEach(t => { const go = () => { state.qSig = state.qSig === t.dataset.qsig ? null : t.dataset.qsig; quotesList(v); };
+    t.addEventListener('click', go); t.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
+  v.querySelectorAll('[data-bh]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); openBehaviour(b.dataset.bh); }));
+  v.querySelectorAll('tr[data-bhrow]').forEach(r => r.addEventListener('click', e => { if (e.target.closest('button')) return; openBehaviour(r.dataset.bhrow); }));
   v.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => { state.quoteId = b.dataset.open; state.scrollY = 0; route(); }));
   v.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => { if (confirm('Delete this quote?')) { await api('/quotes/' + b.dataset.del, { method: 'DELETE' }); toast('Deleted'); quotesList(v); } }));
   v.querySelectorAll('[data-lost]').forEach(b => b.addEventListener('click', () => markLost(b.dataset.lost, () => quotesList(v))));

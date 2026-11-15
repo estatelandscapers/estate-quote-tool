@@ -257,6 +257,18 @@ function cachedTotals(q) {
   return { inc, ex };
 }
 function cachedValue(q) { return cachedTotals(q).inc; }
+// Has the client got this quote, and what have they done with it? A quote counts as sent
+// when Send to client was used, or when the client has opened the link (some are shared
+// by copying the link, which records no send). Behaviour only for quotes still waiting.
+function sentInfo(q, status) {
+  const waiting = !q.is_sample && !['accepted', 'superseded', 'lost'].includes(status);
+  let b = null;
+  if (waiting) { try { b = require('../utils/linkAnalytics').brief(q); } catch (e) { b = null; } }
+  const shared = !!q.sent_at || !!(b && b.opens);
+  const when = q.sent_at || (b && b.firstOpened) || null;
+  return { sentAt: shared ? when : null, sentByLink: !q.sent_at && shared, sentDays: when ? Math.max(0, Math.floor((Date.now() - new Date(String(when).replace(' ', 'T') + 'Z').getTime()) / 864e5)) : null,
+    behaviour: waiting && shared ? b : null };
+}
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM quotes ORDER BY parent_number DESC, created_at DESC').all();
   const mapped = rows.map(q => {
@@ -289,7 +301,8 @@ router.get('/', (req, res) => {
       status, acceptedPackage: q.accepted_package,
       lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
       value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand: q.is_sample ? 'fresh' : ageBand, customerTier: q.customer_tier || 'Silver',
-      views, updatedAt: q.updated_at, isSample: !!q.is_sample };
+      views, updatedAt: q.updated_at, isSample: !!q.is_sample,
+      leadId: q.lead_id || null, ...sentInfo(q, status) };
   });
   // Superseded and lost quotes are kept forever but hidden from the working list,
   // so what you see is the work that's actually live.
@@ -300,6 +313,32 @@ router.get('/', (req, res) => {
   const visible = mapped.filter(x =>
     (x.status !== 'lost' || showLost) && (x.status !== 'superseded' || showSuperseded));
   res.json({ quotes: visible, lostCount, supersededCount, total: mapped.length });
+});
+
+// Leads whose site visit is done but who have no quote out yet: no quote at all, or one
+// that has not been sent. The 48-hour quote rule runs from the visit.
+router.get('/to-build', (req, res) => {
+  const today = require('../utils/refs').sydneyParts().ymd;
+  const leads = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') AND COALESCE(parked,0)=0").all();
+  const rows = [];
+  for (const l of leads) {
+    const visit = db.prepare("SELECT visit_date, visit_time, status FROM site_visits WHERE lead_id=? AND (status='done' OR (status='booked' AND visit_date < ?)) ORDER BY visit_date DESC LIMIT 1").get(l.id, today);
+    const doneStage = ['visitdone', 'aftervisit'].includes(l.stage);
+    if (!visit && !doneStage) continue;
+    // The quote that matters is the latest revision of the one linked to this lead.
+    let q = l.quote_id ? db.prepare('SELECT * FROM quotes WHERE id=?').get(l.quote_id) : null;
+    if (q) q = db.prepare('SELECT * FROM quotes WHERE parent_number=? ORDER BY created_at DESC, quote_number DESC LIMIT 1').get(q.parent_number) || q;
+    if (q && (q.sent_at || q.status === 'accepted' || q.lost_at)) continue;
+    if (q) { try { if (require('../utils/linkAnalytics').brief(q).opens) continue; } catch (e) {} }   // shared by link
+    let since = visit ? visit.visit_date : null;
+    if (!since) { const m = db.prepare("SELECT created_at FROM lead_messages WHERE lead_id=? AND stage IN ('visitdone','aftervisit') ORDER BY created_at LIMIT 1").get(l.id); since = m ? m.created_at.slice(0, 10) : (l.updated_at || '').slice(0, 10); }
+    const days = since ? Math.max(0, Math.round((new Date(today + 'T00:00:00Z') - new Date(since + 'T00:00:00Z')) / 864e5)) : null;
+    rows.push({ leadId: l.id, name: l.name, suburb: l.suburb || l.address || '', job: l.job_type || '', visitDate: visit ? visit.visit_date : since, visitTime: visit ? visit.visit_time : null,
+      notMarked: !!(visit && visit.status === 'booked'), days, overdue: days != null && days > 2,
+      quoteId: q ? q.id : null, quoteNumber: q ? q.quote_number : null, quoteComplete: q ? !!q.is_complete : false });
+  }
+  rows.sort((a, b) => (b.days || 0) - (a.days || 0));
+  res.json({ rows });
 });
 
 // Mark a quote as lost (or bring it back). The quote is never deleted — the value,
