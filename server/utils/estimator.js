@@ -36,6 +36,7 @@ const lower = s => String(s || '').trim().toLowerCase();
 const DEFAULTS = {
   close_small_under: '10000',     // closing out: suggest 'too small' under this ballpark
   close_large_over: '300000',     // and 'too large' over this
+  est_priority_from: '25000',     // online ballpark (middle of the range) at or above this = priority lead
   est_enabled: '1',               // master switch: 0 = no automatic emails, estimator paused
   est_url: 'https://www.estatelandscapers.com.au/estimate/',
   est_code_days: '7',            // the code works for this long; the rep can reissue
@@ -424,8 +425,9 @@ function complete(l, visitorKey) {
   const cur = a.current || {};
   const bp = CS.ballpark(cur);
   const last = a.versions[a.versions.length - 1];
-  let changed = [];
+  let changed = [], pushed = false;
   if (!last || !sameAnswers(last.answers, cur)) {
+    pushed = true;
     changed = last ? diffKeys(last.answers, cur) : [];
     a.versions.push({ at: nowIso(), answers: JSON.parse(JSON.stringify(cur)), changed,
       ballpark: bp.decline ? { decline: true } : { lo: bp.incLo, hi: bp.incHi, tooUnknown: !!bp.tooUnknown }, emailed: false, visitor: visitorKey || null });
@@ -443,7 +445,9 @@ function complete(l, visitorKey) {
   // booked, quote out) keeps its place: the new answers show on the card either way.
   if (phaseOf(cur_stage) <= 1 && !['Won', 'Lost'].includes(l.status)) {
     sets.push("stage='estimatedone'", "next_followup=?", "status=CASE WHEN status='New' THEN 'Contacted' ELSE status END");
-    vals.push(require('./refs').sydneyParts().ymd);
+    // A small job is not put in front of the rep to phone: it stays open, not due, and the
+    // card says why. The rep can still close it out with one click or pick it up.
+    vals.push(isSmall(bp) ? null : require('./refs').sydneyParts().ymd);
   }
   if (cur.scope && cur.scope.length) { sets.push('job_type=?'); vals.push(cur.scope.map(s => (CS.SIZES.find(x => x.id === s) || { label: s }).label).join(', ')); }
   // The client's address replaces the one on file only when it is at least as complete: a
@@ -456,6 +460,11 @@ function complete(l, visitorKey) {
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
     .run(newId(), l.id, 'note', 'estimatedone', null, null, 'client', 'logged',
       `Online estimate completed (version ${a.versions.length})${changed.length ? ' · changed: ' + changed.join(', ') : ''} · ${bp.decline ? 'DECLINED: ' + bp.reason : bp.tooUnknown ? 'too little known for a number' : `ballpark $${bp.incLo.toLocaleString()} to $${bp.incHi.toLocaleString()} inc GST`}`);
+  if (pushed && isSmall(bp)) {
+    db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(newId(), l.id, 'note', 'estimatedone', null, null, 'client', 'logged',
+        `SMALL JOB: online ballpark $${bp.incLo.toLocaleString()} to $${bp.incHi.toLocaleString()}, under the $${smallUnder().toLocaleString()} minimum. Told "not the right fit" with a polite email. No phone screen, no Friday booking. Left open for you to close out or pick up.`);
+  }
   return { answers: a, ballpark: bp, version: a.versions.length };
 }
 
@@ -472,6 +481,10 @@ function clientText(bp, a) {
   if (bp.tooUnknown) {
     return { headline: 'There is a bit we need to see first.', body:
       `From what you have told us there is not enough to put a fair number on yet, and we would rather look at it properly than give you a figure that turns out to be wrong.\n\nSite visits are Fridays. Pick one below and we will measure it up and give you a proper range on the day.` };
+  }
+  if (isSmall(bp)) {
+    return { headline: `Based on what you have told us, this usually lands between $${bp.incLo.toLocaleString()} and $${bp.incHi.toLocaleString()}.`, body:
+      `That is including GST, and it is a ballpark from your answers.\n\n${SMALL_TEXT}\n\n${SMALL_HELP}` };
   }
   const excl = bp.exc.length
     ? `\n\nThat does not include the ${bp.exc.map(e => e.split(' — ')[0].toLowerCase()).join(' or the ')}. We need to see ${bp.exc.length > 1 ? 'those' : 'that'} on site before we can put a number on ${bp.exc.length > 1 ? 'them' : 'it'}.`
@@ -490,8 +503,28 @@ function clientText(bp, a) {
 const FIT_REACTIONS = ['works', 'low'];
 function isFit(reaction, bp) {
   if (bp && (bp.decline || bp.tooUnknown)) return true;
+  if (isSmall(bp)) return false;
   return !reaction || FIT_REACTIONS.includes(reaction);
 }
+
+// ---- size tier of an online ballpark ---------------------------------------------------
+// small    : the HIGH end of the range is under close_small_under (Settings, default $10,000),
+//            the same rule the close-out button uses. Polite "not the right fit", no phone
+//            screen, no Friday booking.
+// priority : the middle of the range is est_priority_from (default $25,000) or more.
+// standard : everything else with a number (the $10k to $25k work we still want).
+// unknown  : access decline or too little known to price; it carries no size signal.
+// value    : the middle of the range, sent to Google Ads as the conversion value.
+function smallUnder() { return n('close_small_under', 10000); }
+function isSmall(bp) { return !!(bp && !bp.decline && !bp.tooUnknown && bp.incHi && bp.incHi < smallUnder()); }
+function tierOf(bp) {
+  if (!bp || bp.decline || bp.tooUnknown || !bp.incHi) return { tier: 'unknown', value: 0 };
+  const value = Math.round(((bp.incLo || bp.incHi) + bp.incHi) / 2);
+  if (isSmall(bp)) return { tier: 'small', value };
+  return { tier: value >= n('est_priority_from', 25000) ? 'priority' : 'standard', value };
+}
+const SMALL_TEXT = 'Thank you for taking the time to fill in the estimator and for the detail you put into it. From what you have told us, this is a smaller project than our crews and setup are built around, so we are not the right fit for it.';
+const SMALL_HELP = 'We would rather say so now than have you waiting on a quote that would not serve you well. If it helps, reply to our email and we are glad to point you towards a landscaper better matched to the job.';
 const REACT_LABEL = { works: 'that works', high: 'higher than expected', low: 'lower than expected', cheaper: 'wants it cheaper', nocommit: 'not sure yet', 'definite-no': 'out of budget' };
 const NOT_FIT_REACTIONS = Object.keys(REACT_LABEL).filter(k => !FIT_REACTIONS.includes(k));
 const NOT_FIT_TEXT = 'Thank you for taking the time to fill in the estimator — we have noted your answer. We will look over what you have told us and be in touch within a business day to talk it through.';
@@ -526,7 +559,9 @@ async function sendBallparkEmail(l, bp, a, version) {
     ? `<p style="margin:0 0 14px;"><b>What happens next.</b> A site visit on a Friday, then an itemised quote within 48 hours of it. ${sample ? `<a href="${esc(sample)}" style="color:#1E5BFF;font-weight:700;">Here is a sample quote</a> from another job so you know what to expect.` : ''}</p>
     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 18px;"><tr><td style="border-radius:999px;background:#1E5BFF;">
       <a href="${esc(link)}" style="display:inline-block;padding:13px 26px;color:#fff;text-decoration:none;font-weight:800;font-size:12px;letter-spacing:1px;text-transform:uppercase;">Back to your estimate</a></td></tr></table>`
-    : `<p style="margin:0 0 14px;">${esc(NOT_FIT_TEXT)}</p>
+    : isSmall(bp)
+      ? `<p style="margin:0 0 14px;">${esc(SMALL_HELP)} <a href="mailto:enquiry@estatelandscapers.com.au" style="color:#1E5BFF;font-weight:700;">enquiry@estatelandscapers.com.au</a></p>`
+      : `<p style="margin:0 0 14px;">${esc(NOT_FIT_TEXT)}</p>
     <p style="margin:0 0 14px;">${esc(NOT_FIT_HELP)} <a href="mailto:enquiry@estatelandscapers.com.au" style="color:#1E5BFF;font-weight:700;">enquiry@estatelandscapers.com.au</a></p>`;
   const html = shell(`
     <p style="margin:0 0 14px;">Hi ${esc(f)},</p>
@@ -539,7 +574,7 @@ async function sendBallparkEmail(l, bp, a, version) {
     <p style="margin:0;font-size:13px;color:#5A6068;">${fit ? `Your code ${esc(l.est_code)} keeps working until ${esc(String(l.est_code_expires).slice(0, 10))}, so you can change answers or book a Friday any time. ` : ''}Questions? Call ${esc(phone)}.</p>
     <p style="margin:18px 0 0;">Estate Landscapers<br><span style="color:#888;font-size:12px;">Licensed Landscapers · LIC 487076C</span></p>`);
   const subject = bp.decline ? 'Your landscaping estimate: a note about access' : bp.tooUnknown ? 'Your landscaping estimate: next step is the site visit' : `Your landscaping ballpark: $${bp.incLo.toLocaleString()} to $${bp.incHi.toLocaleString()}`;
-  const text = `${t.headline}\n\n${t.body}` + (bp.inc && bp.inc.length ? '\n\nIncluded: ' + bp.inc.filter(i => !/Establishment/.test(i.name)).map(i => `${i.name} (${i.qty})`).join('; ') : '') + (bp.exc.length ? '\nTo check on site: ' + bp.exc.join('; ') : '') + (fit ? (sample ? `\n\nSample quote: ${sample}` : '') : `\n\n${NOT_FIT_TEXT} ${NOT_FIT_HELP}`);
+  const text = `${t.headline}\n\n${t.body}` + (bp.inc && bp.inc.length ? '\n\nIncluded: ' + bp.inc.filter(i => !/Establishment/.test(i.name)).map(i => `${i.name} (${i.qty})`).join('; ') : '') + (bp.exc.length ? '\nTo check on site: ' + bp.exc.join('; ') : '') + (fit ? (sample ? `\n\nSample quote: ${sample}` : '') : `\n\n${isSmall(bp) ? SMALL_HELP : NOT_FIT_TEXT + ' ' + NOT_FIT_HELP}`);
   let outcome = 'sent', err = null;
   const msgId = newId();
   try { const r = await sendMail({ to: l.email, subject, html, track: msgId }); if (r && r.skipped) { outcome = 'failed'; err = r.reason; } } catch (e) { outcome = 'failed'; err = e.message; }
@@ -763,6 +798,6 @@ function funnel(days = 30) {
   return { days, invited: leads.length, opened, used, ballpark, booked, notFit, pending: pendingN, cancelled };
 }
 
-module.exports = { reactionLabel, NOT_FIT_REACTIONS, funnel, schedule, pending, cancelPending, runScheduler, startScheduler, recordOpen, opensFor, introEmailStatus, isFit, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
+module.exports = { reactionLabel, NOT_FIT_REACTIONS, funnel, schedule, pending, cancelPending, runScheduler, startScheduler, recordOpen, opensFor, introEmailStatus, isFit, isSmall, tierOf, applyReaction, sampleStatus, toolBase, NOT_FIT_TEXT, NOT_FIT_HELP, enabled, autoInvite, nextFridaysSydney, seedDefaults, DEFAULTS, onlineSteps, sizesFor, applicable, answeredCount, FALL_SCALE,
   invite, canInvite, introEmail, verify, byToken, answersOf, prefillFrom, saveAnswers, complete, clientText, sendBallparkEmail,
   fridaySlots, book, sendBookingEmail, logEvent, sessionsFor, signalFor, summary, quick, estimatorLink, sampleQuoteLink };

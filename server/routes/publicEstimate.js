@@ -208,8 +208,10 @@ router.post('/complete', withLead, (req, res) => {
   // ask for), so its closing matches what the client was shown.
   const fresh = db.prepare('SELECT * FROM leads WHERE id=?').get(req.lead.id);
   const ver = r.answers.versions[r.version - 1];
-  if (ver && !ver.emailed && (bp.decline || bp.tooUnknown)) EST.sendBallparkEmail(fresh, bp, a, r.version).catch(e => console.log('[estimator] ballpark email:', e.message));
-  res.json({ ok: true, version: r.version, decline: !!bp.decline, tooUnknown: !!bp.tooUnknown, askReaction: !(bp.decline || bp.tooUnknown),
+  const sz = EST.tierOf(bp), small = sz.tier === 'small';
+  // A small job has no reaction to ask for either: it gets the polite email straight away.
+  if (ver && !ver.emailed && (bp.decline || bp.tooUnknown || small)) EST.sendBallparkEmail(fresh, bp, a, r.version).catch(e => console.log('[estimator] ballpark email:', e.message));
+  res.json({ ok: true, version: r.version, decline: !!bp.decline, tooUnknown: !!bp.tooUnknown, small, tier: sz.tier, value: sz.value, askReaction: !(bp.decline || bp.tooUnknown || small),
     lo: bp.incLo || null, hi: bp.incHi || null, headline: text.headline, body: text.body,
     included: (bp.inc || []).filter(i => !/Establishment/.test(i.name)).map(i => ({ name: i.name, qty: i.qty })),
     allowed: (bp.sur || []).map(s => s.name.replace(/ — /g, ', ')),
