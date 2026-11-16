@@ -569,8 +569,10 @@ function nextFridaysSydney(count = 3) {
 function fridaySlots() {
   const cap = n('est_slots_per_half', 2);
   return nextFridaysSydney(3).map(f => {
-    const taken = db.prepare("SELECT visit_time FROM site_visits WHERE visit_date=? AND status='booked'").all(f.iso).map(r => String(r.visit_time || '').toLowerCase());
-    const count = h => taken.filter(t => HALF[h].slots.includes(t)).length;
+    // A visit counts toward the half the client asked for; one with no preference counts toward neither.
+    const taken = db.prepare("SELECT visit_time, pref FROM site_visits WHERE visit_date=? AND status='booked'").all(f.iso)
+      .map(r => r.pref || (HALF.AM.slots.includes(String(r.visit_time || '').toLowerCase()) ? 'AM' : HALF.PM.slots.includes(String(r.visit_time || '').toLowerCase()) ? 'PM' : ''));
+    const count = h => taken.filter(t => t === h).length;
     return { date: f.iso, label: f.label, am: count('AM') < cap, pm: count('PM') < cap };
   });
 }
@@ -580,9 +582,11 @@ function book(l, date, half, by = 'client') {
   if (!h || !ok) return { ok: false, error: 'That date is not available.' };
   if (!(half.toUpperCase() === 'AM' ? ok.am : ok.pm)) return { ok: false, error: 'That half of the day is now full. Pick another.' };
   const existing = db.prepare("SELECT id FROM site_visits WHERE lead_id=? AND status='booked'").get(l.id);
-  if (existing) db.prepare("UPDATE site_visits SET visit_date=?, visit_time=?, note=?, updated_at=datetime('now') WHERE id=?").run(date, h.time, 'Booked online via the estimator (' + half.toUpperCase() + ')', existing.id);
-  else db.prepare('INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,note,booked_by) VALUES (?,?,?,?,?,?,?)')
-    .run(newId(), l.id, l.quote_id || null, date, h.time, 'Booked online via the estimator (' + half.toUpperCase() + ')', by);
+  // The half of the day is the client's preference, not a time: the arrival window is set
+  // when the route is locked in the day before.
+  if (existing) db.prepare("UPDATE site_visits SET visit_date=?, visit_time='', pref=?, win_from=NULL, win_to=NULL, win_sent_at=NULL, note=?, updated_at=datetime('now') WHERE id=?").run(date, half.toUpperCase(), 'Booked online via the estimator', existing.id);
+  else db.prepare("INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,pref,note,booked_by) VALUES (?,?,?,?,'',?,?,?)")
+    .run(newId(), l.id, l.quote_id || null, date, half.toUpperCase(), 'Booked online via the estimator', by);
   db.prepare("UPDATE leads SET stage='visitbooked', status=CASE WHEN status IN ('Won','Lost') THEN status ELSE 'Contacted' END, next_followup=?, est_status='booked', updated_at=datetime('now') WHERE id=?").run(date, l.id);
   const nice = new Date(date + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
@@ -595,8 +599,8 @@ async function sendBookingEmail(l, bk) {
   const f = first(l), phone = settingGet('company_phone') || '0414 147 008';
   const when = `${bk.label}, ${bk.half === 'AM' ? 'morning' : 'afternoon'}`;
   const html = shell(`<p style="margin:0 0 14px;">Hi ${esc(f)},</p>
-    <p style="margin:0 0 14px;">Thanks, your site visit request is in for <b>${esc(when)}</b>.</p>
-    <p style="margin:0 0 14px;">We have a high number of enquiries at the moment and will do our best to accommodate this time. We will confirm the visit the day before, with an ETA.</p>
+    <p style="margin:0 0 14px;">Thank you, your site visit request is in for <b>${esc(when)}</b>.</p>
+    <p style="margin:0 0 14px;">We have noted your preference and will do our best to fit it in. We plan the route the day before, once all the visits for that day are in, so you will get your arrival window by email and text that afternoon.</p>
     <p style="margin:0 0 14px;">On the day we measure up, check the access and falls, and photograph the site. Your itemised quote follows within 48 hours.</p>
     <p style="margin:0;font-size:13px;color:#5A6068;">Need to change it? Reply to this email or call ${esc(phone)}.</p>
     <p style="margin:18px 0 0;">Estate Landscapers<br><span style="color:#888;font-size:12px;">Licensed Landscapers · LIC 487076C</span></p>`);

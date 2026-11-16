@@ -27,6 +27,41 @@ try { for (const l of db.prepare("SELECT id, enquiry_files FROM leads WHERE file
 
 try { db.exec('ALTER TABLE hip_jobs ADD COLUMN phone TEXT'); } catch (e) {}
 const digits = s => String(s || '').replace(/\D/g, '').slice(-9);
+db.exec('CREATE TABLE IF NOT EXISTS lead_file_rev (item_id TEXT PRIMARY KEY, lead_id TEXT, rev TEXT)');
+// ---- which quote revision a file belongs to (v54) ------------------------------
+// A file belongs to the revision that was current when it was added: the latest revision
+// created at or before the file. Files from before the first quote have no revision.
+// Someone can move a file to another revision; that choice is kept by the file's ID.
+function revisionsFor(l) {
+  const ids = new Set();
+  const add = q => { if (q && q.parent_number) ids.add(q.parent_number); };
+  if (l.quote_id) add(db.prepare('SELECT parent_number FROM quotes WHERE id=?').get(l.quote_id));
+  for (const q of db.prepare('SELECT DISTINCT parent_number FROM quotes WHERE lead_id=?').all(l.id)) add(q);
+  const out = [];
+  for (const pn of ids) out.push(...db.prepare("SELECT id, quote_number, created_at, status, sent_at FROM quotes WHERE parent_number=? AND COALESCE(is_sample,0)=0").all(pn));
+  const ms = t => Date.parse(String(t || '').replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(t || '')) ? '' : 'Z')) || 0;
+  return out.map(q => ({ id: q.id, number: q.quote_number, at: ms(q.created_at), date: String(q.created_at || '').slice(0, 10), status: q.status, sent: !!q.sent_at }))
+    .sort((a, b) => a.at - b.at || String(a.number).localeCompare(String(b.number), undefined, { numeric: true }));
+}
+function revOf(file, revs, moved) {
+  if (moved.has(file.id)) { const m = moved.get(file.id); return m === '' || revs.some(r => r.number === m) ? m : ''; }
+  const t = Date.parse(file.created) || 0; let hit = '';
+  for (const r of revs) if (r.at <= t + 60000) hit = r.number;      // a minute of slack: uploaded straight after revising
+  return hit;
+}
+function setRev(l, itemId, rev) {
+  const revs = revisionsFor(l); rev = String(rev || '');
+  if (rev && !revs.some(r => r.number === rev)) throw new Error('That revision is not one of this job\'s quotes');
+  db.prepare('INSERT INTO lead_file_rev (item_id, lead_id, rev) VALUES (?,?,?) ON CONFLICT(item_id) DO UPDATE SET rev=excluded.rev').run(itemId, l.id, rev);
+}
+// The lead a quote belongs to: its own link, or the lead pointing at any revision of it.
+function leadOfQuote(q) {
+  if (!q) return null;
+  if (q.lead_id) { const l = db.prepare('SELECT * FROM leads WHERE id=?').get(q.lead_id); if (l) return l; }
+  return db.prepare('SELECT l.* FROM leads l JOIN quotes x ON x.id=l.quote_id WHERE x.parent_number=? LIMIT 1').get(q.parent_number)
+    || db.prepare('SELECT l.* FROM leads l JOIN quotes x ON x.lead_id=l.id WHERE x.parent_number=? LIMIT 1').get(q.parent_number) || null;
+}
+
 const year = () => require('./refs').sydneyParts().year;
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const EXT = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'image/gif': 'gif', 'application/pdf': 'pdf' };
@@ -47,18 +82,20 @@ async function foldersFor(l) {
 }
 
 async function list(l) {
-  if (!od.configured()) return { configured: false, files: [] };
+  if (!od.configured()) return { configured: false, files: [], revisions: [] };
+  const revs = revisionsFor(l);
+  const moved = new Map(db.prepare('SELECT item_id, rev FROM lead_file_rev WHERE lead_id=?').all(l.id).map(r => [r.item_id, r.rev]));
   if (String(l.source || '').toLowerCase() === 'hipages' && !l.hip_job_id) { link(); }
   const added = new Map(db.prepare('SELECT name, by FROM lead_files_added WHERE lead_id=?').all(l.id).map(r => [r.name, r.by]));
   const files = [];
   for (const f of await foldersFor(l)) {
     let kids = []; try { kids = await od.childrenOf(f.id); } catch (e) { if (!/ 404/.test(e.message)) throw e; }
-    for (const k of kids) files.push({ ...k, kind: kindOf(k.name, k.mime),
+    for (const k of kids) files.push({ ...k, kind: kindOf(k.name, k.mime), rev: revOf(k, revs, moved),
       from: added.has(k.name) ? 'Added by ' + added.get(k.name) : f.kind === 'website' ? 'Website upload' : f.kind === 'hipages' ? 'hipages' : 'Added in the tool' });
   }
   files.sort((a, b) => String(a.created).localeCompare(String(b.created)));
   db.prepare('UPDATE leads SET files_count=? WHERE id=?').run(files.length, l.id);
-  return { configured: true, files };
+  return { configured: true, files, revisions: revs.map(r => ({ number: r.number, date: r.date, status: r.status, sent: r.sent })) };
 }
 
 // Where a file added from the tool goes: the folder the lead already has, else a new one.
@@ -151,4 +188,4 @@ async function ingestHip({ jobId, suburb, postcode, category, description, phone
   return { ok: true, name };
 }
 
-module.exports = { list, session, owned, addBytes, ingestHip, link, keyOk, kindOf, wanted };
+module.exports = { list, session, owned, addBytes, setRev, leadOfQuote, revisionsFor, ingestHip, link, keyOk, kindOf, wanted };

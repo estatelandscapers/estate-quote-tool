@@ -856,10 +856,12 @@ async function leadsSummary(v) {
   if (!STAGE_PHASE) { STAGE_PHASE = {}; (stageData.stages || []).forEach(s => STAGE_PHASE[s.id] = s.phase); }
   const today = localYmd();
   const tile = (key, label, value, note, hero) => `<div class="stat ${hero ? 'hero' : ''} tap" data-fig="${key}" role="button" tabindex="0"><div class="k">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ''}</div>`;
+  setTimeout(() => { const la = $('#lockAlert'); if (la) la.addEventListener('click', () => { state.leadsSub = 'calendar'; state.leadPhase = null; leadsTab(v); }); }, 0);
   const open = board.cards.length;
   const byPhase = {}; board.cards.forEach(c => byPhase[c.phase] = (byPhase[c.phase] || 0) + 1);
   $('#leadBody').innerHTML = `
     <div class="card"><h2>Lead pipeline</h2><div class="sub">Drag a card to move it a step — it holds there until new evidence (a quote, drawings, a discovery call) moves it on. Each column scrolls, searches and sorts on its own. Won needs a signed quote or a PO, from the quote page.</div><div class="rule"></div>
+      ${board.lockin && board.lockin.due ? `<button type="button" class="lockalert" id="lockAlert"><b>Critical: lock in ${esc(board.lockin.label.split(' ')[0])}'s site visit times</b><span>${board.lockin.open} of ${board.lockin.total} client${board.lockin.total === 1 ? '' : 's'} still waiting on an arrival window for ${esc(board.lockin.label)}${board.lockin.isToday ? ', which is today' : ''}. Set the route and send them.</span><em>Open →</em></button>` : ''}
       <div class="hstrip" id="hotStrip"></div>
       <div class="tstrip" id="todayStrip"></div>
       <div class="boardtools">
@@ -1150,11 +1152,11 @@ async function leadsCalendar(v) {
     cells += `<div class="calday ${dow === 5 ? 'fri' : ''} ${iso === todayIso ? 'today' : ''}" data-day="${iso}">
       <div class="caldn">${d}</div>
       ${evs.map(e => `<div class="ev ${e.status === 'done' ? 'done' : ''}" data-visit="${e.id}" title="${esc(e.name || '')}">
-        ${esc(e.time || '')} ${esc((e.name || '').split(' ')[0])}<br><span class="muted">${esc(e.suburb || '')}</span></div>`).join('')}
+        <b>${esc((e.name || '').split(' ')[0])}</b> <span class="evw ${e.locked ? (e.sentAt ? 'sent' : 'set') : ''}">${e.locked ? esc(e.from) : e.pref ? esc(e.pref) + ' pref' : 'any time'}</span><br><span class="muted">${esc(e.suburb || '')}</span></div>`).join('')}
       ${dow === 5 && evs.length < 3 ? `<div class="slot" data-book="${iso}">+ book</div>` : ''}
     </div>`;
   }
-  $('#leadBody').innerHTML = `<div class="card">
+  $('#leadBody').innerHTML = `<div id="lockinBox"></div><div class="card">
     <div class="calhd" style="padding:0 0 11px;">
       <div style="display:flex;gap:7px;align-items:center;">
         <button class="btn btn-ghost btn-sm" id="calPrev">‹</button>
@@ -1163,7 +1165,7 @@ async function leadsCalendar(v) {
         <button class="btn btn-ghost btn-sm" id="calToday">Today</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <span class="muted" style="font-size:10.5px;">Fridays shaded · ${(cal.visits || []).length} visit(s) this month</span>
+        <span class="muted" style="font-size:10.5px;">Fridays shaded · ${(cal.visits || []).length} visit(s) this month · clients are given the date only; times are set the day before</span>
         <button class="btn btn-blue btn-sm" id="calBook">+ Book a site visit</button></div>
     </div>
     <div class="cal"><div class="calgrid">
@@ -1174,6 +1176,7 @@ async function leadsCalendar(v) {
   $('#calPrev').addEventListener('click', () => shift(-1));
   $('#calNext').addEventListener('click', () => shift(1));
   $('#calToday').addEventListener('click', () => { state.calMonth = null; leadsCalendar(v); });
+  lockinPanel($('#lockinBox'), cal.lockin, () => leadsCalendar(v));
   $('#calBook').addEventListener('click', () => bookDialog(v, cal, bookable, null));
   v.querySelectorAll('[data-book]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); bookDialog(v, cal, bookable, b.dataset.book); }));
   v.querySelectorAll('[data-visit]').forEach(b => b.addEventListener('click', e => {
@@ -1187,12 +1190,12 @@ function bookDialog(v, cal, bookable, date) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal" style="max-width:460px;">
     <h2 style="margin:0 0 3px;">Book a site visit</h2>
-    <div class="sub">Visits are normally Fridays, but any date can be booked.</div><div class="rule"></div>
+    <div class="sub">Visits are normally Fridays, but any date can be booked. The client is given the date only. You set the arrival time the day before, when the route is planned.</div><div class="rule"></div>
     <div class="field"><label>Client</label><select id="bk_lead">
       ${bookable.map(l => `<option value="${l.id}">${esc(l.name)}${l.suburb ? ' — ' + esc(l.suburb) : ''}</option>`).join('') || '<option value="">No leads available</option>'}</select></div>
     <div class="grid2">
       <div class="field"><label>Date</label><input id="bk_date" type="date" value="${esc(date || '')}"></div>
-      <div class="field"><label>Time</label><select id="bk_time">${(cal.slots || []).map(s => `<option>${s}</option>`).join('')}</select></div>
+      <div class="field"><label>Client prefers</label><select id="bk_pref">${(cal.prefs || []).map(s => `<option value="${esc(s.id)}">${esc(s.label)}</option>`).join('')}</select></div>
     </div>
     <div class="field"><label>Note</label><input id="bk_note" placeholder="e.g. meet at the front, dog in the yard"></div>
     <div id="bk_err"></div>
@@ -1203,7 +1206,7 @@ function bookDialog(v, cal, bookable, date) {
   $('#bk_cancel').addEventListener('click', () => bg.remove());
   $('#bk_ok').addEventListener('click', async () => {
     const r = await api('/leads/calendar/book', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadId: $('#bk_lead').value, date: $('#bk_date').value, time: $('#bk_time').value, note: $('#bk_note').value }) });
+      body: JSON.stringify({ leadId: $('#bk_lead').value, date: $('#bk_date').value, pref: $('#bk_pref').value, note: $('#bk_note').value }) });
     if (r.error) { $('#bk_err').innerHTML = `<div class="emailbar failed">${esc(r.error)}</div>`; return; }
     bg.remove(); toast('Site visit booked'); leadsCalendar(v);
   });
@@ -1214,23 +1217,24 @@ function visitDialog(v, visit) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal" style="max-width:420px;">
     <h2 style="margin:0 0 3px;">${esc(visit.name || 'Site visit')}</h2>
-    <div class="sub">${esc(visit.date)} ${esc(visit.time || '')}${visit.suburb ? ' · ' + esc(visit.suburb) : ''}${visit.phone ? ' · ' + esc(visit.phone) : ''}</div>
+    <div class="sub">${esc(new Date(visit.date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }))} · ${esc(visit.when || '')}${visit.locked ? (visit.sentAt ? ' · client told' : ' · client not told yet') : ''}${visit.suburb ? ' · ' + esc(visit.suburb) : ''}${visit.phone ? ' · ' + esc(visit.phone) : ''}</div>
     <div class="rule"></div>
     ${visit.note ? `<p style="font-size:12.5px;">${esc(visit.note)}</p>` : ''}
     <div class="grid2">
       <div class="field"><label>Move to</label><input id="vd_date" type="date" value="${esc(visit.date)}"></div>
-      <div class="field"><label>Time</label><input id="vd_time" value="${esc(visit.time || '')}"></div>
+      <div class="field"><label>Client prefers</label><select id="vd_pref">${[['AM', 'Morning'], ['PM', 'Afternoon'], ['', 'No preference']].map(o => `<option value="${o[0]}" ${visit.pref === o[0] ? 'selected' : ''}>${o[1]}</option>`).join('')}</select></div>
     </div>
+    <div class="muted" style="font-size:11px;">The arrival time is set in "Lock in times" above the calendar, the day before the visit.</div>
     <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:10px;">
       <button class="btn btn-blue btn-sm" id="vd_done">✓ Visit done</button>
-      <button class="btn btn-ghost btn-sm" id="vd_move">Move it</button>
+      <button class="btn btn-ghost btn-sm" id="vd_move">Save changes</button>
       <button class="btn btn-ghost btn-sm" id="vd_open">Open the lead</button>
       <button class="btn btn-danger btn-sm" id="vd_cancel">Cancel visit</button>
       <button class="btn btn-ghost btn-sm" id="vd_close" style="margin-left:auto;">Close</button></div></div>`;
   document.body.appendChild(bg);
   const put = async body => { await api('/leads/calendar/' + visit.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); bg.remove(); leadsCalendar(v); };
   $('#vd_done').addEventListener('click', () => { toast('Visit done — quote due within 48 hours'); put({ status: 'done' }); });
-  $('#vd_move').addEventListener('click', () => put({ date: $('#vd_date').value, time: $('#vd_time').value }));
+  $('#vd_move').addEventListener('click', () => put({ date: $('#vd_date').value, pref: $('#vd_pref').value }));
   $('#vd_cancel').addEventListener('click', () => { if (confirm('Cancel this visit?')) put({ status: 'cancelled' }); });
   $('#vd_open').addEventListener('click', () => { bg.remove(); openLeadDrawer(visit.leadId); });
   $('#vd_close').addEventListener('click', () => bg.remove());
@@ -1802,8 +1806,8 @@ function renderAnswer(v, s) {
       <div id="friBox" style="margin-top:10px;${CALL.visitOutcome === 'booked' ? '' : 'display:none;'}">
         <div class="chips">${CALL.fridays.map(f => `<button class="cchip ${CALL.visitDate === f.iso ? 'on' : ''}" data-fri="${f.iso}">${esc(f.label)}</button>`).join('')}
           <input type="date" id="friOther" value="${esc(CALL.visitDate || '')}" style="max-width:190px;"></div>
-        <div class="muted" style="font-size:10.5px;margin:10px 0 4px;">What time? — this is what goes on the calendar</div>
-        <div class="chips">${(CALL.slots || []).map(sl => `<button class="cchip ${CALL.visitTime === sl ? 'on' : ''}" data-slot="${esc(sl)}">${esc(sl)}</button>`).join('')}</div></div>`;
+        <div class="muted" style="font-size:10.5px;margin:10px 0 4px;">Morning or afternoon? Only their preference. Do not promise a time: the route is set the day before and they get an arrival window then.</div>
+        <div class="chips">${[['AM', 'Morning'], ['PM', 'Afternoon'], ['', 'No preference']].map(sl => `<button class="cchip ${(CALL.visitPref || '') === sl[0] && CALL.visitPref !== undefined ? 'on' : ''}" data-slot="${sl[0]}">${sl[1]}</button>`).join('')}</div></div>`;
     box.querySelectorAll('[data-opt]').forEach(b => b.addEventListener('click', () => {
       CALL.visitOutcome = b.dataset.opt; renderAnswer(v, s);
     }));
@@ -1811,7 +1815,7 @@ function renderAnswer(v, s) {
       CALL.visitDate = b.dataset.fri; renderAnswer(v, s);
     }));
     box.querySelectorAll('[data-slot]').forEach(b => b.addEventListener('click', () => {
-      CALL.visitTime = b.dataset.slot; renderAnswer(v, s);
+      CALL.visitPref = b.dataset.slot; renderAnswer(v, s);
     }));
     const fo = $('#friOther'); if (fo) fo.addEventListener('change', () => { CALL.visitDate = fo.value; });
     return;
@@ -1877,7 +1881,7 @@ function refreshBp(v) {
 async function finishCall(v) {
   const r = await api(`/leads/${CALL.lead.id}/call/finish`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers: CALL.a, outcome: CALL.outcome, callbackWhen: CALL.callbackWhen,
-      visitOutcome: CALL.visitOutcome, visitDate: CALL.visitDate, visitTime: CALL.visitTime, referredBy: CALL.referredBy }) });
+      visitOutcome: CALL.visitOutcome, visitDate: CALL.visitDate, visitPref: CALL.visitPref || '', referredBy: CALL.referredBy }) });
   if (r.error) return toast(r.error);
   state.callStep = 0;
   v.innerHTML = `<div class="card">
@@ -1984,7 +1988,7 @@ async function leadConsole(v) {
       <div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
           <div class="field" style="margin:0;flex:1;min-width:130px;"><label>Date (if needed)</label><input id="ms_date" type="date"></div>
-          <div class="field" style="margin:0;flex:1;min-width:110px;"><label>Time</label><input id="ms_time" placeholder="9:00am"></div>
+          <div class="field" style="margin:0;flex:1;min-width:110px;"><label>Time (call-backs only)</label><input id="ms_time" placeholder="9:00am"></div>
         </div>
         <div class="field"><label>Subject (email only)</label><input id="ms_subject"></div>
         <div class="field"><label>Message <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500;">— email and WhatsApp</span></label><textarea id="ms_body" rows="11"></textarea></div>
@@ -2693,6 +2697,7 @@ async function quoteEditor(v) {
     <div class="field"><label>Site-specific notes (shown to client)</label><textarea id="f_notes" rows="2">${esc(q.siteNotes || '')}</textarea></div>
   </div>
 
+  <div id="quoteFiles"></div>
   <div class="card">
     <h2>Add deliverables</h2><div class="sub">Tick common items or pick from the full sheet. Keeps your place on the page.</div><div class="rule"></div>
     <div id="pickList">${priceItems.map(pi => { const on = usedItemIds.has(pi.id); const common = commonCodes.includes(pi.code);
@@ -2839,6 +2844,7 @@ async function quoteEditor(v) {
     toast(r.linkOff ? 'Link off — client sees "call us"' : 'Link back on'); reload();
   });
   const lq = $('#lostQuote'); if (lq) lq.addEventListener('click', () => markLost(q.id, () => { state.quoteId = null; state.tab = 'quotes'; shell(); }));
+  leadFilesPanel(null, { box: $('#quoteFiles'), quoteId: q.id });
   // On hold: the button, and a banner when this job is already held.
   const hq = $('#holdQuote');
   if (hq) {
@@ -4361,25 +4367,45 @@ boot();
 
 /* ---- v52: a lead's photos and files, kept in OneDrive, shown here ---- */
 const lfSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
-async function leadFilesPanel(leadId) {
-  const box = document.getElementById('filesPanel'); if (!box) return;
-  const base = `/api/leads/${leadId}/files`;
+// Used on the lead screen (one grid, each file labelled with its revision) and on the quote
+// page (grouped by revision, newest first, so what came in at each round is easy to follow).
+async function leadFilesPanel(leadId, opts) {
+  opts = opts || {};
+  const box = opts.box || document.getElementById('filesPanel'); if (!box) return;
+  const again = () => leadFilesPanel(leadId, opts);
   const head = (n, extra) => `<div class="lfhead"><h2>Photos &amp; files${n ? ` <span class="lfn">${n}</span>` : ''}</h2>${extra || ''}</div>`;
   box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">Loading…</p></div>`;
-  const d = await api(`/leads/${leadId}/files`);
+  const d = await api(opts.quoteId ? `/quotes/${opts.quoteId}/files` : `/leads/${leadId}/files`);
   if (!document.body.contains(box)) return;
-  if (d.error) { box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">${esc(d.error)} <a href="#" id="lf_retry">Try again</a></p></div>`; $('#lf_retry', box).addEventListener('click', e => { e.preventDefault(); leadFilesPanel(leadId); }); return; }
+  if (opts.quoteId) { leadId = d.leadId; if (!leadId && !d.error) { box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">This quote is not linked to a lead, so it has no photos or files. Create the quote from a lead to keep them together.</p></div>`; return; } }
+  if (d.error) { box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">${esc(d.error)} <a href="#" class="lf_retry">Try again</a></p></div>`; $('.lf_retry', box).addEventListener('click', e => { e.preventDefault(); again(); }); return; }
   if (d.configured === false) { box.innerHTML = `<div class="card lfcard">${head(0)}<p class="muted" style="margin:6px 0 0;">OneDrive is not connected, so files cannot be shown here yet.</p></div>`; return; }
-  const files = d.files || [];
+  const base = `/api/leads/${leadId}/files`;
+  const files = d.files || [], revs = d.revisions || [];
+  const cur = opts.quoteId ? d.current : (revs.length ? revs[revs.length - 1].number : '');
+  const revName = r => r ? 'Quote ' + r : 'Before the first quote';
   const tile = (f, i) => `<button type="button" class="lft" data-i="${i}" title="${esc(f.name)}">
-      <span class="lfpic">${f.thumb ? `<img loading="lazy" alt="" data-ext="${esc((f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase())}" src="${base}/${encodeURIComponent(f.id)}/thumb">` : `<span class="lfext">${esc((f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase())}</span>`}${f.kind === 'video' ? '<span class="lfplay">▶</span>' : ''}</span>
+      <span class="lfpic">${f.thumb ? `<img loading="lazy" alt="" data-ext="${esc((f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase())}" src="${base}/${encodeURIComponent(f.id)}/thumb">` : `<span class="lfext">${esc((f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase())}</span>`}${f.kind === 'video' ? '<span class="lfplay">▶</span>' : ''}${!opts.quoteId && revs.length ? `<span class="lfrev">${f.rev ? esc(f.rev) : 'pre-quote'}</span>` : ''}</span>
       <span class="lfname">${esc(f.name)}</span><span class="lffrom">${esc(f.from)} · ${lfSize(f.size)}</span></button>`;
-  box.innerHTML = `<div class="card lfcard" id="lf_card">
-    ${head(files.length, `<div><input type="file" id="lf_in" multiple hidden><button class="btn btn-ghost btn-sm" id="lf_add">＋ Add photos or files</button></div>`)}
-    <div class="lfgrid" id="lf_grid">${files.map(tile).join('') || '<p class="muted lfnone">Nothing here yet. Add site photos, drawings or anything the client sent, or drop them on this box.</p>'}</div>
-    <div class="lfnote" id="lf_note" hidden></div></div>`;
-  const card = $('#lf_card', box), note = $('#lf_note', box);
-  $$('.lft', box).forEach(b => b.addEventListener('click', () => lfViewer(leadId, files, +b.dataset.i, d.canDelete)));
+  let grid;
+  if (opts.quoteId) {
+    // Newest revision first; a revision with nothing added still shows, so gaps are visible.
+    const order = [...revs].reverse().map(r => r.number).concat(['']);
+    grid = order.map(rn => {
+      const r = revs.find(x => x.number === rn), list = files.map((f, i) => [f, i]).filter(x => (x[0].rev || '') === rn);
+      if (!rn && !list.length) return '';
+      return `<div class="lfgroup ${rn === cur ? 'cur' : ''}"><div class="lfgh"><b>${esc(revName(rn))}</b>${rn === cur ? '<span class="tag tag-sent">this revision</span>' : ''}
+          <span class="muted">${r ? esc(new Date(r.date + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })) + (r.status === 'accepted' ? ' · accepted' : r.sent ? ' · sent' : ' · not sent') : 'website, hipages and early site photos'} · ${list.length} file${list.length === 1 ? '' : 's'}</span></div>
+        ${list.length ? `<div class="lfgrid">${list.map(x => tile(x[0], x[1])).join('')}</div>` : '<p class="muted lfnone" style="margin:6px 0 0;">Nothing added under this revision.</p>'}</div>`;
+    }).join('') || '<p class="muted lfnone" style="margin-top:10px;">Nothing here yet.</p>';
+  } else grid = `<div class="lfgrid">${files.map(tile).join('') || '<p class="muted lfnone">Nothing here yet. Add site photos, drawings or anything the client sent, or drop them on this box.</p>'}</div>`;
+  box.innerHTML = `<div class="card lfcard">
+    ${head(files.length, `<div><input type="file" class="lf_in" multiple hidden><button class="btn btn-ghost btn-sm lf_add">＋ Add photos or files${cur ? ' to ' + esc(cur) : ''}</button></div>`)}
+    ${opts.quoteId ? `<div class="sub" style="margin-top:2px;">Shared with the lead${d.leadName ? ' (' + esc(d.leadName) + ')' : ''}. Each file sits under the revision that was current when it was added. Internal only: the client never sees these.</div>` : ''}
+    ${grid}
+    <div class="lfnote" hidden></div></div>`;
+  const card = $('.lfcard', box), note = $('.lfnote', box);
+  $$('.lft', box).forEach(b => b.addEventListener('click', () => lfViewer(leadId, files, +b.dataset.i, d.canDelete, { revs, again })));
   // A file OneDrive has no thumbnail for yet shows its type instead of a broken picture.
   $$('.lft img', box).forEach(im => im.addEventListener('error', () => { const sp = document.createElement('span'); sp.className = 'lfext'; sp.textContent = im.dataset.ext; im.replaceWith(sp); }));
   // Straight from this browser to OneDrive, in 5 MB pieces, the same way the website form does it.
@@ -4391,35 +4417,41 @@ async function leadFilesPanel(leadId) {
       try {
         const s = await api(`/leads/${leadId}/files/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: f.name, size: f.size }) });
         if (s.error || !s.uploadUrl) throw new Error(s.error || 'no upload address');
-        const CH = 327680 * 16;
+        const CH = 327680 * 16; let item = null;
         for (let o = 0; o < f.size; o += CH) {
           const end = Math.min(f.size, o + CH);
           const r = await fetch(s.uploadUrl, { method: 'PUT', headers: { 'Content-Range': `bytes ${o}-${end - 1}/${f.size}` }, body: f.slice(o, end) });
           if (!r.ok) throw new Error('upload stopped (' + r.status + ')');
+          if (end === f.size) item = await r.json().catch(() => null);
           note.textContent = `Adding ${done + 1} of ${fl.length}: ${f.name} · ${Math.round(end / f.size * 100)}%`;
         }
+        // Added from an older revision's quote page: file it under that revision, not the latest.
+        if (opts.quoteId && cur && item && item.id) await api(`/leads/${leadId}/files/${encodeURIComponent(item.id)}/rev`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rev: cur }) });
         done++;
       } catch (e) { bad.push(f.name + ' — ' + e.message); }
     }
     if (bad.length) toast('Not added: ' + bad.join('; ')); else toast(done === 1 ? 'File added' : done + ' files added');
-    leadFilesPanel(leadId);
+    again();
   };
-  $('#lf_add', box).addEventListener('click', () => $('#lf_in', box).click());
-  $('#lf_in', box).addEventListener('change', e => send(e.target.files));
+  $('.lf_add', box).addEventListener('click', () => $('.lf_in', box).click());
+  $('.lf_in', box).addEventListener('change', e => send(e.target.files));
   ['dragenter', 'dragover'].forEach(ev => card.addEventListener(ev, e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); card.classList.add('lfover'); } }));
   ['dragleave', 'drop'].forEach(ev => card.addEventListener(ev, e => { if (ev === 'drop' && e.dataTransfer && e.dataTransfer.files.length) { e.preventDefault(); send(e.dataTransfer.files); } card.classList.remove('lfover'); }));
 }
 // Full-size viewer: photos, PDFs and video open here; anything else offers a download.
-function lfViewer(leadId, files, at, canDelete) {
+function lfViewer(leadId, files, at, canDelete, ctx) {
+  ctx = ctx || {}; const revs = ctx.revs || [], again = ctx.again || (() => leadFilesPanel(leadId));
   const base = `/api/leads/${leadId}/files`;
   const bg = document.createElement('div'); bg.className = 'lfview'; document.body.appendChild(bg);
-  const close = () => { document.removeEventListener('keydown', key, true); bg.remove(); };
+  let dirty = false;
+  const close = () => { document.removeEventListener('keydown', key, true); bg.remove(); if (dirty) again(); };
   const go = n => { at = (at + n + files.length) % files.length; paint(); };
-  const key = e => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); } else if (e.key === 'ArrowRight') go(1); else if (e.key === 'ArrowLeft') go(-1); };
+  const key = e => { if (e.target && e.target.tagName === 'SELECT') return; if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); } else if (e.key === 'ArrowRight') go(1); else if (e.key === 'ArrowLeft') go(-1); };
   const paint = () => {
     const f = files[at], src = `${base}/${encodeURIComponent(f.id)}/view`;
     bg.innerHTML = `<div class="lfvbar"><div class="lfvt"><b>${esc(f.name)}</b><span>${esc(f.from)} · ${lfSize(f.size)}${files.length > 1 ? ` · ${at + 1} of ${files.length}` : ''}</span></div>
-        <div class="lfvb"><a class="btn btn-ghost btn-sm" href="${src}?dl=1">Download</a>${canDelete ? '<button class="btn btn-ghost btn-sm" id="lfv_del">Delete</button>' : ''}<button class="btn btn-blue btn-sm" id="lfv_x">Close</button></div></div>
+        <div class="lfvb">${revs.length ? `<select class="lfv_rev" title="The quote revision this file sits under"><option value="">Before the first quote</option>${revs.map(r => `<option value="${esc(r.number)}" ${r.number === f.rev ? 'selected' : ''}>Quote ${esc(r.number)}</option>`).join('')}</select>` : ''}
+          <a class="btn btn-ghost btn-sm" href="${src}?dl=1">Download</a>${canDelete ? '<button class="btn btn-ghost btn-sm" id="lfv_del">Delete</button>' : ''}<button class="btn btn-blue btn-sm" id="lfv_x">Close</button></div></div>
       <div class="lfvbody">${files.length > 1 ? '<button class="lfnav prev" aria-label="Previous">‹</button><button class="lfnav next" aria-label="Next">›</button>' : ''}
         ${f.kind === 'image' ? `<img src="${src}" alt="${esc(f.name)}">` : f.kind === 'pdf' ? `<iframe src="${src}" title="${esc(f.name)}"></iframe>`
           : f.kind === 'video' ? `<video src="${src}" controls playsinline></video>`
@@ -4427,13 +4459,70 @@ function lfViewer(leadId, files, at, canDelete) {
     bg.querySelector('#lfv_x').addEventListener('click', close);
     const p = bg.querySelector('.prev'), n = bg.querySelector('.next'); if (p) { p.addEventListener('click', () => go(-1)); n.addEventListener('click', () => go(1)); }
     bg.querySelector('.lfvbody').addEventListener('mousedown', e => { if (e.target.classList.contains('lfvbody')) close(); });
+    const rv = bg.querySelector('.lfv_rev');
+    if (rv) rv.addEventListener('change', async () => {
+      const r = await api(`/leads/${leadId}/files/${encodeURIComponent(f.id)}/rev`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rev: rv.value }) });
+      if (r.error) { toast(r.error); rv.value = f.rev || ''; return; }
+      f.rev = rv.value; dirty = true; toast(rv.value ? 'Moved to quote ' + rv.value : 'Moved to before the first quote');
+    });
     const del = bg.querySelector('#lfv_del');
     if (del) del.addEventListener('click', async () => {
       if (!del.dataset.sure) { del.dataset.sure = 1; del.textContent = 'Delete this file?'; del.classList.add('danger'); return; }
       del.disabled = true; const r = await api(`/leads/${leadId}/files/${encodeURIComponent(f.id)}`, { method: 'DELETE' });
       if (r.error) { toast(r.error); del.disabled = false; return; }
-      toast('Deleted. It stays in the OneDrive recycle bin for a while.'); close(); leadFilesPanel(leadId);
+      toast('Deleted. It stays in the OneDrive recycle bin for a while.'); dirty = true; close();
     });
   };
   document.addEventListener('keydown', key, true); paint();
+}
+
+/* ---- v54: lock in the arrival times for a visit day ---- */
+// Shown above the calendar. Critical (red) from midday the day before; available earlier
+// so the route can be set as soon as the day is full.
+function lockinPanel(box, L, done) {
+  if (!box) return;
+  if (!L || !L.date || !L.visits.length) { box.innerHTML = ''; return; }
+  const allSent = L.open === 0;
+  const opt = cur => `<option value="">Set time</option>` + L.times.map(t => `<option ${t === cur ? 'selected' : ''}>${t}</option>`).join('');
+  box.innerHTML = `<div class="card lockcard ${L.due ? 'due' : ''} ${allSent ? 'ok' : ''}">
+    <div class="lockhead"><div><h2>${allSent ? 'Arrival windows sent' : (L.due ? 'Critical: lock in the times' : 'Lock in the times')} · ${esc(L.label)}</h2>
+      <div class="sub">${allSent ? `All ${L.total} client${L.total === 1 ? ' has' : 's have'} their arrival window.`
+        : `Put the visits in route order and give each a start time. Each client gets a ${L.windowMinutes}-minute arrival window by email and text. ${L.due ? '' : 'Due from ' + esc(L.dueFrom) + '.'}`}</div></div>
+      ${allSent ? '' : `<span class="lockcount">${L.open} to send</span>`}</div>
+    <div class="lockrows">${L.visits.map(x => `<div class="lockrow" data-id="${esc(x.id)}">
+        <div class="lockwho"><b>${esc(x.name || '—')}</b><span>${esc(x.suburb || 'No address')}</span></div>
+        <span class="chip ${x.pref === 'AM' ? 'pam' : x.pref === 'PM' ? 'ppm' : ''}">${x.pref ? 'prefers ' + esc(x.prefLabel) : 'no preference'}</span>
+        <select class="lockt" aria-label="Arrival from, ${esc(x.name || '')}">${opt(x.from)}</select>
+        <span class="lockto">${x.from ? 'to ' + esc(x.to) : ''}</span>
+        <span class="lockst ${x.sentAt ? 'sent' : ''}">${x.sentAt ? '✓ client told' : (!x.email && !x.phone ? 'no email or mobile' : 'not sent')}</span>
+      </div>`).join('')}</div>
+    <div class="lockfoot"><span class="muted" id="lockMsg">Sorted by preference. A time that clashes with a preference is flagged, not blocked.</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" id="lockSave">Save times only</button>
+      <button class="btn btn-blue btn-sm" id="lockSend">Send arrival windows</button></div></div></div>`;
+  const key = t => { const m = String(t).match(/^(\d+):(\d+)(am|pm)$/); return m ? ((+m[1] % 12) + (m[3] === 'pm' ? 12 : 0)) * 60 + +m[2] : -1; };
+  const check = () => {
+    const taken = {}; let warn = [];
+    box.querySelectorAll('.lockrow').forEach(r => {
+      const x = L.visits.find(y => y.id === r.dataset.id), t = r.querySelector('.lockt').value, k = key(t);
+      r.classList.remove('clash'); if (k < 0) return;
+      if ((x.pref === 'AM' && k >= 720) || (x.pref === 'PM' && k < 720)) { r.classList.add('clash'); warn.push(`${x.name} prefers the ${x.prefLabel}`); }
+      if (taken[t]) warn.push(`${x.name} and ${taken[t]} both start at ${t}`); taken[t] = x.name;
+    });
+    const m = box.querySelector('#lockMsg'); m.textContent = warn.length ? 'Check: ' + warn.join('; ') + '.' : 'Sorted by preference. A time that clashes with a preference is flagged, not blocked.'; m.classList.toggle('warnt', !!warn.length);
+  };
+  box.querySelectorAll('.lockt').forEach(sel => sel.addEventListener('change', check)); check();
+  const go = async send => {
+    const items = [...box.querySelectorAll('.lockrow')].map(r => ({ id: r.dataset.id, from: r.querySelector('.lockt').value }));
+    if (send && !items.some(i => i.from)) return toast('Set at least one time first');
+    const b = box.querySelector(send ? '#lockSend' : '#lockSave'); b.disabled = true; b.textContent = send ? 'Sending…' : 'Saving…';
+    const r = await api('/leads/visits/lockin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items, send }) });
+    if (r.error) { toast(r.error); b.disabled = false; return; }
+    if (send) {
+      const bad = (r.results || []).filter(x => !x.ok), ok = (r.results || []).filter(x => x.ok && !x.nothing).length;
+      toast(bad.length ? `${ok} sent. Not sent: ${bad.map(x => (x.name || 'a visit') + ' (' + (x.error || (x.sent || []).map(s => s.channel + ' ' + (s.error || s.status || 'failed')).join(', ')) + ')').join('; ')}` : `${ok} arrival window${ok === 1 ? '' : 's'} sent`);
+    } else toast('Times saved. Clients have not been told yet.');
+    done ? done() : lockinPanel(box, r.lockin);
+  };
+  box.querySelector('#lockSave').addEventListener('click', () => go(false));
+  box.querySelector('#lockSend').addEventListener('click', () => go(true));
 }

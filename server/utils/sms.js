@@ -39,13 +39,13 @@ const TYPES = [
     def: 'You can get a ballpark for your project online in about 8 minutes: {{link}}\nYour code is {{code}}.' },
   { key: 'est_reminder', label: 'Estimate reminder', when: 'If the online estimate is still not finished after the number of days below.', vars: ['first', 'link', 'code', 'phone'], days: 2,
     def: 'Your online estimate is still waiting. It takes about 8 minutes: {{link}}\nYour code is {{code}}. If you are stuck on a question, call me and I will help.' },
-  { key: 'visit', label: 'Site visit reminder', when: 'The afternoon before a booked site visit.', vars: ['first', 'when', 'phone'],
-    def: 'A reminder that your site visit is tomorrow, {{when}}. Call me if you need to change it.' },
+  { key: 'visit', label: 'Site visit arrival window', when: 'The afternoon before a site visit, when you lock in the route and press Send.', vars: ['first', 'day', 'from', 'to', 'phone'], close: 'See you then',
+    def: 'Your site visit is {{day}}. We will be with you between {{from}} and {{to}}. Please keep the side access clear. Call me today if that does not work.' },
   { key: 'quote', label: 'Quote sent', when: 'When you press Send to client on a quote.', vars: ['first', 'quote', 'link', 'phone'],
     def: 'Your quote {{quote}} is ready to view: {{link}}' },
   { key: 'quote_followup', label: 'Quote follow-up', when: 'If the quote is still not accepted after the number of days below.', vars: ['first', 'quote', 'link', 'phone'], days: 3,
     def: 'Checking in on quote {{quote}}. Any questions, or changes you would like? Call me or reply to our email. {{link}}' },
-  { key: 'signed', label: 'Contract signed', when: 'When the client signs and the contract is emailed.', vars: ['first', 'quote', 'phone'],
+  { key: 'signed', label: 'Contract signed', when: 'When the client signs and the contract is emailed.', vars: ['first', 'quote', 'phone'], close: 'Many thanks',
     def: 'Thank you. Your signed contract for quote {{quote}} has been emailed to you. We will call to confirm scheduling.' },
 ];
 // The wording before v47, which began "Estate Landscapers:" and carried the phone number
@@ -54,7 +54,10 @@ const TYPES = [
 const OLD_DEFS = {"enquiry": "Estate Landscapers: thanks {{first}}, we have your enquiry (ref {{ref}}) and will be in touch shortly. Questions? Call {{phone}}.", "invite": "Estate Landscapers: Hi {{first}}, get a ballpark for your project online in about 8 minutes: {{link}} Your code is {{code}}. Questions? Call {{phone}}.", "est_reminder": "Estate Landscapers: Hi {{first}}, your online estimate is still waiting. It takes about 8 minutes: {{link}} Code {{code}}. Stuck on a question? Call {{phone}} and we will help.", "visit": "Estate Landscapers: Hi {{first}}, a reminder that your site visit is tomorrow, {{when}}. Need to change it? Call {{phone}}.", "quote": "Estate Landscapers: Hi {{first}}, your quote {{quote}} is ready to view: {{link}} Questions? Call {{phone}}.", "quote_followup": "Estate Landscapers: Hi {{first}}, checking in on quote {{quote}}. Any questions, or changes you would like? Call {{phone}} or reply to our email. {{link}}", "signed": "Estate Landscapers: thank you {{first}}. Your signed contract for quote {{quote}} has been emailed to you. We will call to confirm scheduling."};
 const typeOf = k => TYPES.find(t => t.key === k);
 const isOn = k => settingGet('sms_on_' + k) === '1';
-const textOf = k => { const s = settingGet('sms_text_' + k); return s && String(s).trim() && String(s).trim() !== OLD_DEFS[k] ? String(s) : typeOf(k).def; };
+// Later defaults that have since been replaced too (the visit reminder quoted a time).
+const OLD_DEFS_2 = { visit: 'A reminder that your site visit is tomorrow, {{when}}. Call me if you need to change it.' };
+const textOf = k => { const s = settingGet('sms_text_' + k); const t = s && String(s).trim(); return t && t !== OLD_DEFS[k] && t !== OLD_DEFS_2[k] ? String(s) : typeOf(k).def; };
+const closeOf = k => (typeOf(k) || {}).close || 'Kind regards';
 const daysOf = k => { const d = parseFloat(settingGet('sms_days_' + k)); return isFinite(d) && d > 0 ? d : typeOf(k).days; };
 
 // ---- numbers and text -------------------------------------------------------------------
@@ -87,12 +90,12 @@ const firstName = n => String(n || '').trim().split(/\s+/)[0] || 'there';
 const companyPhone = () => require('./leadTemplates').localPhone(settingGet('company_phone') || '0414147008');
 const signName = () => String(settingGet('sms_sign_name') || 'Smit').trim();
 // Every text has the same shape as every other message from the business:
-//   Hi <first name>, / the message / Thanks / <name> / Estate Landscapers / <phone>
+//   Hi <first name>, / the message / Kind regards / <name> / Estate Landscapers / <phone>
 // The saved wording is only the middle. Wording that brings its own greeting is left alone.
-function shape(first, text) {
+function shape(first, text, close) {
   const t = String(text || '').trim();
   if (/^\s*(hi|hello|dear)\b/i.test(t)) return t;
-  return `Hi ${first},\n\n${t}\n\nThanks\n${[signName(), 'Estate Landscapers', companyPhone()].filter(Boolean).join('\n')}`;
+  return `Hi ${first},\n\n${t}\n\n${close || 'Kind regards'}\n${[signName(), 'Estate Landscapers', companyPhone()].filter(Boolean).join('\n')}`;
 }
 
 // ---- the provider -----------------------------------------------------------------------
@@ -186,7 +189,7 @@ function quoteSent(q, link) {
 function signed(q) {
   const lead = leadById(q && q.lead_id); if (!lead) return;
   return send({ type: 'signed', ref: 'signed:' + q.id, lead, quoteId: q.id,
-    body: shape(firstName(q.client_name || lead.name), fill(textOf('signed'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', phone: companyPhone() })) });
+    body: shape(firstName(q.client_name || lead.name), fill(textOf('signed'), { first: firstName(q.client_name || lead.name), quote: q.quote_number || '', phone: companyPhone() }), closeOf('signed')) });
 }
 
 // ---- reminders (every 5 minutes, texts only between 9 am and 6 pm Sydney) ---------------
@@ -222,17 +225,8 @@ async function runReminders() {
     }
   }
 
-  if (isOn('visit') && h >= 15) {
-    const t = new Date(sydneyParts().ymd + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + 1);
-    const tomorrow = t.toISOString().slice(0, 10);
-    const rows = db.prepare("SELECT * FROM site_visits WHERE status='booked' AND visit_date=? AND lead_id IS NOT NULL AND created_at >= ? LIMIT 30").all(tomorrow, sinceOn('visit'));
-    for (const v of rows) {
-      const lead = leadById(v.lead_id); if (!lead || ['Won', 'Lost'].includes(lead.status)) continue;
-      const day = new Date(v.visit_date + 'T00:00:00Z').toLocaleDateString('en-AU', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' });
-      await send({ type: 'visit', ref: `visit:${v.id}:${v.visit_date}`, lead,
-        body: shape(firstName(lead.name), fill(textOf('visit'), { first: firstName(lead.name), when: [day, v.visit_time].filter(Boolean).join(' at '), phone: companyPhone() })) });
-    }
-  }
+  // The site visit text is no longer sent on a timer: it carries the arrival window, so it
+  // goes when the route is locked in the afternoon before (utils/visits.js).
 }
 function start() {
   setInterval(() => { runReminders().catch(e => console.error('[sms] reminders:', e.message)); }, 5 * 60e3).unref();
@@ -243,13 +237,13 @@ function state() {
   return {
     configured: configured(), sender: sender() || null, mode: mode(), signName: signName(), trialNumbers: String(settingGet('sms_trial_numbers') || ''),
     types: TYPES.map(t => ({ key: t.key, label: t.label, when: t.when, vars: t.vars, on: isOn(t.key), text: textOf(t.key), def: t.def,
-      days: t.days ? daysOf(t.key) : null, measure: measure(shape(SAMPLE.first, fill(textOf(t.key), SAMPLE))), preview: shape(SAMPLE.first, fill(textOf(t.key), SAMPLE)) })),
+      days: t.days ? daysOf(t.key) : null, measure: measure(shape(SAMPLE.first, fill(textOf(t.key), SAMPLE), t.close)), close: t.close || 'Kind regards', preview: shape(SAMPLE.first, fill(textOf(t.key), SAMPLE), t.close) })),
     recent: db.prepare(`SELECT s.type, s.to_number, s.body, s.status, s.error, s.sent_by, s.created_at, s.parts, l.name AS lead FROM sms_log s LEFT JOIN leads l ON l.id=s.lead_id ORDER BY s.created_at DESC, s.rowid DESC LIMIT 25`).all(),
     counts: db.prepare("SELECT status, COUNT(*) n FROM sms_log WHERE created_at >= datetime('now','-30 days') GROUP BY status").all(),
   };
 }
 // What the wording is measured against on the Settings page: typical lengths, not a real client.
-const SAMPLE = { first: 'Jonathan', ref: 'ENQ-2026-1101', phone: '0414 147 008', code: '4821', quote: '1437.1', when: 'Friday 20 November at 10:30am',
+const SAMPLE = { first: 'Jonathan', ref: 'ENQ-2026-1101', phone: '0414 147 008', code: '4821', quote: '1437.1', when: 'Friday 20 November, between 10:00am and 11:00am', day: 'tomorrow, Friday 20 November', from: '10:00am', to: '11:00am',
   link: 'https://quotes.estatelandscapers.com.au/q/abcdefghijklmnop' };
 
 function save(b) {
@@ -277,4 +271,4 @@ async function check() {
   return { ok: true, balance: a.body.credit_balance != null ? a.body.credit_balance : null, sender: sender(), senderApproved: senderOk };
 }
 
-module.exports = { shape, measureShaped: text => measure(shape(SAMPLE.first, fill(text, SAMPLE))), TYPES, configured, mode, mobile, measure, fill, send, enquiry, invite, quoteSent, signed, runReminders, start, state, save, check, trialNumbers };
+module.exports = { textOf, closeOf, firstName, companyPhone, isOn, shape, measureShaped: text => measure(shape(SAMPLE.first, fill(text, SAMPLE))), TYPES, configured, mode, mobile, measure, fill, send, enquiry, invite, quoteSent, signed, runReminders, start, state, save, check, trialNumbers };

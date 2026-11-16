@@ -1177,3 +1177,31 @@ th{border-bottom-width:1px;}
 .lfnav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:42px;height:42px;border-radius:50%;border:0;background:rgba(255,255,255,.16);color:#fff;font-size:24px;line-height:1;cursor:pointer;}
 .lfnav:hover{background:rgba(255,255,255,.3);} .lfnav.prev{left:12px;} .lfnav.next{right:12px;}
 @media(max-width:820px){.lfgrid{grid-template-columns:repeat(3,1fr);gap:8px;}.lfnav{width:36px;height:36px;}}
+
+/* ---- v54: site visit preferences and the lock-in task ---- */
+.evw{font-size:8.5px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;color:var(--grey);}
+.evw.set{color:var(--amber);} .evw.sent{color:var(--green);}
+.lockalert{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%;text-align:left;background:var(--bad-soft);border:1.5px solid var(--red);border-radius:12px;padding:11px 14px;margin:0 0 12px;color:inherit;font:inherit;cursor:pointer;}
+.lockalert b{color:var(--red);font-size:13.5px;} .lockalert span{flex:1;min-width:200px;font-size:12.5px;} .lockalert em{font-style:normal;font-weight:700;color:var(--red);font-size:12.5px;}
+.lockcard{margin-bottom:12px;} .lockcard.due{border:1.5px solid var(--red);} .lockcard.due h2{color:var(--red);} .lockcard.ok{border-color:var(--green);} .lockcard.ok h2{color:var(--green);}
+.lockhead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;} .lockhead h2{margin:0 0 2px;}
+.lockcount{background:var(--red);color:#fff;border-radius:20px;font-size:11px;font-weight:800;padding:4px 10px;white-space:nowrap;}
+.lockrows{display:flex;flex-direction:column;margin-top:10px;}
+.lockrow{display:grid;grid-template-columns:minmax(0,1.6fr) auto 118px 82px minmax(96px,auto);gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);}
+.lockrow.clash .lockt{border-color:var(--amber);box-shadow:0 0 0 2px var(--warn-soft);}
+.lockwho{display:flex;flex-direction:column;min-width:0;} .lockwho b{font-size:13px;} .lockwho span{font-size:11.5px;color:var(--grey);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.lockrow .chip.pam{background:var(--info-soft);color:var(--blue);} .lockrow .chip.ppm{background:var(--warn-soft);color:var(--warn-ink);}
+.lockt{padding:7px 8px;font-size:12.5px;} .lockto{font-size:12px;color:var(--grey);font-variant-numeric:tabular-nums;}
+.lockst{font-size:11px;color:var(--grey);text-align:right;} .lockst.sent{color:var(--green);font-weight:700;}
+.lockfoot{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:10px;margin-top:2px;font-size:11.5px;}
+.lockfoot .warnt{color:var(--warn-ink);font-weight:600;}
+@media(max-width:820px){.lockrow{grid-template-columns:1fr 1fr;gap:6px 10px;}.lockwho{grid-column:1/-1;}.lockst{text-align:left;}}
+
+/* ---- v54: files grouped by quote revision ---- */
+.lfrev{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.62);color:#fff;border-radius:5px;font-size:9.5px;font-weight:700;padding:2px 6px;letter-spacing:.2px;}
+.lfgroup{border-top:1px solid var(--line);margin-top:14px;padding-top:12px;}
+.lfgroup.cur{border-top:2px solid var(--blue);}
+.lfgh{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;} .lfgh b{font-size:13.5px;} .lfgh .muted{font-size:11.5px;}
+.lfgroup .lfgrid{margin-top:10px;}
+.lfv_rev{background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:8px;padding:6px 8px;font-size:12px;max-width:190px;}
+.lfv_rev option{color:#111;}

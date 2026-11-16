@@ -251,7 +251,8 @@ router.get('/board', (req, res) => {
   // Future projects: jobs on hold until a date, soonest first.
   let held = []; try { held = require('../utils/holds').list().sort((a, b) => String(a.until || '0').localeCompare(String(b.until || '0'))); } catch (e) {}
   res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES, cards: all, won, parked, held,
-    parkedCount: db.prepare('SELECT COUNT(*) c FROM leads WHERE COALESCE(parked,0)=1').get().c });
+    parkedCount: db.prepare('SELECT COUNT(*) c FROM leads WHERE COALESCE(parked,0)=1').get().c,
+    lockin: (() => { try { const L = require('../utils/visits').lockin(); return { date: L.date, label: L.label, due: L.due, open: L.open, total: L.total, isToday: L.isToday, dueFrom: L.dueFrom }; } catch (e) { return null; } })() });
 });
 
 // Hot right now: every open lead whose quote link or estimator signal is hot (or warm),
@@ -274,8 +275,10 @@ function nextVisit(leadId) {
   const days = Math.round((new Date(v.visit_date + 'T00:00:00') - new Date(today + 'T00:00:00')) / 864e5);
   const label = new Date(v.visit_date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
   const moved = db.prepare("SELECT COUNT(*) n FROM site_visits WHERE lead_id=? AND status='cancelled'").get(leadId).n > 0;
-  return { id: v.id, date: v.visit_date, time: v.visit_time || null, inDays: days, label, moved,
-    text: `Site visit ${label}${v.visit_time ? ' ' + v.visit_time : ''} · ${days === 0 ? 'today' : days === 1 ? 'tomorrow' : 'in ' + days + ' days'}${moved ? ' · rescheduled' : ''}` };
+  const VW = require('../utils/visits');
+  const when = v.win_from && v.win_to ? `arriving ${v.win_from} to ${v.win_to}${v.win_sent_at ? '' : ' (client not told yet)'}` : (v.pref ? `prefers ${VW.prefWord(v.pref)}` : 'time set the day before');
+  return { id: v.id, date: v.visit_date, time: null, pref: v.pref || '', from: v.win_from || '', to: v.win_to || '', inDays: days, label, moved,
+    text: `Site visit ${label} · ${when} · ${days === 0 ? 'today' : days === 1 ? 'tomorrow' : 'in ' + days + ' days'}${moved ? ' · rescheduled' : ''}` };
 }
 router.get('/hot', (req, res) => {
   const LA = require('../utils/linkAnalytics'); const EST = require('../utils/estimator');
@@ -549,31 +552,27 @@ router.get('/:id/answers', (req, res) => {
 // ---- SITE VISIT CALENDAR -----------------------------------------------------
 // Standalone — no Google or Outlook connection. Fridays are the default visit day but
 // any date can be booked.
-const SLOTS = ['7:30am', '9:00am', '10:30am', '12:00pm', '1:30pm', '3:00pm'];
-function timeKey(t) {
-  const m = String(t || '').trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
-  if (!m) return -1;
-  let h = parseInt(m[1], 10) % 12; if ((m[3] || '').toLowerCase() === 'pm') h += 12;
-  return h * 60 + parseInt(m[2] || '0', 10);
-}
+const VISITS = require('../utils/visits');
 
 router.get('/calendar', (req, res) => {
   const from = req.query.from || new Date().toISOString().slice(0, 8) + '01';
   const to = req.query.to || (() => { const d = new Date(from); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10); })();
-  const rows = db.prepare(`SELECT v.*, l.name, l.suburb, l.address, l.phone, q.quote_number
+  const rows = db.prepare(`SELECT v.*, l.name, l.suburb, l.address, l.phone, l.email, q.quote_number
     FROM site_visits v LEFT JOIN leads l ON l.id=v.lead_id LEFT JOIN quotes q ON q.id=v.quote_id
     WHERE v.visit_date >= ? AND v.visit_date < ? AND v.status <> 'cancelled'
     ORDER BY v.visit_date`).all(from, to);
-  // Times are stored as text ("7:30am", "11:30am"), and text sorts "11:30am" before
-  // "7:30am" because "1" comes before "7". Sort by the clock instead. Untimed first.
-  rows.sort((a, b) => a.visit_date.localeCompare(b.visit_date) || timeKey(a.visit_time) - timeKey(b.visit_time));
-  res.json({ from, to, slots: SLOTS,
-    visits: rows.map(v => ({ id: v.id, leadId: v.lead_id, date: v.visit_date, time: v.visit_time,
-      // A street address (one with a number) beats the suburb on the calendar — it is what
-      // the crew navigates to. Suburb-only leads still show the suburb.
-      status: v.status, name: v.name, suburb: (v.address && /\d/.test(v.address)) ? v.address : (v.suburb || v.address || ''),
-      address: v.address || '', phone: v.phone,
-      quoteNumber: v.quote_number, note: v.note, bookedBy: v.booked_by })) });
+  rows.sort(VISITS.order);
+  res.json({ from, to, prefs: VISITS.PREFS, lockin: VISITS.lockin(),
+    visits: rows.map(v => ({ ...VISITS.row(v), quoteNumber: v.quote_number })) });
+});
+// The lock-in task for the next visit day: every visit, its preference, and its window.
+router.get('/visits/lockin', (req, res) => res.json(VISITS.lockin()));
+router.post('/visits/lockin', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const results = await VISITS.save({ items: Array.isArray(b.items) ? b.items : [], send: !!b.send, by: req.user ? (req.user.name || req.user.username) : '' });
+    res.json({ ok: true, results, lockin: VISITS.lockin() });
+  } catch (e) { console.error('[visits] lock-in', e); res.status(500).json({ error: e.message }); }
 });
 
 router.post('/calendar/book', (req, res) => {
@@ -581,18 +580,19 @@ router.post('/calendar/book', (req, res) => {
   if (!b.leadId || !b.date) return res.status(400).json({ error: 'Pick a lead and a date' });
   const l = db.prepare('SELECT * FROM leads WHERE id=?').get(b.leadId);
   if (!l) return res.status(404).json({ error: 'lead not found' });
-  const clash = db.prepare("SELECT COUNT(*) n FROM site_visits WHERE visit_date=? AND visit_time=? AND status='booked'").get(b.date, b.time || '');
-  if (clash.n && !b.force) return res.status(409).json({ error: `Something is already booked at ${b.time} on ${b.date}.` });
+  // No clock time is booked and nothing can clash: the client's morning/afternoon
+  // preference is noted, and the time is set when the route is locked in the day before.
+  const pref = VISITS.cleanPref(b.pref);
   const id = newId();
-  db.prepare(`INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,note,booked_by)
-    VALUES (?,?,?,?,?,?,?)`).run(id, l.id, l.quote_id || null, b.date, b.time || '', b.note || '',
+  db.prepare(`INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,pref,note,booked_by)
+    VALUES (?,?,?,?,'',?,?,?)`).run(id, l.id, l.quote_id || null, b.date, pref, b.note || '',
     req.user ? (req.user.name || req.user.username) : '');
   // Booking a visit moves the lead and diarises the reminder.
   db.prepare("UPDATE leads SET stage='visitbooked', status='Contacted', next_followup=?, updated_at=datetime('now') WHERE id=?")
     .run(b.date, l.id);
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
     VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, 'note', 'visitbooked', null, null,
-    req.user ? (req.user.name || req.user.username) : '', 'logged', `Site visit booked ${b.date} ${b.time || ''}`);
+    req.user ? (req.user.name || req.user.username) : '', 'logged', `Site visit booked ${b.date}${pref ? ' · prefers ' + VISITS.prefWord(pref) : ''}`);
   res.status(201).json({ ok: true, id });
 });
 
@@ -600,9 +600,12 @@ router.put('/calendar/:id', (req, res) => {
   const b = req.body || {};
   const v = db.prepare('SELECT * FROM site_visits WHERE id=?').get(req.params.id);
   if (!v) return res.status(404).json({ error: 'not found' });
-  db.prepare(`UPDATE site_visits SET visit_date=?, visit_time=?, status=?, note=?, updated_at=datetime('now') WHERE id=?`)
-    .run(b.date || v.visit_date, b.time !== undefined ? b.time : v.visit_time,
+  // Moving a visit to another day clears its arrival window: that day's route is not set.
+  const moved = b.date && b.date !== v.visit_date;
+  db.prepare(`UPDATE site_visits SET visit_date=?, pref=?, status=?, note=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.date || v.visit_date, b.pref !== undefined ? VISITS.cleanPref(b.pref) : (v.pref || ''),
       b.status || v.status, b.note !== undefined ? b.note : v.note, v.id);
+  if (moved) db.prepare("UPDATE site_visits SET win_from=NULL, win_to=NULL, win_sent_at=NULL, visit_time='' WHERE id=?").run(v.id);
   // Visit done -> the clock starts on the 48-hour quote rule.
   if (b.status === 'done' && v.lead_id) {
     db.prepare("UPDATE leads SET stage='visitdone', next_followup=?, updated_at=datetime('now') WHERE id=?")
@@ -708,6 +711,14 @@ for (const which of ['view', 'thumb']) router.get('/:id/files/:item/' + which, a
     require('stream').Readable.fromWeb(r.body).on('error', () => res.end()).pipe(res);
   } catch (e) { console.error('[files] ' + which, e.message); if (!res.headersSent) res.status(502).end(); }
 });
+// Move a file to another quote revision (or back to "before the first quote").
+router.post('/:id/files/:item/rev', async (req, res) => {
+  const l = leadOr404(req, res); if (!l) return;
+  try {
+    const m = await LF.owned(l, req.params.item); if (!m) return res.status(404).json({ error: 'not found' });
+    LF.setRev(l, m.id, (req.body || {}).rev); res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 router.delete('/:id/files/:item', async (req, res) => {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
   const l = leadOr404(req, res); if (!l) return;
@@ -767,16 +778,17 @@ router.get('/:id/docs/reply', (req, res) => {
   const me = settingGet('company_contact_name') || (req.user ? req.user.name || req.user.username : 'Smit');
   const body = `Hi ${first},
 
-Thanks for sending the drawings through — I've got everything I need to come and take a look.
+Thank you for sending the drawings through. I have everything I need to come and take a look.
 
-Site visits are Fridays. I have ${f[0].label} or ${f[1].label} available. Which suits you better?
+Site visits are Fridays. I have ${f[0].label} or ${f[1].label} available. Which suits you better, and is a morning or an afternoon easier for you?
 
-It takes about half an hour and there's no cost. Once I've measured up I'll have the detailed quote across to you within 48 hours.
+We plan the route the day before, once all the visits for that day are in, so I will confirm your arrival window that afternoon. The visit takes about half an hour and there is no cost. Once I have measured up, the detailed quote will be with you within 48 hours.
 
-Thanks,
+Kind regards
 ${me}
-${settingGet('company_phone') || ''}`;
-  res.json({ subject: 'Thanks for the drawings — booking your site visit', body,
+Estate Landscapers
+${require('../utils/leadTemplates').localPhone(settingGet('company_phone') || '')}`;
+  res.json({ subject: 'Your drawings — booking your site visit', body,
     channel: l.docs_channel || 'email', fridays: f });
 });
 
@@ -811,7 +823,7 @@ router.get('/sources', (req, res) => {
   res.json({ groups: groups(), referral: REFERRAL });
 });
 router.get('/call/script', (req, res) => {
-  res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2), slots: SLOTS });
+  res.json({ steps: CS.STEPS, sizes: CS.SIZES, thresholds: CS.T(), fridays: CS.nextFridays(2), prefs: VISITS.PREFS, slots: [] });
 });
 
 // Everything the rep has tapped so far, plus the live ballpark.
@@ -849,46 +861,43 @@ router.post('/:id/call/finish', (req, res) => {
   if (b.outcome && b.outcome !== 'talk') {
     const map = { callback: 'callback', noanswer: 'noanswer', notint: 'closeout', wrong: 'closeout' };
     stage = map[b.outcome] || stage;
-    if (b.outcome === 'callback') { next = b.callbackDate || null; msg = `Hi ${first},\n\nThanks for taking my call — I'll give you a ring back ${b.callbackWhen || 'as arranged'}.\n\n${me}`; }
+    if (b.outcome === 'callback') { next = b.callbackDate || null; msg = `Hi ${first},\n\nThank you for taking my call. I will give you a ring back ${b.callbackWhen || 'as arranged'}.\n\nTalk soon\n${me}\nEstate Landscapers\n${phone}`; }
     if (b.outcome === 'noanswer') { const d = new Date(); d.setDate(d.getDate() + 1); next = d.toISOString().slice(0, 10);
-      msg = `Hi ${first},\n\n${me} from Estate Landscapers here. I tried calling about your enquiry — when would suit for a quick chat?\n\n${phone}`; }
-    if (b.outcome === 'notint') { status = 'Lost'; msg = `Hi ${first},\n\nNo problem at all — I'll close it off. If it comes back around, just give me a call.\n\n${me}`; }
+      msg = `Hi ${first},\n\nI tried calling about your enquiry. When would suit for a quick chat?\n\nKind regards\n${me}\nEstate Landscapers\n${phone}`; }
+    if (b.outcome === 'notint') { status = 'Lost'; msg = `Hi ${first},\n\nNo problem at all. I will close it off. If it comes back around, just give me a call.\n\nBest wishes\n${me}\nEstate Landscapers\n${phone}`; }
     if (b.outcome === 'wrong') { status = 'Lost'; msg = ''; }
   } else if (bp.decline) {
     stage = 'closeout'; status = 'Lost';
     db.prepare('UPDATE leads SET declined_reason=? WHERE id=?').run(bp.reason, l.id);
-    msg = `Hi ${first},\n\nThanks for your time on the phone. As we discussed, with the access under 800mm we can't get machinery down the side, so it isn't a job we're able to take on.\n\nIf the access can be opened up at all, give me a call and we'll take another look.\n\nAll the best,\n${me}`;
+    msg = `Hi ${first},\n\nThank you for your time on the phone. As we discussed, with the access under 800mm we can't get machinery down the side, so it isn't a job we're able to take on.\n\nIf the access can be opened up at all, give me a call and we'll take another look.\n\nBest wishes\n${me}\nEstate Landscapers\n${phone}`;
     subject = 'Your landscaping enquiry — Estate Landscapers';
   } else if (b.visitOutcome === 'booked' && b.visitDate) {
     stage = 'confirm'; status = 'Contacted'; next = b.visitDate;
-    const vt = String(b.visitTime || '').trim();
+    const vp = VISITS.cleanPref(b.visitPref || b.visitTime);
     // Same calendar row the Book button writes, so a visit booked on the call shows up
     // on the calendar. Previously the script set the lead's date and wrote the email but
     // never touched site_visits — the visit existed in the message and nowhere else.
-    if (vt) {
-      const clash = db.prepare("SELECT lead_id FROM site_visits WHERE visit_date=? AND visit_time=? AND status='booked'").get(b.visitDate, vt);
-      if (clash && clash.lead_id !== l.id) return res.status(409).json({ error: `${vt} on ${b.visitDate} is already booked. Pick another time.` });
-    }
     const existing = db.prepare("SELECT id FROM site_visits WHERE lead_id=? AND status='booked'").get(l.id);
-    if (existing) db.prepare("UPDATE site_visits SET visit_date=?, visit_time=?, updated_at=datetime('now') WHERE id=?").run(b.visitDate, vt, existing.id);
-    else db.prepare(`INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,note,booked_by) VALUES (?,?,?,?,?,?,?)`)
-      .run(newId(), l.id, l.quote_id || null, b.visitDate, vt, 'Booked on the discovery call', req.user ? (req.user.name || req.user.username) : '');
+    if (existing) db.prepare("UPDATE site_visits SET visit_date=?, pref=?, visit_time='', win_from=NULL, win_to=NULL, win_sent_at=NULL, updated_at=datetime('now') WHERE id=?").run(b.visitDate, vp, existing.id);
+    else db.prepare(`INSERT INTO site_visits (id,lead_id,quote_id,visit_date,visit_time,pref,note,booked_by) VALUES (?,?,?,?,'',?,?,?)`)
+      .run(newId(), l.id, l.quote_id || null, b.visitDate, vp, 'Booked on the discovery call', req.user ? (req.user.name || req.user.username) : '');
     db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?,?,?)`)
       .run(newId(), l.id, 'note', 'visitbooked', null, null, req.user ? (req.user.name || req.user.username) : '', 'logged',
-        `Site visit booked ${b.visitDate}${vt ? ' ' + vt : ''} (on the call)`);
-    const d = new Date(b.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }) + (vt ? ` at ${vt}` : '');
+        `Site visit booked ${b.visitDate}${vp ? ' · prefers ' + VISITS.prefWord(vp) : ''} (on the call)`);
+    const d = new Date(b.visitDate + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
+    const prefLine = vp ? ` I have noted that ${VISITS.prefWord(vp) === 'morning' ? 'a morning' : 'an afternoon'} suits you best and we will do our best to fit that in.` : '';
     const plansWanted = (a.plans || []).filter(p => ['architectural', 'hydraulic', 'da', 'landscape'].includes(p));
     const pn = { architectural: 'architectural drawings', hydraulic: 'hydraulic drawings', da: 'DA consent', landscape: 'landscape plan' };
     const plansLine = plansWanted.length
       ? `\n\nBefore then, could you send through the ${plansWanted.map(p => pn[p]).join(' and the ')}? It means I can give you a proper number on the day rather than going away to work it out.`
       : '';
     const range = bp.tooUnknown ? '' : `\n\nFrom what you've told me it would usually land somewhere between $${bp.incLo.toLocaleString()} and $${bp.incHi.toLocaleString()} including GST. That's indicative only and subject to the site visit, final measurements and finish selections.${bp.exc.length ? ` It excludes: ${bp.exc.join('; ')}.` : ''}`;
-    msg = `Hi ${first},\n\nThanks for your time on the phone just now.\n\nI'll come out ${d} to measure up and take a proper look.${range}${plansLine}\n\nAny questions in the meantime, just give me a call.\n\nThanks,\n${me}\n${phone}`;
+    msg = `Hi ${first},\n\nThank you for your time on the phone just now.\n\nI have booked your site visit for ${d}, to measure up and take a proper look.${prefLine}\n\nWe plan the route the day before, once all the visits for that day are in, so you will get your arrival window by email and text that afternoon.${range}${plansLine}\n\nAny questions in the meantime, just give me a call.\n\nKind regards\n${me}\nEstate Landscapers\n${phone}`;
     subject = `Site visit ${d} — Estate Landscapers`;
   } else {
     stage = 'details'; status = 'Contacted';
     const d = new Date(); d.setDate(d.getDate() + 2); next = d.toISOString().slice(0, 10);
-    msg = `Hi ${first},\n\nThanks for your time on the phone. I'll follow up shortly about getting out to measure up.\n\n${me}\n${phone}`;
+    msg = `Hi ${first},\n\nThank you for your time on the phone. I will follow up shortly about getting out to measure up.\n\nKind regards\n${me}\nEstate Landscapers\n${phone}`;
     subject = 'Following up — Estate Landscapers';
   }
 
@@ -930,10 +939,13 @@ router.get('/:id/message', (req, res) => {
   }
   // A visit message with no date typed in uses the visit that is actually booked.
   let date = req.query.date, time = req.query.time;
-  if (!date) { try { const v = nextVisit(l.id); if (v) { date = v.date; time = time || v.time || ''; } } catch (e) {} }
+  let extra = {};
+  try { const v = nextVisit(l.id); if (v) { if (!date) date = v.date;
+    if (v.pref) extra.prefline = ` I have noted that ${v.pref === 'AM' ? 'a morning' : 'an afternoon'} suits you best, and we will do our best to fit that in.`;
+    if (v.from) { extra.from = v.from; extra.to = v.to; } } } catch (e) {}
   let estLink = ''; try { estLink = String(settingGet('est_url') || '').split('?')[0]; } catch (e) {}
   const msg = buildMessage({ lead: l, stage, sender: req.user ? (req.user.name || req.user.username) : '',
-    date, time, quoteLink, quoteNumber, estLink });
+    date, time, quoteLink, quoteNumber, estLink, extra });
   // Australian mobiles: 04xx -> 614xx for WhatsApp's international format.
   const digits = String(l.phone || '').replace(/[^\d+]/g, '');
   let intl = digits.replace(/^\+/, '');
@@ -1025,7 +1037,7 @@ function closeTemplates(l, me) {
   const proj = suburb ? `your ${suburb} project` : 'your landscaping project';
   let viaEstimator = false; try { viaEstimator = !!(JSON.parse(l.call_answers || '{}') || {})._estimator; } catch (e) {}
   const opener = `Hi ${first},\n\n${me} from Estate Landscapers here. Thank you for ${viaEstimator ? 'completing the online estimate for' : 'getting in touch about'} ${proj}, and for the detail you put into it.`;
-  const close = `Thanks again for your time, and all the best with the project.\n\nAll the best,`;
+  const close = `Thank you again for your time, and all the best with the project.\n\nKind regards`;
   const subject = `Your landscaping enquiry${l.enquiry_ref ? ' ' + l.enquiry_ref : ''}, Estate Landscapers`;
   const size = why => `${opener}\n\nHaving looked through everything, we don't think we're the right fit for this one. ${why} We'd rather say so now than have you waiting on a quote that wouldn't serve you well.\n\nIf it helps, we're glad to point you towards a landscaper better matched to the job, or answer a quick question if you're weighing up options. Just reply to this email.\n\n${close}`;
   return {

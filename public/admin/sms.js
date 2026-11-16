@@ -23,7 +23,7 @@ async function smsSettings(host) {
         <input id="smsTrial" value="${esc(s.trialNumbers)}" placeholder="0412 345 678, 0498 765 432">
         <div class="hint">In Trial mode only these mobiles receive anything. Use your own phone and the dummy leads' numbers.</div></div>
       <div class="field" style="margin:0;width:150px;"><label for="smsSign">Sign-off name</label><input id="smsSign" maxlength="30" value="${esc(s.signName || '')}">
-        <div class="hint">The name under "Thanks".</div></div>
+        <div class="hint">The name under the sign-off.</div></div>
     </div>
     <div class="sms-actions">
       <button class="btn btn-ghost btn-sm" id="smsCheck">Check connection</button>
@@ -32,7 +32,7 @@ async function smsSettings(host) {
       <span class="muted" id="smsCheckOut" style="font-size:11.5px;"></span>
     </div>
     <div class="alab" style="margin-top:16px;">Messages</div>
-    <div class="muted" style="font-size:11.5px;margin-bottom:4px;">You write the middle only. Every text is sent as: <b>Hi (first name),</b> your wording, then <b>Thanks / ${esc(s.signName || 'Smit')} / Estate Landscapers / phone</b>. The counts below include those lines.</div>
+    <div class="muted" style="font-size:11.5px;margin-bottom:4px;">You write the middle only. Every text is sent as: <b>Hi (first name),</b> your wording, then <b>Kind regards / ${esc(s.signName || 'Smit')} / Estate Landscapers / phone</b> (a few messages use Many thanks or See you then). The counts below include those lines.</div>
     ${s.types.map(t => `<div class="sms-type" data-k="${t.key}">
       <div class="sms-head">
         <label class="inv-switch"><input type="checkbox" class="smsOn" ${t.on ? 'checked' : ''}><span class="track"></span><span><b>${esc(t.label)}</b> <span class="muted" style="font-weight:500;">${esc(t.when)}</span></span></label>

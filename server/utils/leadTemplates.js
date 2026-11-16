@@ -53,7 +53,7 @@ const STAGES = [
 //
 //     <the message>
 //
-//     Thanks
+//     <sign-off chosen per message: Kind regards, Many thanks, Best wishes, Talk soon>
 //     <sender>
 //     Estate Landscapers
 //     <phone>
@@ -61,11 +61,14 @@ const STAGES = [
 //
 // Fills in: {{name}} first name · {{job}} what they want done · {{address}} site address ·
 // {{suburb}} · {{me}} who is sending · {{slot}} "on Friday 20 November at 9:00am" ·
-// {{date}} {{time}} · {{email}} {{phone}} the office · {{quotelink}} {{quote}} the quote ·
+// {{visitday}} "Friday 20 November" (site visits never carry a time: the route is set the
+// day before) · {{prefline}} the client's morning/afternoon preference · {{from}} {{to}} the
+// arrival window once locked in · {{date}} {{time}} · {{email}} {{phone}} the office · {{quotelink}} {{quote}} the quote ·
 // {{estlink}} {{code}} the online estimate · {{ref}} enquiry reference.
 const DEFAULTS = {
   // ---- Step 1: enquiry — a message after every unanswered call -------------------------
   call1: {
+    close: 'Kind regards',
     subject: 'Your {{jobshort}} enquiry — Estate Landscapers',
     body: `Thank you for your enquiry about {{job}}{{at_address}}.
 
@@ -77,6 +80,7 @@ If it is easier, you can also answer the same questions online in about 8 minute
     sms: `I tried calling about your {{jobshort}} enquiry. When is a good time for a quick call?`,
   },
   call2: {
+    close: 'Kind regards',
     subject: 'Tried you again — your {{jobshort}} enquiry',
     body: `I have tried you a second time about your {{job}} enquiry and missed you again — no problem, I know the days get busy.
 
@@ -86,6 +90,7 @@ Let me know a time that suits, or call me whenever you are free. Before 8 am and
     sms: `I missed you again about your {{jobshort}} enquiry. What time suits for a 10 minute call?`,
   },
   call3: {
+    close: 'Kind regards',
     subject: 'Still keen to help with your {{jobshort}} project',
     body: `I have called three times now about your {{job}} enquiry and have not been able to reach you.
 
@@ -95,6 +100,7 @@ If your plans have changed or you have gone with someone else, just let me know 
     sms: `Third try about your {{jobshort}} enquiry. If it is still going ahead, reply with a time to call. If not, just let me know.`,
   },
   call4: {
+    close: 'Kind regards',
     subject: 'Last call — your {{jobshort}} enquiry',
     body: `This is my last attempt to reach you about your {{job}} enquiry. I do not want to keep chasing if the timing is not right.
 
@@ -104,6 +110,7 @@ Otherwise I will close the enquiry at the end of the week. You are welcome to co
     sms: `Last try about your {{jobshort}} enquiry. If you still want a price, call or reply this week. Otherwise I will close it off.`,
   },
   callback: {
+    close: 'Talk soon',
     subject: 'Call back {{slot}} — Estate Landscapers',
     body: `Thank you for picking up just now. As agreed, I will call you back {{slot}} to go through your {{job}} project.
 
@@ -114,6 +121,7 @@ If that time stops suiting, reply here or call me and we will move it.`,
   },
   // ---- Step 2: qualifying ------------------------------------------------------------
   qualified: {
+    close: 'Kind regards',
     subject: 'Next steps for your {{jobshort}} project',
     body: `Thank you for your time on the phone. It was good to go through your {{job}} project{{at_address}}.
 
@@ -130,6 +138,7 @@ If you have any questions, call me.`,
     sms: `Thank you for the chat. Next step: please email any drawings and photos of the front, back and side access to {{email}}`,
   },
   estimatedone: {
+    close: 'Talk soon',
     subject: 'Your online estimate — Estate Landscapers',
     body: `Thank you for completing the online estimate for your {{job}} project{{at_address}}. I have your answers in front of me.
 
@@ -141,6 +150,7 @@ Your code still works if you would like to change any answers: {{estlink}}`,
     sms: `Thank you for completing the online estimate. I would like a 5 minute call to confirm a couple of answers. When suits?`,
   },
   docsasked: {
+    close: 'Many thanks',
     subject: 'Drawings and photos for your {{jobshort}} project',
     body: `To take your {{job}} project{{at_address}} to the next step, I need the following from you:
 
@@ -154,6 +164,7 @@ Once they are in, I will check the scope, confirm the ballpark and book a Friday
     sms: `To move ahead I need your drawings (if any) and photos of the front, back and side access. Please email them to {{email}}`,
   },
   disqualified: {
+    close: 'Best wishes',
     subject: 'Your landscaping enquiry — Estate Landscapers',
     body: `Thank you for going through your {{job}} project with us and for being upfront about where you have landed.
 
@@ -164,19 +175,25 @@ If the scope, timing or budget changes down the track, call me and we will pick 
   },
   // ---- Step 3: documentation -------------------------------------------------------
   docsin: {
+    close: 'Kind regards',
     subject: 'Got your drawings — booking the site visit',
     body: `Thank you, I have received what you sent for the {{job}} project{{at_address}} and have been through it.
 
 The next step is a site visit so we can measure up, check levels and falls, and look at the access for machinery and materials. We do visits on Fridays and they take about 30 to 45 minutes.
 
-I have {{slot}} available. Does that suit? If not, tell me which Friday and whether morning or afternoon is better, and I will fit around you.
+The next one I have is {{visitday}}. Does that day suit? If not, tell me which Friday works. Let me know too whether a morning or an afternoon is better for you, and we will do our best to fit that in.
+
+We plan the route the day before, once all the visits for that day are in, so I will confirm your arrival window that afternoon.
 
 After the visit your itemised quote follows within 48 hours.`,
-    sms: `I have your drawings, thank you. Next is a site visit of about 30 to 45 minutes. Does {{slot}} suit?`,
+    sms: `I have your drawings, thank you. Next is a site visit of about 30 to 45 minutes. Does {{visitday}} suit, and is morning or afternoon better?`,
   },
   visitbooked: {
-    subject: 'Site visit confirmed {{slot}}',
-    body: `Confirming your site visit {{slot}}{{at_address}}.
+    close: 'Kind regards',
+    subject: 'Site visit booked for {{visitday}}',
+    body: `Your site visit is booked for {{visitday}}{{at_address}}.{{prefline}}
+
+We plan the route the day before, once all the visits for that day are in. You will get your arrival window by email and text that afternoon.
 
 On the day we will:
 • measure each area for the {{job}}
@@ -186,10 +203,22 @@ On the day we will:
 
 It takes about 30 to 45 minutes. It helps if we can get to the whole area, including the side access, and if any pets are secured. If you have drawings we have not seen yet, please have them handy.
 
-Your itemised quote follows within 48 hours of the visit. If you need to change the time, call me.`,
-    sms: `Your site visit is confirmed {{slot}}. Please keep the side access clear. Call me if you need to change it.`,
+Your itemised quote follows within 48 hours of the visit. If you need to change the day, call me.`,
+    sms: `Your site visit is booked for {{visitday}}. I will send your arrival window the afternoon before. Call me if the day needs to change.`,
+  },
+  // Sent the afternoon before, when the day's route and times are locked in.
+  visitwindow: {
+    close: 'See you then',
+    subject: 'Your site visit {{visitday}}: arriving between {{from}} and {{to}}',
+    body: `Your site visit is {{visitday}}{{at_address}}. We will be with you between {{from}} and {{to}}.
+
+It takes about 30 to 45 minutes. It helps if we can get to the whole area, including the side access, and if any pets are secured. If you have drawings we have not seen yet, please have them handy.
+
+If that window does not work, call me today and we will sort out another.`,
+    sms: `Your site visit is {{visitday}}. We will be with you between {{from}} and {{to}}. Please keep the side access clear. Call me today if that does not work.`,
   },
   visitdone: {
+    close: 'Kind regards',
     subject: 'Thanks for having us out — your quote is next',
     body: `Thank you for your time on site today. I have the measurements, levels and photos I need for the {{job}}.
 
@@ -200,6 +229,7 @@ If anything comes to mind in the meantime that we did not cover on site, reply h
   },
   // ---- Step 4: quote ----------------------------------------------------------------
   quotesent: {
+    close: 'Kind regards',
     subject: 'Your quote {{quote}} — Estate Landscapers',
     body: `Your quote for the {{job}}{{at_address}} is ready:
 
@@ -215,6 +245,7 @@ I will give you a call to check it came through and to walk you through anything
 I will call to walk you through it.`,
   },
   quotechase1: {
+    close: 'Kind regards',
     subject: 'Your quote {{quote}} — any questions?',
     body: `I wanted to check you have had a chance to look through the quote for your {{job}}:
 
@@ -226,6 +257,7 @@ I am happy to talk it through whenever suits.`,
     sms: `Have you had a chance to look at quote {{quote}}? I am happy to adjust anything or explain a figure. {{quotelink}}`,
   },
   quotechase2: {
+    close: 'Kind regards',
     subject: 'Your quote {{quote}} — how is it looking?',
     body: `Following up on the quote for your {{job}}:
 
@@ -237,6 +269,7 @@ Our schedule fills a few weeks ahead, so if you have a start date in mind it is 
     sms: `Checking in on quote {{quote}}. If the price or scope needs work, we can stage or adjust it. Call me any time.`,
   },
   quotefinal: {
+    close: 'Kind regards',
     subject: 'Last check-in on your quote {{quote}}',
     body: `This is my last check-in on the quote for your {{job}}:
 
@@ -249,6 +282,7 @@ If it is not going ahead, that is completely fine. A short reply lets me close t
   },
   // ---- Step 5: outcome ---------------------------------------------------------------
   won: {
+    close: 'Kind regards',
     subject: 'Thank you — next steps for your project',
     body: `Thank you for going ahead with the {{job}}{{at_address}}. We appreciate the trust.
 
@@ -263,6 +297,7 @@ I will be in touch shortly with the start date. In the meantime, call me with an
     sms: `Thank you for going ahead with us. I will be in touch shortly with your selections and a start date.`,
   },
   lost: {
+    close: 'Kind regards',
     subject: 'Thanks for the opportunity',
     body: `Thank you for the opportunity to quote on your {{job}}, and for letting us know your decision.
 
@@ -272,6 +307,7 @@ All the best with the project.`,
     sms: `Thank you for the opportunity to quote, and all the best with the project. If anything changes, call me.`,
   },
   closeout: {
+    close: 'Best wishes',
     subject: 'Closing off your enquiry',
     body: `I have not been able to reach you about your {{job}} enquiry, so I will close it off for now rather than keep following up.
 
@@ -280,6 +316,7 @@ Nothing is lost. Your details stay on file. If the project comes back around, ca
   },
   // ---- not a board stage: the check-in sent while a job is on hold ---------------------
   holdcheckin: {
+    close: 'Kind regards',
     subject: 'Checking in on your landscaping project',
     body: `I hope everything is going well with the build. I am checking in on your {{job}} project{{at_address}}, which we have on hold until {{holdmonth}} as you asked.
 
@@ -300,7 +337,7 @@ function localPhone(p) {
   if (d.length === 11 && d.startsWith('61')) return '0' + d.slice(2);
   return d.length >= 8 ? d : String(p || '').trim();
 }
-// What an email keeps of the sign-off: "Thanks", then the styled signature takes over from
+// What an email keeps of the sign-off: the closing words ("Kind regards"), then the styled signature takes over from
 // the name down, so the name and number are not printed twice.
 function forEmail(body, signoff) {
   const b = String(body || '').replace(/\s+$/, '');
@@ -326,6 +363,10 @@ function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber,
     try { const c = JSON.parse(custom); subject = c.subject || subject; body = c.body || body; sms = c.sms || sms; } catch (e) {}
   }
   const d = niceDate(date);
+  // A site visit never carries a time: the route is set the day before. A saved template
+  // that still says {{slot}} or {{time}} for a visit gets the day only.
+  const visitMsg = ['docsin', 'visitbooked', 'visitwindow'].includes(key);
+  if (visitMsg) time = '';
   const slot = d ? `on ${d}${time ? ' at ' + time : ''}` : (time ? `at ${time}` : 'this Friday');
   const job = String(lead.job_type || '').trim() || 'landscaping';
   // Lower-case the first word so it reads mid-sentence ("your turf, pebbles… enquiry").
@@ -336,7 +377,7 @@ function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber,
     name: (lead.name || 'there').trim().split(/\s+/)[0],
     job: jobText, jobshort: jobText.length > 28 ? 'landscaping' : jobText,
     suburb: lead.suburb || lead.address || '', address: addr, at_address: addr ? ` at ${addr}` : '',
-    me, date: d, time: time || '', slot,
+    me, date: d, time: time || '', slot, visitday: d || 'this Friday', prefline: '', from: '', to: '',
     email: settingGet('company_email') || 'info@estatelandscapers.com.au',
     phone: localPhone(settingGet('company_phone') || ''),
     quotelink: quoteLink || '', quote: quoteNumber || '',
@@ -351,11 +392,12 @@ function buildMessage({ lead, stage, sender, date, time, quoteLink, quoteNumber,
   const tidy = s => s.replace(/[ \t]{2,}/g, ' ').replace(/ +([.,])/g, '$1').replace(/\n{3,}/g, '\n\n').trim();
   // Every message, long or short, has the same shape: greeting, message, sign-off.
   const signoff = [me, 'Estate Landscapers', vals.phone].filter(Boolean).join('\n');
-  const wrap = text => `Hi ${vals.name},\n\n${text}\n\nThanks\n${signoff}`;
+  const close = base.close || 'Kind regards';
+  const wrap = text => `Hi ${vals.name},\n\n${text}\n\n${close}\n${signoff}`;
   // A template saved with its own greeting or sign-off is left exactly as written.
   const shaped = text => /^\s*(hi|hello|dear)\b/i.test(text) ? text : wrap(text);
   return { subject: fill(subject).replace(/\s{2,}/g, ' ').trim(), body: shaped(tidy(fill(paras.join('\n\n')))),
-    sms: shaped(fill(sms).replace(/[ \t]{2,}/g, ' ').replace(/ +([.,])/g, '$1').trim()), signoff, template: key };
+    sms: shaped(fill(sms).replace(/[ \t]{2,}/g, ' ').replace(/ +([.,])/g, '$1').trim()), signoff, close, template: key };
 }
 
 // What must be known before a lead can sensibly move to the next phase.

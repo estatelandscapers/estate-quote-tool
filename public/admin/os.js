@@ -64,11 +64,12 @@ async function osWelcome(force) {
   const cards = [
     ['hot', hotRows.length, 'Hot leads to call', hotRows.length ? hotRows.slice(0, 2).map(x => x.name).join(', ') + (hotRows.length > 2 ? ` +${hotRows.length - 2}` : '') : 'Nobody waiting on a call', toLeads('summary')],
     ['amb', uncalled.length, 'Ad leads not called yet', uncalled.length ? uncalled.slice(0, 2).map(x => x.client).join(', ') : 'Every ad lead has been contacted', () => { state.tab = 'marketing'; route(); }],
-    ['bl', visits.length, visits.length === 1 ? 'Site visit today' : 'Site visits today', visits.length ? visits.map(v => [v.time, v.name].filter(Boolean).join(' ')).slice(0, 2).join(' · ') : 'Nothing booked today', toLeads('calendar')],
+    ['bl', visits.length, visits.length === 1 ? 'Site visit today' : 'Site visits today', visits.length ? visits.map(v => [v.from, v.name].filter(Boolean).join(' ')).slice(0, 2).join(' · ') : 'Nothing booked today', toLeads('calendar')],
     ['amb', due, 'Lead follow-ups due', due ? (overdue ? `${overdue} overdue · ${due - overdue} today` : 'All due today') : 'Nothing due today', toLeads('summary')],
     ['amb', chase.length, 'Quotes to chase', chase.length ? chase.slice(0, 2).map(q => q.client || q.quoteNumber).join(', ') + (chase.length > 2 ? ` +${chase.length - 2}` : '') : 'No quotes past the follow-up age', toQuotes],
     ['gr', won.length, won.length === 1 ? 'Quote accepted, last 48 h' : 'Quotes accepted, last 48 h', won.length ? won.map(w => w.name).slice(0, 2).join(', ') : 'None in the last two days', toLeads('summary')]
   ];
+  if (board && board.lockin && board.lockin.due) cards.unshift(['hot', board.lockin.open, `Site visit time${board.lockin.open === 1 ? '' : 's'} to lock in`, `Critical: ${board.lockin.label}. Set the route and send the arrival windows.`, toLeads('calendar')]);
   if (backSoon.length) cards.push(['bl', backSoon.length, backSoon.length === 1 ? 'Job coming off hold' : 'Jobs coming off hold', backSoon.slice(0, 2).map(h => `${h.name} in ${h.daysLeft} d`).join(', '), toLeads('summary')]);
   const total = hotRows.length + uncalled.length + visits.length + due + chase.length;
   el.querySelector('#oswDate').textContent += total ? ` · ${total} thing${total === 1 ? '' : 's'} need${total === 1 ? 's' : ''} you today` : ' · all clear';

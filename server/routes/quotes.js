@@ -382,6 +382,17 @@ router.get('/pending/price-items', (req, res) => {
     marginPct: r.val_standard > 0 ? Math.round((r.val_standard - (r.cost_standard || 0)) / r.val_standard * 1000) / 10 : null,
   })));
 });
+// The job's photos and files, each tagged with the revision it was added under, so the
+// quote page can show what came in at each round. They belong to the lead, not the quote.
+router.get('/:id/files', async (req, res) => {
+  const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: 'not found' });
+  const LF = require('../utils/leadFiles');
+  const l = LF.leadOfQuote(q);
+  if (!l) return res.json({ leadId: null, files: [], revisions: [], current: q.quote_number });
+  try { res.json({ leadId: l.id, leadName: l.name, current: q.quote_number, canDelete: req.user.role === 'admin', ...(await LF.list(l)) }); }
+  catch (e) { console.error('[files] quote list', e.message); res.status(502).json({ error: 'OneDrive could not be reached. Try again in a moment.' }); }
+});
 router.get('/:id', (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found' });

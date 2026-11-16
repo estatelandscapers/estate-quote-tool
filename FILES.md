@@ -23,3 +23,6 @@ Code: `server/utils/leadFiles.js`, `server/routes/publicHipages.js`, routes unde
 The tool also watches one folder of the Zoho mailbox (default `Leads`). Any email moved into that folder becomes a lead: the sender is the client, the message is the notes, a mobile in the message is picked up, and attachments go into Photos & files. Nothing else in the mailbox is read and nothing is marked or moved.
 
 Variables: `ZOHO_IMAP_USER`, `ZOHO_IMAP_PASS` (a Zoho app-specific password); optional `ZOHO_IMAP_FOLDER` (default `Leads`), `ZOHO_IMAP_HOST` (default `imappro.zoho.com.au`), `ZOHO_POLL_MINUTES` (default 2).
+
+## Files by quote revision (v54)
+The quote page shows the job's photos and files grouped by revision, newest first. A file sits under the revision that was current when it was added; files from before the first quote (website, hipages, early site photos) are in their own group. Adding from a quote page files it under that revision. A file can be moved to another revision from the viewer. On the lead screen each thumbnail carries its revision number. Internal only — the client's quote link never shows them.
