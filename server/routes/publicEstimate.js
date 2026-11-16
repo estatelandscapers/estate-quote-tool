@@ -153,6 +153,7 @@ router.post('/auth', (req, res) => {
   res.json({ ok: true, token: l.est_token, first: String(l.name || '').split(' ')[0], ref: l.enquiry_ref || null,
     expires: l.est_code_expires, steps: EST.onlineSteps(), sizes: EST.sizesFor(), answers, saved: Object.keys(a.current || {}).length,
     completed: !!a.completedAt, versions: a.versions.length, booked: l.est_status === 'booked',
+    small: !!a.completedAt && EST.isSmall(require('../utils/callScript').ballpark(a.current || {})),
     reactions: REACTIONS });
 });
 
@@ -165,6 +166,7 @@ router.post('/auth-resume', (req, res) => {
   res.json({ ok: true, first: String(l.name || '').split(' ')[0], email: l.email, expires: l.est_code_expires,
     steps: EST.onlineSteps(), sizes: EST.sizesFor(), answers: { ...EST.prefillFrom(l), ...(a.current || {}) }, saved: Object.keys(a.current || {}).length,
     completed: !!a.completedAt, versions: a.versions.length, booked: l.est_status === 'booked',
+    small: !!a.completedAt && EST.isSmall(require('../utils/callScript').ballpark(a.current || {})),
     reactions: REACTIONS });
 });
 
