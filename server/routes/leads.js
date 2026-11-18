@@ -60,7 +60,10 @@ function view(l) {
     parked: !!l.parked, overridden: !!l.stage_override,
     msgCount: db.prepare('SELECT COUNT(*) c FROM lead_messages WHERE lead_id=?').get(l.id).c,
     filesCount: l.files_count || 0, smallProject: !!l.small_project, enquiryRef: l.enquiry_ref || null, declinedReason: l.declined_reason || null,
-    quoteId: l.quote_id, quoteNumber: q ? q.quote_number : null, quoteStatus: q ? q.status : null,
+    // The lead row points at the first quote made for it. What the team wants to open is the
+    // newest revision of that quote, so the number, status and the button all use that one.
+    ...(() => { let n = null; try { n = q ? latestRevision(q) : null; } catch (e) {} n = n || q;
+      return { quoteId: l.quote_id, latestQuoteId: n ? n.id : l.quote_id, quoteNumber: n ? n.quote_number : null, quoteStatus: n ? n.status : null }; })(),
     quoteMissing: !!(l.quote_id && !q),
     createdAt: l.created_at };
 }

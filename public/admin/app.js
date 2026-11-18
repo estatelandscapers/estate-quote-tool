@@ -2041,7 +2041,7 @@ async function leadConsole(v) {
     body.querySelector('.tlFull').style.display = more ? '' : 'none';
   });
   const lb = $('#leadBehaviour'); if (lb) lb.addEventListener('click', () => openBehaviour(l.quoteId));
-  const gq = $('#goQuote'); if (gq) gq.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = l.quoteId; state.leadId = null; shell(); });
+  const gq = $('#goQuote'); if (gq) gq.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = l.latestQuoteId || l.quoteId; state.leadId = null; shell(); });
   const tq = $('#toQuote'); if (tq) tq.addEventListener('click', () => convertDialog(l, async fromQuoteId => {
     const r = await api('/leads/' + l.id + '/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fromQuoteId ? { fromQuoteId } : {}) });
     if (r.error) return toast(r.error);
