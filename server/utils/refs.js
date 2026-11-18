@@ -15,8 +15,10 @@ function sydneyParts(d = new Date()) {
   return { year: p.year, month: p.month, day: p.day, ymd: `${p.year}-${p.month}-${p.day}` };
 }
 
-function nextRef() {
-  const { year, month } = sydneyParts();
+// `when` lets a lead that arrived before every enquiry was numbered take a number from the
+// month it actually came in, so references stay in date order.
+function nextRef(when) {
+  const { year, month } = sydneyParts(when instanceof Date && !isNaN(when) ? when : new Date());
   const key = `enquiry_seq_${year}${month}`;
   const n = (parseInt(settingGet(key) || '0', 10) || 0) + 1;
   settingSet(key, String(n));

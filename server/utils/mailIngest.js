@@ -267,7 +267,7 @@ function realAttachments(parsed) {
 async function attachToLead(leadId, parsed) {
   const atts = realAttachments(parsed); if (!atts.length) return 0;
   const LF = require('./leadFiles'); let n = 0;
-  for (const a of atts) { try { await LF.addBytes(leadId, a.filename || ('attachment-' + (n + 1)), a.content, 'Email'); n++; } catch (e) { console.error('[mail] attachment not saved:', e.message); } }
+  for (const a of atts) { try { await LF.addBytes(leadId, a.filename || ('attachment-' + (n + 1)), a.content, 'Email', 'client'); n++; } catch (e) { console.error('[mail] attachment not saved:', e.message); } }
   return n;
 }
 async function pollZoho({ limit = 30 } = {}) {

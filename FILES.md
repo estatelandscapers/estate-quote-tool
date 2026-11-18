@@ -26,3 +26,21 @@ Variables: `ZOHO_IMAP_USER`, `ZOHO_IMAP_PASS` (a Zoho app-specific password); op
 
 ## Files by quote revision (v54)
 The quote page shows the job's photos and files grouped by revision, newest first. A file sits under the revision that was current when it was added; files from before the first quote (website, hipages, early site photos) are in their own group. Adding from a quote page files it under that revision. A file can be moved to another revision from the viewer. On the lead screen each thumbnail carries its revision number. Internal only — the client's quote link never shows them.
+
+## ENQ number and folder for every enquiry (v55)
+Every lead, whatever door it came through, has an ENQ reference (`ENQ-YYYY-MMNN`). Leads that existed before v55 were numbered into the month they arrived.
+
+Each has one OneDrive folder:
+
+    Estate Enquiries / <year> / ENQ-2026-1101 — Name — Suburb /
+        01 From client          drawings, their photos, hipages photos, email attachments
+        02 Site photos          photos added in the tool
+        03 Quote and contract
+
+- Drop a file into the folder (or a sub-folder) in OneDrive and it shows on the lead and the quote.
+- Adding from the tool: photos and video go to Site photos, documents to From client, unless a sub-folder is picked.
+- When a lead is closed or lost its folder moves to `Estate Enquiries / <year> / Closed /`; reopening moves it back.
+- Files that lived in the old `HIP-…` and `LEAD-…` folders are moved in and the empty old folders removed (OneDrive recycle bin).
+- A background pass every 2 minutes numbers new leads, makes missing folders (10 at a time) and moves folders for leads closed or reopened.
+
+Code: `ensureEnq`, `enqTick` in `server/utils/leadFiles.js`.

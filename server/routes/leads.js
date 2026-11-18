@@ -217,7 +217,7 @@ router.get('/board', (req, res) => {
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '', source: l.source || '',
       phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase, overridden: !!l.stage_override,
       nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup, small: !!l.small_project, createdAt: l.created_at,
-      files: l.files_count || 0,
+      files: l.files_count || 0, ref: l.enquiry_ref || '',
       quoteMissing: !!(l.quote_id && !quote),
       quoteId: fullQ ? fullQ.id : null, quoteNumber: fullQ ? fullQ.quote_number : null, quoteStatus: fullQ ? fullQ.status : null,
       value: value != null ? Math.round(value) : null,
@@ -690,7 +690,7 @@ router.post('/:id/files/session', async (req, res) => {
   const name = String((req.body || {}).name || '').trim().slice(0, 150), size = +(req.body || {}).size || 0;
   if (!name) return res.status(400).json({ error: 'file name missing' });
   if (size > 250 * 1024 * 1024) return res.status(400).json({ error: 'That file is over 250 MB.' });
-  try { res.json(await LF.session(l, name, req.user.name || req.user.username)); }
+  try { res.json(await LF.session(l, name, req.user.name || req.user.username, String((req.body || {}).where || ''))); }
   catch (e) { console.error('[files] session', e.message); res.status(502).json({ error: 'OneDrive could not be reached. Try again in a moment.' }); }
 });
 for (const which of ['view', 'thumb']) router.get('/:id/files/:item/' + which, async (req, res) => {

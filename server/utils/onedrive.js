@@ -80,17 +80,22 @@ function folderPathFor(meta) {
 }
 
 // Create the enquiry folder (and the year folder above it). Returns its webUrl so the lead
-// can carry a clickable link. conflictBehavior=replace is safe here: refs are unique.
+// can carry a clickable link. 
 async function ensureFolder(meta) {
   await gfetch(`${drive()}/root:/${encPath(ROOT)}:/children`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: String(meta.year), folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }),
   }).catch(() => {});           // already exists — fine
+  // Never 'replace': from v55 the folder may already exist with sub-folders and files in it
+  // (every lead gets one). Create it if missing, otherwise use the one that is there.
   const made = await gfetch(`${drive()}/root:/${encPath(`${ROOT}/${meta.year}`)}:/children`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: folderNameFor(meta), folder: {}, '@microsoft.graph.conflictBehavior': 'replace' }),
-  });
-  return made.webUrl || '';
+    body: JSON.stringify({ name: folderNameFor(meta), folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }),
+  }).catch(() => null);
+  if (made && made.id) return made.webUrl || '';
+  const have = await folderByPath(folderPathFor(meta));
+  if (!have) throw new Error('could not create the enquiry folder');
+  return have.webUrl || '';
 }
 
 // A pre-authorised URL the BROWSER uploads to. It carries its own auth, so no Graph token
@@ -184,10 +189,31 @@ async function putBytes(folderId, fileName, buf) {
   }
   return { id: last && last.id, name: (last && last.name) || name };
 }
+// ---- v55: one ENQ folder per enquiry, with standard sub-folders -------------------
+async function childFolders(folderId) {
+  const r = await gfetch(`${drive()}/items/${folderId}/children?$top=200&$select=id,name,folder,webUrl`);
+  return (r.value || []).filter(x => x.folder).map(x => ({ id: x.id, name: x.name, webUrl: x.webUrl || '' }));
+}
+// Find or make a folder directly under a folder we hold by ID.
+async function ensureChild(parentId, name) {
+  const nm = safeName(name);
+  const made = await gfetch(`${drive()}/items/${parentId}/children`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: nm, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }) }).catch(() => null);
+  if (made && made.id) return { id: made.id, webUrl: made.webUrl || '' };
+  const hit = (await childFolders(parentId)).find(x => x.name.toLowerCase() === nm.toLowerCase());
+  if (!hit) throw new Error('could not create the folder ' + nm);
+  return hit;
+}
+// Move a file or folder under another folder. A name already taken there is kept apart.
+async function moveItem(id, parentId) {
+  return gfetch(`${drive()}/items/${id}?@microsoft.graph.conflictBehavior=rename`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parentReference: { id: parentId } }) });
+}
+async function itemInfo(id) { return gfetch(`${drive()}/items/${id}?$select=id,name,webUrl,parentReference`); }
 async function removeItem(id) { const r = await graphRaw(`${drive()}/items/${id}`, { method: 'DELETE' }); if (!r.ok && r.status !== 404) throw new Error('OneDrive delete failed: ' + r.status); }
 const contentOf = id => graphRaw(`${drive()}/items/${id}/content`);
 const thumbOf = id => graphRaw(`${drive()}/items/${id}/thumbnails/0/medium/content`);
 
 module.exports = { configured, ensureFolder, uploadUrlFor, folderPathFor, listFolder, selfTest, ROOT,
-  folderByPath, ensurePath, childrenOf, itemMeta, sessionIn, putBytes, removeItem, contentOf, thumbOf,
+  folderByPath, ensurePath, childrenOf, childFolders, ensureChild, moveItem, itemInfo, itemMeta, sessionIn, putBytes, removeItem, contentOf, thumbOf,
   graphJson: gfetch, graphRaw, safeName, driveRoot: drive, encodePath: encPath };

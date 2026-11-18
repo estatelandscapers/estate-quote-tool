@@ -958,7 +958,7 @@ async function leadsSummary(v) {
     return diff < 0 ? `<span class="d over">${-diff}d overdue</span>` : diff === 0 ? '<span class="d today">today</span>' : `<span class="d">in ${diff}d</span>`; };
   const cardHtml = c => `<div class="lead" draggable="${c.kind === 'lead' ? 'true' : 'false'}" data-id="${esc(c.id || '')}" data-q="${esc(c.quoteId || '')}" data-kind="${c.kind}">
       <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:var(--warn-soft);color:var(--warn-ink);">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : ''}</div>
-      <div class="where">${esc(c.suburb || '')}${c.quoteNumber ? ' · quote ' + esc(c.quoteNumber) : ''}</div>
+      <div class="where">${esc(c.suburb || '')}${c.quoteNumber ? ' · quote ' + esc(c.quoteNumber) : ''}${c.ref ? ` · <span class="cref">${esc(c.ref)}</span>` : ''}</div>
       <div class="next">${dueLabel(c)}<span>${esc(c.nextAction || '')}</span></div>
       <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.est ? estChip(c.est) : ''}${c.files ? `<span class="chip filechip" title="${c.files} photo${c.files === 1 ? '' : 's'} or file${c.files === 1 ? '' : 's'} on this lead">📎 ${c.files}</span>` : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
   const paint = () => {
@@ -1925,7 +1925,7 @@ async function leadConsole(v) {
   const groups = [...new Set(stages.map(s => s.group))];
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>${esc(l.name || 'Lead')}${l.smallProject ? ' <span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.address || l.suburb || '')}${l.address && l.suburb && !String(l.address).toLowerCase().includes(String(l.suburb).split(',')[0].toLowerCase()) ? ' · ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
+      <div><h2>${esc(l.name || 'Lead')}${l.enquiryRef ? ` <span class="tag enqtag" title="Enquiry reference. Its OneDrive folder carries the same number.">${esc(l.enquiryRef)}</span>` : ''}${l.smallProject ? ' <span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.address || l.suburb || '')}${l.address && l.suburb && !String(l.address).toLowerCase().includes(String(l.suburb).split(',')[0].toLowerCase()) ? ' · ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
         ${l.phone ? `<a class="btn btn-blue btn-sm" href="${telHref(l.phone)}" style="text-decoration:none;">📞 Call ${esc(l.phone)}</a>` : ''}
@@ -4400,7 +4400,9 @@ async function leadFilesPanel(leadId, opts) {
     }).join('') || '<p class="muted lfnone" style="margin-top:10px;">Nothing here yet.</p>';
   } else grid = `<div class="lfgrid">${files.map(tile).join('') || '<p class="muted lfnone">Nothing here yet. Add site photos, drawings or anything the client sent, or drop them on this box.</p>'}</div>`;
   box.innerHTML = `<div class="card lfcard">
-    ${head(files.length, `<div><input type="file" class="lf_in" multiple hidden><button class="btn btn-ghost btn-sm lf_add">＋ Add photos or files${cur ? ' to ' + esc(cur) : ''}</button></div>`)}
+    ${head(files.length, `<div class="lfadd"><select class="lf_where" title="Which sub-folder of the enquiry folder the files go into"><option value="">Auto: photos to Site photos, documents to From client</option>${(d.subs || []).map(x => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('')}</select>
+      <input type="file" class="lf_in" multiple hidden><button class="btn btn-ghost btn-sm lf_add">＋ Add photos or files${cur ? ' to ' + esc(cur) : ''}</button></div>`)}
+    ${d.ref ? `<div class="lfenq"><span class="tag enqtag">${esc(d.ref)}</span>${d.folderUrl ? `<a href="${esc(d.folderUrl)}" target="_blank" rel="noopener">Open the folder in OneDrive ↗</a>` : '<span class="muted">folder being set up</span>'}<span class="muted">${d.closedFolder ? 'In the Closed folder. ' : ''}Anything dropped into the folder in OneDrive shows here too.</span></div>` : ''}
     ${opts.quoteId ? `<div class="sub" style="margin-top:2px;">Shared with the lead${d.leadName ? ' (' + esc(d.leadName) + ')' : ''}. Each file sits under the revision that was current when it was added. Internal only: the client never sees these.</div>` : ''}
     ${grid}
     <div class="lfnote" hidden></div></div>`;
@@ -4415,7 +4417,7 @@ async function leadFilesPanel(leadId, opts) {
     for (const f of fl) {
       note.textContent = `Adding ${done + 1} of ${fl.length}: ${f.name}`;
       try {
-        const s = await api(`/leads/${leadId}/files/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: f.name, size: f.size }) });
+        const s = await api(`/leads/${leadId}/files/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: f.name, size: f.size, where: ($('.lf_where', box) || {}).value || '' }) });
         if (s.error || !s.uploadUrl) throw new Error(s.error || 'no upload address');
         const CH = 327680 * 16; let item = null;
         for (let o = 0; o < f.size; o += CH) {

@@ -290,6 +290,7 @@ app.listen(PORT, () => {
   try { require('./utils/marketing').start(); } catch (e) { console.error('[marketing] failed to start:', e.message); }
   try { require('./utils/contractValue').backfill(); } catch (e) { console.error('[contract] backfill failed:', e.message); }
   try { require('./utils/holds').start(); } catch (e) { console.error('[hold] failed to start:', e.message); }
+try { const LF = require('./utils/leadFiles'); LF.numberAll(); LF.startEnq(); } catch (e) { console.error('[enq] not started:', e.message); }
 try { require('./utils/visits').start(); } catch (e) { console.error('[visits] not started:', e.message); }
   try { require('./utils/sms').start(); } catch (e) { console.error('[sms] failed to start:', e.message); }
   try { require('./utils/timeline').start(); } catch (e) { console.error('[timeline] failed to start:', e.message); }
