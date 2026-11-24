@@ -29,3 +29,28 @@ The rules live in `server/utils/revisions.js`.
 Columns: `quotes.supersede_pending`, `superseded_closed_at`, `superseded_closed_by`,
 `superseded_carried` (JSON of what moved). Routes: `GET /api/quotes/to-close`,
 `POST /api/quotes/:id/supersede` (admin).
+
+# Enquiries and quotes stay in step (v58)
+
+The rules live in `server/utils/leadClose.js`.
+
+1. **Closing an enquiry closes every unsigned revision of its quote.** Before v58 only the
+   first quote the lead row points at was marked lost, so a revised quote (1437.2) stayed in
+   Quotes > Sent with its link live after the enquiry was closed. Every closing path uses the
+   same rule: Close this enquiry, the drop bar (Lost / Not a fit), the last "Done" of the
+   chase, the call script outcomes, a decline message, and marking a quote lost from Quotes.
+   A signed revision is never touched.
+2. **Reopening the enquiry reopens what the close shut**, each link back the way it was.
+3. **A client opening the quote of a closed enquiry** sends a phone notification and leaves a
+   note on the enquiry. Once per quote every 12 hours. The enquiry stays closed until someone
+   reopens it. A signed-in user or the Preview button never triggers it.
+4. **Every quote has an enquiry.** A quote started from Quotes gets one as soon as it has a
+   client name, built from the quote's details (source "Direct quote"); while the quote is a
+   draft the enquiry follows edits to name, email and address. If an open enquiry with the same
+   email and no quote exists, the quote is attached to it instead. A quote cannot be sent
+   without a client name. Nothing is emailed or texted to the client by this.
+   Open quotes that had no enquiry before v58 are given one at start-up.
+5. **The enquiry page shows its source** beside the ENQ reference.
+
+Columns: `quotes.lost_via_lead`, `lost_link_prev`, `closed_view_alert_at`; `leads.from_quote`.
+Quotes already left open on closed enquiries before v58 are not changed by the upgrade.

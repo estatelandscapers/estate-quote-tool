@@ -1952,7 +1952,7 @@ async function leadConsole(v) {
   const groups = [...new Set(stages.map(s => s.group))];
   v.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div><h2>${esc(l.name || 'Lead')}${l.enquiryRef ? ` <span class="tag enqtag" title="Enquiry reference. Its OneDrive folder carries the same number.">${esc(l.enquiryRef)}</span>` : ''}${l.smallProject ? ' <span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.address || l.suburb || '')}${l.address && l.suburb && !String(l.address).toLowerCase().includes(String(l.suburb).split(',')[0].toLowerCase()) ? ' · ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
+      <div><h2>${esc(l.name || 'Lead')}${l.enquiryRef ? ` <span class="tag enqtag" title="Enquiry reference. Its OneDrive folder carries the same number.">${esc(l.enquiryRef)}</span>` : ''} ${l.source ? `<span class="tag srctag" title="Where this enquiry came from. Change it by editing the enquiry.">Source · ${esc(l.source)}</span>` : `<span class="tag srctag none" title="No source recorded for this enquiry. Set it by editing the enquiry.">Source not set</span>`}${l.smallProject ? ' <span class="tag" style="background:var(--warn-soft);color:var(--warn-ink);">SMALL PROJECT</span>' : ''}</h2><div class="sub">${esc(l.address || l.suburb || '')}${l.address && l.suburb && !String(l.address).toLowerCase().includes(String(l.suburb).split(',')[0].toLowerCase()) ? ' · ' + esc(l.suburb) : ''}${l.jobType ? ' · ' + esc(l.jobType) : ''}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="backLeads">← All leads</button>
         ${l.phone ? `<a class="btn btn-blue btn-sm" href="${telHref(l.phone)}" style="text-decoration:none;">📞 Call ${esc(l.phone)}</a>` : ''}
@@ -2141,7 +2141,7 @@ async function leadConsole(v) {
       const r = await api(`/leads/${l.id}/close`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason, note: bg.querySelector('#co_note').value, sendEmail: sendCb.checked, subject: bg.querySelector('#co_subject').value, body: bg.querySelector('#co_body').value }) });
       if (r.error) { go.disabled = false; go.textContent = 'Close enquiry'; bg.querySelector('#co_err').textContent = r.error + (r.hint ? ' ' + r.hint : ''); return; }
-      bg.remove(); toast(r.emailed ? 'Enquiry closed, email sent to ' + r.emailed : 'Enquiry closed'); state.leadId = null; leadsTab(v);
+      bg.remove(); toast((r.emailed ? 'Enquiry closed, email sent to ' + r.emailed : 'Enquiry closed') + (r.closedQuotes && r.closedQuotes.length ? ' · quote' + (r.closedQuotes.length === 1 ? ' ' : 's ') + r.closedQuotes.join(', ') + ' marked lost' : '')); state.leadId = null; leadsTab(v);
     });
   });
   const sb = $('#ld_stepback'); if (sb) sb.addEventListener('click', async () => {

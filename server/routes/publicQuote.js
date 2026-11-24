@@ -139,6 +139,9 @@ function clientView(q) {
 router.get('/:token', (req, res) => {
   const q = getQ(req.params.token);
   if (!q) return res.status(404).json({ error: 'Quote not found' });
+  // The client is looking at a quote whose enquiry we closed: tell the office (v58). Only a
+  // real client counts, never one of us previewing.
+  if (viewerOf(req) === 'client') require('../utils/leadClose').closedViewAlert(q);
   // Switched off: the client gets a "call us" page, never the price. The quote itself
   // is untouched and the same link works again the moment it's switched back on.
   if (q.link_off) {

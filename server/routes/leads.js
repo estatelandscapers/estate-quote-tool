@@ -154,6 +154,7 @@ router.put('/:id', (req, res) => {
       b.source ?? l.source, b.notes ?? l.notes, b.status ?? l.status,
       b.stage ?? l.stage, b.nextFollowup !== undefined ? b.nextFollowup : l.next_followup,
       b.jobType ?? l.job_type, (b.suburb ?? l.suburb) || suburbFromAddress(b.address ?? l.address), l.id);
+  if (b.status === 'Lost' && l.status !== 'Lost') { try { require('../utils/leadClose').closeQuotes(l, l.declined_reason || 'Enquiry closed'); } catch (e) { console.error('[lead] close quotes', e.message); } }
   // A street address typed into Suburb (and nothing better in Address) belongs in Address.
   const now = db.prepare('SELECT address, suburb FROM leads WHERE id=?').get(l.id);
   if (/^\s*\d+[a-z]?[\s/-]/i.test(now.suburb || '') && !/\d/.test(now.address || ''))
@@ -422,7 +423,8 @@ router.post('/:id/outcome', (req, res) => {
     }
   } catch (e) { console.error('[lead] outcome on a won job', e.message); }
   db.prepare("UPDATE leads SET stage=?, status='Lost', next_followup=NULL, declined_reason=?, stage_override=NULL, override_snapshot=NULL, updated_at=datetime('now') WHERE id=?").run(stage, reason, l.id);
-  if (l.quote_id) { try { db.prepare("UPDATE quotes SET lost_at=COALESCE(lost_at, datetime('now')), lost_reason=COALESCE(lost_reason, ?), link_off=1, updated_at=datetime('now') WHERE id=? AND status<>'accepted'").run(reason, l.quote_id); } catch (e) {} }
+  // Every unsigned revision goes with it, not only the first quote the lead points at.
+  try { require('../utils/leadClose').closeQuotes(l, reason); } catch (e) { console.error('[lead] close quotes', e.message); }
   db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', stage, req.user ? (req.user.name || req.user.username) : '', 'logged', reason);
   res.json({ ok: true, stage });
 });
@@ -440,6 +442,7 @@ router.post('/:id/done', (req, res) => {
   const nx = stageById(nextId);
   const status = nx.id === 'closeout' ? 'Lost' : nx.phase >= 4 ? 'Quoted' : nx.phase >= 2 ? 'Contacted' : l.status;
   db.prepare("UPDATE leads SET stage=?, status=?, next_followup=?, updated_at=datetime('now') WHERE id=?").run(nx.id, status, nx.id === 'closeout' ? null : nextDueFrom(nx.id), l.id);
+  if (status === 'Lost') { try { require('../utils/leadClose').closeQuotes(l, 'No contact / no reply'); } catch (e) { console.error('[lead] close quotes', e.message); } }
   db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', cur.id, req.user ? (req.user.name || req.user.username) : '', 'logged', `Done: ${cur.nextAction || cur.label}`);
   res.json({ ok: true, stage: nx.id, nextAction: nx.nextAction });
 });
@@ -509,6 +512,7 @@ router.put('/:id/stage', (req, res) => {
     : s.phase >= 4 ? 'Quoted' : s.phase >= 2 ? 'Contacted' : l.status;
   db.prepare("UPDATE leads SET stage=?, status=?, next_followup=?, updated_at=datetime('now') WHERE id=?")
     .run(s.id, status, (req.body || {}).nextFollowup || nextDueFrom(s.id), l.id);
+  if (status === 'Lost') { try { require('../utils/leadClose').closeQuotes(l, l.declined_reason || 'Enquiry closed'); } catch (e) { console.error('[lead] close quotes', e.message); } }
   res.json({ ok: true, stage: s.id, status });
 });
 
@@ -857,7 +861,7 @@ router.post('/:id/disqualify', (req, res) => {
   if (!b.confirmed) return res.status(400).json({ error: 'Needs a definite no from the client before closing this out.' });
   db.prepare("UPDATE leads SET stage='disqualified', status='Lost', next_followup=NULL, declined_reason=?, updated_at=datetime('now') WHERE id=?")
     .run(b.reason || 'Client declined after ballpark', l.id);
-  if (l.quote_id) { try { db.prepare("UPDATE quotes SET link_off=1 WHERE id=?").run(l.quote_id); } catch (e) {} }
+  try { require('../utils/leadClose').closeQuotes(l, b.reason || 'Client declined after ballpark'); } catch (e) { console.error('[lead] close quotes', e.message); }
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
     VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, 'note', 'disqualified', null, null,
     req.user ? (req.user.name || req.user.username) : '', 'logged', 'Disqualified — ' + (b.reason || ''));
@@ -975,6 +979,7 @@ router.post('/:id/call/finish', (req, res) => {
   if (a.propertyType) { sets.push('job_type=?'); vals.push((a.scope || []).join(', ') || l.job_type); }
   vals.push(l.id);
   db.prepare(`UPDATE leads SET ${sets.join(',')}, updated_at=datetime('now') WHERE id=?`).run(...vals);
+  if (status === 'Lost' && l.status !== 'Lost') { try { require('../utils/leadClose').closeQuotes(l, bp.decline ? bp.reason : 'Client not proceeding'); } catch (e) { console.error('[lead] close quotes', e.message); } }
 
   db.prepare(`INSERT INTO lead_messages (id,lead_id,channel,stage,subject,body,sent_by,outcome,note)
     VALUES (?,?,?,?,?,?,?,?,?)`).run(newId(), l.id, 'call', stage, null, null, who, 'logged',
@@ -1071,6 +1076,7 @@ router.post('/:id/message', async (req, res) => {
   if (b.reason) { sets.push('declined_reason=?'); vals.push(String(b.reason).slice(0, 120)); }
   vals.push(l.id);
   db.prepare(`UPDATE leads SET ${sets.join(',')}, updated_at=datetime('now') WHERE id=?`).run(...vals);
+  if (b.status === 'Lost' && l.status !== 'Lost') { try { require('../utils/leadClose').closeQuotes(l, l.declined_reason || 'Enquiry closed'); } catch (e) { console.error('[lead] close quotes', e.message); } }
   console.log(`[lead] ${channel} on ${l.name} by ${who} (${outcome})`);
   res.status(201).json({ ok: true, outcome });
 });
@@ -1148,11 +1154,14 @@ router.post('/:id/close', async (req, res) => {
       .run(msgId, l.id, 'email', r.stage, b.subject || null, b.body || null, who, 'sent', 'Close-out email: ' + r.label);
   }
   db.prepare("UPDATE leads SET stage=?, status='Lost', next_followup=NULL, declined_reason=?, stage_override=NULL, override_snapshot=NULL, parked=0, updated_at=datetime('now') WHERE id=?").run(r.stage, reason, l.id);
-  if (l.quote_id) { try { db.prepare("UPDATE quotes SET lost_at=COALESCE(lost_at, datetime('now')), lost_reason=COALESCE(lost_reason, ?), link_off=1, updated_at=datetime('now') WHERE id=? AND status<>'accepted'").run(reason, l.quote_id); } catch (e) {} }
+  // Every unsigned revision of the job is closed with the enquiry (v58) — before this only the
+  // first quote was, so a revised quote stayed in Quotes > Sent with its link live.
+  let closedQuotes = [];
+  try { closedQuotes = require('../utils/leadClose').closeQuotes(l, reason); } catch (e) { console.error('[lead] close quotes', e.message); }
   try { require('../utils/estimator').cancelPending(l.id, 'lead closed'); } catch (e) {}
   db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)')
-    .run(newId(), l.id, 'note', r.stage, who, 'logged', 'Closed: ' + reason + (emailed ? ' · close-out email sent' : ''));
-  res.json({ ok: true, stage: r.stage, reason, emailed });
+    .run(newId(), l.id, 'note', r.stage, who, 'logged', 'Closed: ' + reason + (emailed ? ' · close-out email sent' : '') + (closedQuotes.length ? ` · quote${closedQuotes.length === 1 ? '' : 's'} ${closedQuotes.join(', ')} marked lost` : ''));
+  res.json({ ok: true, stage: r.stage, reason, emailed, closedQuotes });
 });
 
 // Reopen a closed enquiry. It goes back to the step it had reached before it was closed,
@@ -1170,15 +1179,10 @@ router.post('/:id/reopen', (req, res) => {
   const back = hist[0] || 'call1';
   const today = require('../utils/refs').sydneyParts().ymd;
   let quoteNote = '';
-  if (l.quote_id) {
-    try {
-      const q = db.prepare('SELECT id, quote_number, status, lost_at FROM quotes WHERE id=?').get(l.quote_id);
-      if (q && q.status !== 'accepted' && q.lost_at) {
-        db.prepare("UPDATE quotes SET lost_at=NULL, lost_reason=NULL, link_off=0, updated_at=datetime('now') WHERE id=?").run(q.id);
-        quoteNote = ` · quote ${q.quote_number} reopened and its link switched back on`;
-      }
-    } catch (e) {}
-  }
+  try {
+    const back = require('../utils/leadClose').reopenQuotes(l);
+    if (back.length) quoteNote = ` · quote${back.length === 1 ? '' : 's'} ${back.join(', ')} reopened with ${back.length === 1 ? 'its link' : 'their links'} as before`;
+  } catch (e) { console.error('[lead] reopen quotes', e.message); }
   db.prepare("UPDATE leads SET stage=?, status=?, next_followup=?, declined_reason=NULL, stage_override=NULL, override_snapshot=NULL, parked=0, updated_at=datetime('now') WHERE id=?")
     .run(back, l.quote_id ? 'Quoted' : 'Contacted', today, l.id);
   // Let the evidence have the last word (a live quote puts it in Step 4, drawings in Step 3).

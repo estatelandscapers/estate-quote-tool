@@ -1208,6 +1208,8 @@ th{border-bottom-width:1px;}
 
 /* ---- v55: ENQ number and enquiry folder ---- */
 .enqtag{background:var(--blue-soft);color:var(--blue);font-variant-numeric:tabular-nums;letter-spacing:.3px;vertical-align:middle;}
+.srctag{background:var(--line,#e6e6e6);color:var(--ink,#111);letter-spacing:.3px;vertical-align:middle;}
+.srctag.none{background:var(--warn-soft);color:var(--warn-ink);}
 .cref{font-variant-numeric:tabular-nums;color:var(--grey);font-size:10px;}
 .lfadd{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;} .lf_where{padding:6px 8px;font-size:11.5px;max-width:230px;}
 .lfenq{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:12px;} .lfenq a{font-weight:700;}

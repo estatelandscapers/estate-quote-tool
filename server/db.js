@@ -938,4 +938,10 @@ addColumn('quotes', 'contract_ex', 'REAL');
 addColumn('inv_items', 'qty', 'REAL');
 addColumn('inv_items', 'min_qty', 'REAL');
 
+// v58: quotes closed along with their enquiry, and the alert when a client opens one afterwards.
+addColumn('quotes','lost_via_lead','TEXT');
+addColumn('quotes','lost_link_prev','INTEGER');
+addColumn('quotes','closed_view_alert_at','TEXT');
+addColumn('leads','from_quote','TEXT');   // enquiry was created from this quote, not the other way round
+
 module.exports = { db, settingGet, settingSet, settingGet2, settingSet2 };

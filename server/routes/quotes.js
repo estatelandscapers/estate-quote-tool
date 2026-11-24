@@ -385,11 +385,11 @@ router.put('/:id/lost', (req, res) => {
   if (!q) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
   if (b.lost === false) {
-    db.prepare("UPDATE quotes SET lost_at=NULL, lost_reason=NULL, link_off=0, updated_at=datetime('now') WHERE id=?").run(q.id);
+    db.prepare("UPDATE quotes SET lost_at=NULL, lost_reason=NULL, lost_via_lead=NULL, lost_link_prev=NULL, link_off=0, updated_at=datetime('now') WHERE id=?").run(q.id);
     return res.json({ ok: true, lost: false });
   }
   if (q.status === 'accepted') return res.status(400).json({ error: 'That quote has been accepted and signed — it can\'t be marked lost.' });
-  db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, link_off=1, updated_at=datetime('now') WHERE id=?")
+  db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, lost_link_prev=COALESCE(link_off,0), link_off=1, updated_at=datetime('now') WHERE id=?")
     .run(String(b.reason || '').slice(0, 200), q.id);
   // Keep the lead in step, if this quote came from one.
   // A dropped revision of a WON job loses nothing: the signed revision is still the job, so
@@ -399,6 +399,9 @@ router.put('/:id/lost', (req, res) => {
   if (q.lead_id) { try {
     if (keptWon) db.prepare("UPDATE leads SET status='Won', stage='won', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(q.lead_id);
     else db.prepare("UPDATE leads SET status='Lost', stage='lost', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(q.lead_id);
+    // The enquiry is now closed, so any other unsigned revision of the job closes with it.
+    // This quote is marked as closed with the enquiry too, so reopening the enquiry brings it back.
+    if (!keptWon) { db.prepare('UPDATE quotes SET lost_via_lead=? WHERE id=?').run(q.lead_id, q.id); require('../utils/leadClose').closeQuotes(q.lead_id, b.reason || 'Quote marked lost'); }
   } catch (e) {} }
   console.log(`[lost] quote ${q.quote_number} marked lost${b.reason ? ' — ' + b.reason : ''}${keptWon ? ` (job stays won on ${keptWon})` : ''}`);
   res.json({ ok: true, lost: true, keptWon });
@@ -464,7 +467,11 @@ function createQuote(b = {}) {
   return db.prepare('SELECT * FROM quotes WHERE id=?').get(id);
 }
 router.post('/', (req, res) => {
-  res.status(201).json(fullQuote(createQuote(req.body || {})));
+  let q = createQuote(req.body || {});
+  // A quote started from Quotes (no enquiry behind it) gets an enquiry as soon as it has a
+  // client name — here if one was passed, otherwise when the details are first saved.
+  try { if (require('../utils/leadClose').ensureLeadForQuote(q, req.user ? (req.user.name || req.user.username) : '')) q = db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id); } catch (e) { console.error('[quotes] enquiry for new quote', e.message); }
+  res.status(201).json(fullQuote(q));
 });
 
 
@@ -502,6 +509,11 @@ router.post('/:id/send', async (req, res) => {
   const ccRaw = String(b.cc || '').trim();
   if (ccRaw) { const badCc = validateEmail(ccRaw); if (badCc) return res.status(400).json({ error: 'Copy-to address: ' + badCc, field: 'cc' }); }
   if (q.lost_at) return res.status(400).json({ error: 'This quote is marked as lost. Reopen it before sending.' });
+  // No quote goes out without an enquiry behind it. One is made from the quote's details.
+  if (!q.lead_id && !q.is_sample) {
+    try { q.lead_id = require('../utils/leadClose').ensureLeadForQuote(q.id, req.user ? (req.user.name || req.user.username) : '') || null; } catch (err) { console.error('[send] enquiry for quote', err.message); }
+    if (!q.lead_id) return res.status(400).json({ error: 'Add the client\'s name to this quote before sending — the enquiry for it is created from the quote\'s details.', field: 'client' });
+  }
   // A copied quote goes nowhere until every carried-over detail has been confirmed.
   const cr = copyReview(q);
   if (cr && !cr.complete) return res.status(400).json({ error: `This quote was copied from ${cr.source ? cr.source.quoteNumber : 'another quote'} — confirm the review list on the quote page before sending. Still to confirm: ${cr.outstanding.join('; ')}.`, copyReview: cr });
@@ -882,6 +894,10 @@ router.put('/:id', (req, res) => {
       b.surchargesNa !== undefined ? (b.surchargesNa ? 1 : 0) : e.surcharges_na,
       b.customerTier ?? e.customer_tier, b.crewSize ?? e.crew_size,
       req.params.id);
+  try { const LC = require('../utils/leadClose');
+    if (!e.lead_id) LC.ensureLeadForQuote(req.params.id, req.user ? (req.user.name || req.user.username) : '');
+    else LC.syncLeadFromQuote(req.params.id);
+  } catch (err) { console.error('[quotes] enquiry for quote', err.message); }
   if ((req.body || {}).customerTier !== undefined) recalcAllUplifts(req.params.id);
   db.prepare('UPDATE quotes SET rev_no=COALESCE(rev_no,0)+1 WHERE id=?').run(req.params.id);
   res.json(fullQuote(db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id)));
