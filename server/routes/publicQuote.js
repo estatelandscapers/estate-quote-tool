@@ -274,15 +274,17 @@ router.post('/:token/sign', async (req, res) => {
   require('../utils/contractValue').snapshot(q.id);
 
   // The client has signed a newer revision: any EARLIER accepted revision of the same quote
-  // is now superseded, so the job is not counted twice.
+  // stops counting now, so the job is not in the figures twice. It is held "to close" —
+  // the office confirms it as the predecessor, and its attachments move across then.
+  let replaced = [];
   try {
     const earlier = db.prepare("SELECT id, quote_number FROM quotes WHERE parent_number=? AND id<>? AND status='accepted' AND created_at < ?")
       .all(q.parent_number, q.id, q.created_at);
     if (earlier.length) {
-      const { supersedeQuote } = require('./quotes');
-      earlier.forEach(e => supersedeQuote(e.id, q.id, 'auto: newer revision signed'));
+      const { supersedeQuote } = require('../utils/revisions');
+      earlier.forEach(e => { const r = supersedeQuote(e.id, q.id, 'newer revision signed', { pending: true }); if (r && r.ok) replaced.push(e.quote_number); });
     }
-  } catch (e) { console.error('[quote] auto-supersede failed:', e.message); }
+  } catch (e) { console.error('[quote] supersede on signing failed:', e.message); }
   const fresh = db.prepare('SELECT * FROM quotes WHERE id=?').get(q.id);
   const at = acceptedTotals(fresh);
   const totals = { grandExGst: Math.round(at.grandExGst), grandIncGst: Math.round(at.grandIncGst) };
@@ -325,7 +327,9 @@ router.post('/:token/sign', async (req, res) => {
         } else { outcome.push('client: no email address given'); anyFail = true; }
       } catch (e) { outcome.push('client FAILED: ' + e.message); anyFail = true; console.error('client email failed', e.message); }
       try {
-        const r = await sendMail({ to: settingGet('company_email'), subject: `SIGNED: Quote ${fresh.quote_number} — ${fresh.client_name} (${tier})`, html, attachments });
+        // Office copy only: an earlier signed revision is now waiting to be closed.
+        const officeHtml = replaced.length ? html + `<p style="border-left:3px solid #1E5BFF;padding-left:10px;"><b>This replaces ${replaced.join(', ')}.</b> ${replaced.join(', ')} no longer counts as the won job. Open the quote tool to close ${replaced.length === 1 ? 'it' : 'them'} as the predecessor — selections and the purchase order move across when you do.</p>` : html;
+        const r = await sendMail({ to: settingGet('company_email'), subject: `SIGNED: Quote ${fresh.quote_number} — ${fresh.client_name} (${tier})${replaced.length ? ' — replaces ' + replaced.join(', ') : ''}`, html: officeHtml, attachments });
         if (r && r.skipped) { outcome.push('office: SMTP not configured'); anyFail = true; }
         else { outcome.push('office: sent'); anySent = true; }
       } catch (e) { outcome.push('office FAILED: ' + e.message); anyFail = true; console.error('office email failed', e.message); }

@@ -1211,3 +1211,15 @@ th{border-bottom-width:1px;}
 .cref{font-variant-numeric:tabular-nums;color:var(--grey);font-size:10px;}
 .lfadd{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;} .lf_where{padding:6px 8px;font-size:11.5px;max-width:230px;}
 .lfenq{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:12px;} .lfenq a{font-weight:700;}
+/* ---- v57: revisions of a won job ---- */
+.closebar,.revbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-radius:12px;padding:11px 14px;margin:0 0 10px;border:1.5px solid var(--line);background:var(--tint);}
+.closebar>div:first-child,.revbar>div:first-child{flex:1;min-width:220px;}
+.closebar b,.revbar b{display:block;font-size:13px;} .closebar span,.revbar span{font-size:12px;color:var(--grey);line-height:1.5;} .revbar span b{display:inline;font-size:12px;color:var(--ink);}
+.closebar .btns,.revbar .btns{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+.closebar,.revbar.act{border-color:var(--blue);background:var(--blue-soft);} .closebar b,.revbar.act>div>b{color:var(--blue-deep);}
+.revbar.wait{border-color:var(--warn-line);background:var(--warn-soft);} .revbar.wait>div>b{color:var(--warn-ink);}
+.revbar{margin:8px 0;}
+.lead.toclose{opacity:.62;border-style:dashed;filter:grayscale(.7);} .lead.toclose:hover{opacity:1;}
+.lead .nm .val.was{text-decoration:line-through;font-weight:500;}
+.chip.revchip{background:var(--warn-soft);color:var(--warn-ink);} .chip.closechip{background:var(--blue-soft);color:var(--blue-deep);}
+:root[data-theme="dark"] .closebar b,:root[data-theme="dark"] .revbar.act>div>b,:root[data-theme="dark"] .chip.closechip{color:#9DB8FF;}

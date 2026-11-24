@@ -214,6 +214,37 @@ function copyReview(q) {
     items, complete: items.every(i => i.done), outstanding: items.filter(i => !i.done).map(i => i.label) };
 }
 
+// Where this quote stands among the revisions of its job — see utils/revisions.js.
+function revisionInfo(q) {
+  const REV = require('../utils/revisions');
+  const out = { supersede: null, predecessors: [], wonRevision: null, pendingRevision: null };
+  try {
+    if (q.is_sample) return out;
+    const brief = x => ({ id: x.id, quoteNumber: x.quote_number, value: REV.signedValue(x), signedAt: x.accepted_at,
+      method: x.won_method === 'manual' ? (x.won_how || 'po') : 'esign', signedName: x.signed_name || x.won_approved_by || '' });
+    if (q.status === 'superseded') {
+      const by = q.superseded_by ? db.prepare('SELECT * FROM quotes WHERE id=?').get(q.superseded_by) : null;
+      let carried = null; try { carried = JSON.parse(q.superseded_carried || 'null'); } catch (e) {}
+      out.supersede = { state: q.supersede_pending ? 'toClose' : 'closed', at: q.superseded_at, by: by ? brief(by) : null, self: brief(q),
+        closedAt: q.superseded_closed_at || (q.supersede_pending ? null : q.superseded_at), closedBy: q.superseded_closed_by || '',
+        carried, carry: q.supersede_pending ? REV.carryPreview(q, by) : null };
+    }
+    out.predecessors = db.prepare("SELECT * FROM quotes WHERE superseded_by=? AND status='superseded' ORDER BY created_at DESC").all(q.id).map(p => {
+      let carried = null; try { carried = JSON.parse(p.superseded_carried || 'null'); } catch (e) {}
+      // The moved PO still lists the predecessor's scope until a new PO revision is raised.
+      const poStale = !!(carried && carried.po && db.prepare('SELECT 1 FROM purchase_orders WHERE id=? AND quote_id=? AND superseded=0').get(carried.po.id, q.id));
+      return { ...brief(p), state: p.supersede_pending ? 'toClose' : 'closed', closedAt: p.superseded_closed_at || (p.supersede_pending ? null : p.superseded_at),
+        closedBy: p.superseded_closed_by || '', carried, poStale, carry: p.supersede_pending ? REV.carryPreview(p, q) : null };
+    });
+    const fam = REV.familyState(q.parent_number);
+    if (fam.accepted && fam.accepted.id !== q.id && !['accepted', 'superseded'].includes(q.status) && String(q.created_at) > String(fam.accepted.created_at))
+      out.wonRevision = brief(db.prepare('SELECT * FROM quotes WHERE id=?').get(fam.accepted.id));
+    if (q.status === 'accepted' && fam.accepted && fam.accepted.id === q.id && fam.pendingRev)
+      out.pendingRevision = { id: fam.pendingRev.id, quoteNumber: fam.pendingRev.quote_number, sentAt: fam.pendingRev.sent_at };
+  } catch (e) { console.error('[quote] revision info', e.message); }
+  return out;
+}
+
 function fullQuote(q) {
   const c = computeQuote(q);
   const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
@@ -222,11 +253,14 @@ function fullQuote(q) {
     projectTitle: q.project_title, client: q.client_name, clientEmail: q.client_email, address: q.address,
     date: q.quote_date, validityDays: q.validity_days, defaultPackage: q.default_package,
     paymentSchedule: q.payment_schedule, siteNotes: q.site_notes, specialClauses: q.special_clauses,
-    hasSiteplan: !!q.siteplan_data, status: laterRev > 0 ? 'superseded' : q.status,
+    // A signed quote stays "accepted" while a newer revision is only out for signature —
+    // it is still the job. It reads "superseded" once a newer revision is signed.
+    hasSiteplan: !!q.siteplan_data, status: laterRev > 0 && q.status !== 'accepted' ? 'superseded' : q.status,
     // The DISPLAY status above says "superseded" whenever a newer revision exists — even if
     // this one is still a signed, live job. The real record status is needed to offer the
     // close-as-superseded action on exactly those quotes.
     signedLive: q.status === 'accepted',
+    ...revisionInfo(q),
     won: q.status === 'accepted' ? { method: q.won_method || 'esign', how: q.won_how, ref: q.won_ref, approvedBy: q.won_approved_by, note: q.won_note, value: q.won_value,
       fileName: q.won_file_name, hasFile: !!q.won_file_sha256, sha: q.won_file_sha256, markedBy: q.won_marked_by, at: q.accepted_at } : null,
     acceptedPackage: q.accepted_package, acceptedAt: q.accepted_at, signedName: q.signed_name,
@@ -295,12 +329,12 @@ router.get('/', (req, res) => {
     else if (ageDays >= th.flag) ageBand = 'flag';
     // Lost sits above everything except an actual acceptance — a lost job is lost
     // even if its checklist was never finished.
-    let status = q.lost_at ? 'lost' : (laterRev > 0 ? 'superseded' : q.status);
+    let status = q.lost_at ? 'lost' : (laterRev > 0 && q.status !== 'accepted' ? 'superseded' : q.status);
     if (!['accepted', 'superseded', 'lost'].includes(status) && !complete) status = 'incomplete';
     return { id: q.id, token: q.token, parentNumber: q.parent_number, quoteNumber: q.quote_number,
       client: q.client_name, projectTitle: q.project_title, address: q.address || '',
       copiedFrom: q.copied_from || null,
-      status, acceptedPackage: q.accepted_package,
+      status, toClose: q.status === 'superseded' && !!q.supersede_pending, acceptedPackage: q.accepted_package,
       lostAt: q.lost_at || null, lostReason: q.lost_reason || null,
       value: Math.round(value), complete, uncheckedCritical, ageDays, ageBand: q.is_sample ? 'fresh' : ageBand, customerTier: q.customer_tier || 'Silver',
       views, updatedAt: q.updated_at, isSample: !!q.is_sample,
@@ -358,9 +392,16 @@ router.put('/:id/lost', (req, res) => {
   db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, link_off=1, updated_at=datetime('now') WHERE id=?")
     .run(String(b.reason || '').slice(0, 200), q.id);
   // Keep the lead in step, if this quote came from one.
-  if (q.lead_id) { try { db.prepare("UPDATE leads SET status='Lost', stage='lost', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(q.lead_id); } catch (e) {} }
-  console.log(`[lost] quote ${q.quote_number} marked lost${b.reason ? ' — ' + b.reason : ''}`);
-  res.json({ ok: true, lost: true });
+  // A dropped revision of a WON job loses nothing: the signed revision is still the job, so
+  // the enquiry goes back to Won rather than Lost.
+  let keptWon = null;
+  try { const fam = require('../utils/revisions').familyState(q.parent_number); if (fam.accepted) keptWon = fam.accepted.quote_number; } catch (e) {}
+  if (q.lead_id) { try {
+    if (keptWon) db.prepare("UPDATE leads SET status='Won', stage='won', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(q.lead_id);
+    else db.prepare("UPDATE leads SET status='Lost', stage='lost', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(q.lead_id);
+  } catch (e) {} }
+  console.log(`[lost] quote ${q.quote_number} marked lost${b.reason ? ' — ' + b.reason : ''}${keptWon ? ` (job stays won on ${keptWon})` : ''}`);
+  res.json({ ok: true, lost: true, keptWon });
 });
 
 // NOTE: literal paths MUST be declared before the '/:id' wildcard below, otherwise
@@ -382,6 +423,8 @@ router.get('/pending/price-items', (req, res) => {
     marginPct: r.val_standard > 0 ? Math.round((r.val_standard - (r.cost_standard || 0)) / r.val_standard * 1000) / 10 : null,
   })));
 });
+// Replaced revisions waiting for the office to close them (literal path, before '/:id').
+router.get('/to-close', (req, res) => res.json({ rows: REV.pendingCloses() }));
 // The job's photos and files, each tagged with the revision it was added under, so the
 // quote page can show what came in at each round. They belong to the lead, not the quote.
 router.get('/:id/files', async (req, res) => {
@@ -610,25 +653,29 @@ function remapSurchargeLines(appliedJson, idMap) {
   } catch (e) { return appliedJson; }
 }
 
-function supersedeQuote(oldId, newId_, who) {
-  const old = db.prepare('SELECT * FROM quotes WHERE id=?').get(oldId);
-  if (!old) return { error: 'not found' };
-  if (old.status !== 'accepted') return { error: 'Only an accepted quote can be closed as superseded.' };
-  const nw = newId_ ? db.prepare('SELECT * FROM quotes WHERE id=?').get(newId_) : null;
-  db.prepare(`UPDATE quotes SET status='superseded', superseded_at=datetime('now'), superseded_by=?, link_off=1, updated_at=datetime('now') WHERE id=?`)
-    .run(nw ? nw.id : null, old.id);
-  if (nw) {
-    db.prepare('UPDATE leads SET quote_id=? WHERE quote_id=?').run(nw.id, old.id);
-    if (!nw.lead_id && old.lead_id) db.prepare('UPDATE quotes SET lead_id=? WHERE id=?').run(old.lead_id, nw.id);
-  }
-  console.log(`[quote] ${old.quote_number} closed as superseded${nw ? ' by ' + nw.quote_number : ''}${who ? ' (' + who + ')' : ''}`);
-  return { ok: true, closed: old.quote_number, by: nw ? nw.quote_number : null };
-}
+// The rules for revisions of a won job live in utils/revisions.js.
+const REV = require('../utils/revisions');
+const supersedeQuote = REV.supersedeQuote;
 
-// Manual close: admin, with the replacing revision if there is one.
+// Close a replaced revision as the predecessor. Admin only.
+//   - held "to close" after a newer revision was signed  → confirm it; attachments move
+//   - still the live signed job                          → close it against the newer signed
+//     revision if there is one (or the one named in byId)
 router.post('/:id/supersede', (req, res) => {
   if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
-  const r = supersedeQuote(req.params.id, req.body && req.body.byId, req.user.name || req.user.username);
+  const who = req.user.name || req.user.username;
+  const old = db.prepare('SELECT * FROM quotes WHERE id=?').get(req.params.id);
+  if (!old) return res.status(404).json({ error: 'not found' });
+  let r;
+  if (old.status === 'superseded') r = REV.confirmClose(old.id, who);
+  else {
+    let byId = req.body && req.body.byId;
+    if (!byId) {
+      const newer = db.prepare("SELECT id FROM quotes WHERE parent_number=? AND id<>? AND status='accepted' AND created_at > ? ORDER BY created_at DESC LIMIT 1").get(old.parent_number, old.id, old.created_at);
+      byId = newer ? newer.id : null;
+    }
+    r = supersedeQuote(old.id, byId, who);
+  }
   if (r.error) return res.status(400).json(r);
   res.json(r);
 });
@@ -644,6 +691,7 @@ router.post('/:id/mark-won', (req, res) => {
   if (!q) return res.status(404).json({ error: 'Not found' });
   if (q.is_sample) return res.status(400).json({ error: 'A sample quote cannot be won.' });
   if (q.status === 'accepted') return res.status(409).json({ error: 'This quote is already accepted.' });
+  if (q.status === 'superseded') return res.status(409).json({ error: 'This revision was replaced by a later signed one — it cannot be marked won again.' });
   const b = req.body || {};
   const how = ['po', 'contract', 'email'].includes(b.how) ? b.how : 'po';
   const tier = ['Basic', 'Standard', 'Premium'].includes(b.package) ? b.package : (q.default_package || 'Standard');
@@ -680,10 +728,11 @@ router.post('/:id/mark-won', (req, res) => {
     db.prepare('UPDATE quotes SET quoted_sell=?, quoted_cost=?, accepted_mixed=? WHERE id=?').run(Math.round(sellSel * 100) / 100, Math.round(costSel * 100) / 100, JSON.stringify(cc.changes || []), q.id);
   } catch (e) { console.error('quoted snapshot failed', e.message); }
   require('../utils/contractValue').snapshot(q.id);
-  // Earlier accepted revisions of the same job are superseded, as on signing.
+  // Earlier accepted revisions of the same job stop counting, as on signing, and wait for
+  // the office to close them as the predecessor.
   try {
     db.prepare("SELECT id FROM quotes WHERE parent_number=? AND id<>? AND status='accepted' AND created_at < ?").all(q.parent_number, q.id, q.created_at)
-      .forEach(e => supersedeQuote(e.id, q.id, 'auto: later revision won by ' + how));
+      .forEach(e => supersedeQuote(e.id, q.id, 'later revision won by ' + how, { pending: true }));
   } catch (e) {}
   if (q.lead_id) db.prepare("UPDATE leads SET stage='won', status='Won', next_followup=NULL, stage_override=NULL, override_snapshot=NULL, parked=0, updated_at=datetime('now') WHERE id=?").run(q.lead_id);
   db.prepare('INSERT INTO quote_events (id,quote_id,event_type,payload,viewer) VALUES (?,?,?,?,?)').run(newId(), q.id, 'package_select', JSON.stringify({ tier, accepted: true, manual: true, how, ref: b.ref }), 'internal');

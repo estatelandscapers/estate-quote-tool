@@ -403,6 +403,13 @@ addColumn('quotes','signed_terms','TEXT');
 // it simply stops counting as a live job (Projects, Selections, revenue).
 addColumn('quotes','superseded_at','TEXT');
 addColumn('quotes','superseded_by','TEXT');
+// v57: a replaced revision stops counting at once, but is held "to close" until the office
+// confirms it. Closing files it as the predecessor and records who closed it, when, and
+// what moved across to the revision that replaced it.
+addColumn('quotes','supersede_pending','INTEGER DEFAULT 0');
+addColumn('quotes','superseded_closed_at','TEXT');
+addColumn('quotes','superseded_closed_by','TEXT');
+addColumn('quotes','superseded_carried','TEXT');
 // ---- v21: pipeline board, manual won, client-link behaviour ----
 // A lead dragged to a step by hand. Holds until NEW evidence arrives (a quote built, drawings
 // in, a discovery call recorded) — the snapshot taken at drag time is what "new" is measured

@@ -22,9 +22,21 @@ function evidenceSnapshot(l, quote, docs) {
 }
 function syncLeadStage(l) {
   const { derivedStage } = require('../utils/leadTemplates');
-  const quote = l.quote_id ? db.prepare('SELECT id, quote_number, status FROM quotes WHERE id=?').get(l.quote_id) : null;
+  const quote = l.quote_id ? db.prepare('SELECT id, quote_number, status, parent_number FROM quotes WHERE id=?').get(l.quote_id) : null;
   let docs = []; try { docs = JSON.parse(l.docs_received || '[]') || []; } catch (e) {}
-  let want = derivedStage(l, quote, docs.length > 0);
+  // The lead row points at one quote of the job; the job's standing is read from all its
+  // revisions. A signed revision makes it won — unless a NEWER revision is with the client
+  // and not signed yet, in which case the lead is back at step 4 until they sign it. The
+  // signed revision stays the won job in the meantime (it shows in Won on its own).
+  let stageQuote = quote, revOfWon = null;
+  if (quote) {
+    try {
+      const fam = require('../utils/revisions').familyState(quote.parent_number);
+      if (fam.accepted && fam.pendingRev) { stageQuote = { id: fam.pendingRev.id, quote_number: fam.pendingRev.quote_number, status: fam.pendingRev.status }; revOfWon = fam.accepted.quote_number; }
+      else if (fam.accepted) stageQuote = { id: fam.accepted.id, quote_number: fam.accepted.quote_number, status: 'accepted' };
+    } catch (e) {}
+  }
+  let want = derivedStage(l, stageQuote, docs.length > 0);
   // A step the owner set by dragging the card holds until NEW evidence arrives. The
   // snapshot taken at drag time (quote id, drawings count, discovery answers) is what
   // "new" is measured against; a won quote always wins.
@@ -42,10 +54,25 @@ function syncLeadStage(l) {
   }
   if (want && want !== l.stage) {
     db.prepare("UPDATE leads SET stage=?, updated_at=datetime('now') WHERE id=?").run(want, l.id);
-    console.log(`[lead] ${l.name}: stage ${l.stage} -> ${want}${!quote && l.quote_id ? ' (linked quote no longer exists)' : ''}`);
+    console.log(`[lead] ${l.name}: stage ${l.stage} -> ${want}${!quote && l.quote_id ? ' (linked quote no longer exists)' : ''}${revOfWon ? ` (revision of won job ${revOfWon} not signed yet)` : ''}`);
     l.stage = want;
   }
-  return { stage: want, quote, docsIn: docs.length > 0 };
+  // A won job is a Won enquiry. Sending a revision re-opens the enquiry (status Quoted); once
+  // that revision is signed, lost or withdrawn the job is simply won again, and the enquiry
+  // must leave the board — otherwise it sits in Won beside the signed quote's own card.
+  if (want === 'won' && !['Won', 'Lost'].includes(l.status)) {
+    db.prepare("UPDATE leads SET status='Won', next_followup=NULL, updated_at=datetime('now') WHERE id=?").run(l.id);
+    l.status = 'Won'; l.next_followup = null;
+  }
+  // The other way round: a revision went to the client after the job was won and the
+  // enquiry is still filed as Won. It has to be chased like any quote that is out.
+  if (revOfWon && l.status === 'Won') {
+    const { nextDueFrom: due } = require('../utils/leadTemplates');
+    const nf = l.next_followup || due(want);
+    db.prepare("UPDATE leads SET status='Quoted', next_followup=?, updated_at=datetime('now') WHERE id=?").run(nf, l.id);
+    l.status = 'Quoted'; l.next_followup = nf;
+  }
+  return { stage: want, quote, docsIn: docs.length > 0, revOfWon };
 }
 
 function view(l) {
@@ -206,10 +233,14 @@ router.get('/board', (req, res) => {
   const wk = new Date(); wk.setDate(wk.getDate() + 7);
   const weekEnd = wk.toISOString().slice(0, 10);
   const showParked = req.query.parked === '1';
+  // Sync first: a lead whose job has just become won again leaves the board on this read,
+  // and one with an unsigned revision out comes back onto it.
+  try { db.prepare("SELECT l.* FROM leads l JOIN quotes q ON q.id=l.quote_id WHERE l.status<>'Lost' AND COALESCE(l.parked,0)=0 AND EXISTS (SELECT 1 FROM quotes a WHERE a.parent_number=q.parent_number AND a.status='accepted')").all().forEach(syncLeadStage); } catch (e) { console.error('[board] won sync', e.message); }
   const rows = db.prepare("SELECT * FROM leads WHERE status NOT IN ('Won','Lost') AND COALESCE(parked,0)=0 ORDER BY next_followup").all();
   const LA = require('../utils/linkAnalytics');
+  const REV = require('../utils/revisions');
   const decorate = l => {
-    const { stage, quote } = syncLeadStage(l);
+    const { stage, quote, revOfWon } = syncLeadStage(l);
     const s = stageById(stage);
     let value = null, link = null, fullQ = null;
     if (quote) {
@@ -220,7 +251,7 @@ router.get('/board', (req, res) => {
     return { id: l.id, name: l.name, suburb: l.suburb || l.address || '', jobType: l.job_type || '', source: l.source || '',
       phone: l.phone, email: l.email, stage: s.id, stageLabel: s.label, phase: s.phase, overridden: !!l.stage_override,
       nextAction: s.nextAction || 'Review this enquiry', due: l.next_followup, small: !!l.small_project, createdAt: l.created_at,
-      files: l.files_count || 0, ref: l.enquiry_ref || '',
+      files: l.files_count || 0, ref: l.enquiry_ref || '', revOfWon: revOfWon || null,
       quoteMissing: !!(l.quote_id && !quote),
       quoteId: fullQ ? fullQ.id : null, quoteNumber: fullQ ? fullQ.quote_number : null, quoteStatus: fullQ ? fullQ.status : null,
       value: value != null ? Math.round(value) : null,
@@ -231,10 +262,21 @@ router.get('/board', (req, res) => {
   const won = db.prepare("SELECT * FROM quotes WHERE status='accepted' AND COALESCE(is_sample,0)=0 ORDER BY accepted_at DESC LIMIT 40").all().map(q => {
     const lead = q.lead_id ? db.prepare('SELECT id, suburb, address, source FROM leads WHERE id=?').get(q.lead_id) : null;
     let value = null; try { value = require('../utils/contractValue').contractEx(q); if (value == null) value = require('./quotes').cachedTotals(q).ex; } catch (e) {}
+    let pendingRev = null; try { const f = REV.familyState(q.parent_number); if (f.accepted && f.accepted.id === q.id && f.pendingRev) pendingRev = f.pendingRev.quote_number; } catch (e) {}
     return { id: lead ? lead.id : null, quoteId: q.id, name: q.client_name, suburb: (lead && (lead.suburb || lead.address)) || q.address || '', source: lead ? lead.source : '',
       stage: 'won', stageLabel: 'Won', phase: 5, nextAction: q.selections_locked ? 'Purchase order raised' : 'Lock selections', due: null,
       quoteNumber: q.quote_number, quoteStatus: 'accepted', value: value != null ? Math.round(value) : null, acceptedAt: q.accepted_at,
-      wonMethod: q.won_method || 'esign', wonHow: q.won_how || null };
+      wonMethod: q.won_method || 'esign', wonHow: q.won_how || null, pendingRev };
+  });
+  // Signed revisions that a newer signed revision has replaced, not yet closed by the
+  // office. Shown greyed in Won, worth nothing, until someone closes them.
+  const toClose = REV.pendingCloses();
+  toClose.forEach(p => {
+    const lead = p.leadId ? db.prepare('SELECT id, suburb, address, source FROM leads WHERE id=?').get(p.leadId) : null;
+    won.push({ id: lead ? lead.id : null, quoteId: p.id, name: p.client, suburb: (lead && (lead.suburb || lead.address)) || p.address || '', source: lead ? lead.source : '',
+      stage: 'won', stageLabel: 'Won', phase: 5, nextAction: p.by ? `Close — replaced by ${p.by.quoteNumber}` : 'Close — superseded', due: null,
+      quoteNumber: p.quoteNumber, quoteStatus: 'superseded', value: null, wasValue: p.value != null ? Math.round(p.value) : null, acceptedAt: p.signedAt,
+      toClose: true, replacedBy: p.by ? p.by.quoteNumber : null });
   });
   const parked = showParked ? db.prepare("SELECT * FROM leads WHERE COALESCE(parked,0)=1 ORDER BY parked_at DESC").all().map(l => ({ id: l.id, name: l.name, suburb: l.suburb || l.address || '', parkedAt: l.parked_at, source: l.source || '' })) : [];
   const overdue = rows.filter(l => l.next_followup && l.next_followup < today).map(decorate);
@@ -253,7 +295,7 @@ router.get('/board', (req, res) => {
   const all = [...overdue, ...dueToday, ...thisWeek, ...rows.filter(l => l.next_followup && l.next_followup > weekEnd).map(decorate), ...undated];
   // Future projects: jobs on hold until a date, soonest first.
   let held = []; try { held = require('../utils/holds').list().sort((a, b) => String(a.until || '0').localeCompare(String(b.until || '0'))); } catch (e) {}
-  res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES, cards: all, won, parked, held,
+  res.json({ overdue, dueToday, thisWeek, undated, phaseCounts, phases: PHASES, cards: all, won, toClose, parked, held,
     parkedCount: db.prepare('SELECT COUNT(*) c FROM leads WHERE COALESCE(parked,0)=1').get().c,
     lockin: (() => { try { const L = require('../utils/visits').lockin(); return { date: L.date, label: L.label, due: L.due, open: L.open, total: L.total, isToday: L.isToday, dueFrom: L.dueFrom }; } catch (e) { return null; } })() });
 });
@@ -367,6 +409,18 @@ router.post('/:id/outcome', (req, res) => {
   const o = (req.body || {}).outcome;
   if (!['lost', 'nofit'].includes(o)) return res.status(400).json({ error: 'bad outcome' });
   const stage = o === 'lost' ? 'lost' : 'disqualified', reason = o === 'lost' ? ((req.body || {}).reason || 'Not proceeding') : 'Not a fit';
+  // The card of a won job with an unsigned revision out: only the revision is dropped. The
+  // signed revision is still the job, so the enquiry goes back to Won, not Lost.
+  try {
+    const root = l.quote_id ? db.prepare('SELECT parent_number FROM quotes WHERE id=?').get(l.quote_id) : null;
+    const fam = root ? require('../utils/revisions').familyState(root.parent_number) : null;
+    if (fam && fam.accepted && fam.pendingRev) {
+      db.prepare("UPDATE quotes SET lost_at=datetime('now'), lost_reason=?, link_off=1, updated_at=datetime('now') WHERE id=?").run(reason, fam.pendingRev.id);
+      db.prepare("UPDATE leads SET stage='won', status='Won', next_followup=NULL, stage_override=NULL, override_snapshot=NULL, updated_at=datetime('now') WHERE id=?").run(l.id);
+      db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', 'won', req.user ? (req.user.name || req.user.username) : '', 'logged', `Revision ${fam.pendingRev.quote_number} not proceeding (${reason}) — ${fam.accepted.quote_number} stays the won job`);
+      return res.json({ ok: true, stage: 'won', message: `Revision ${fam.pendingRev.quote_number} marked lost — ${fam.accepted.quote_number} stays the won job` });
+    }
+  } catch (e) { console.error('[lead] outcome on a won job', e.message); }
   db.prepare("UPDATE leads SET stage=?, status='Lost', next_followup=NULL, declined_reason=?, stage_override=NULL, override_snapshot=NULL, updated_at=datetime('now') WHERE id=?").run(stage, reason, l.id);
   if (l.quote_id) { try { db.prepare("UPDATE quotes SET lost_at=COALESCE(lost_at, datetime('now')), lost_reason=COALESCE(lost_reason, ?), link_off=1, updated_at=datetime('now') WHERE id=? AND status<>'accepted'").run(reason, l.quote_id); } catch (e) {} }
   db.prepare('INSERT INTO lead_messages (id,lead_id,channel,stage,sent_by,outcome,note) VALUES (?,?,?,?,?,?,?)').run(newId(), l.id, 'note', stage, req.user ? (req.user.name || req.user.username) : '', 'logged', reason);

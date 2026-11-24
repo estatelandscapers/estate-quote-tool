@@ -106,7 +106,7 @@ router.get('/', (req, res) => {
   const recent = db.prepare("SELECT * FROM quotes WHERE COALESCE(is_sample,0)=0 ORDER BY updated_at DESC LIMIT 8").all().map(q => {
     const laterRev = db.prepare('SELECT COUNT(*) n FROM quotes WHERE parent_number=? AND created_at > ?').get(q.parent_number, q.created_at).n;
     return { quoteNumber: q.quote_number, client: q.client_name, value: quoteValue(q),
-      status: laterRev > 0 ? 'superseded' : (q.is_complete ? q.status : (q.status === 'draft' ? 'incomplete' : q.status)),
+      status: laterRev > 0 && q.status !== 'accepted' ? 'superseded' : (q.is_complete ? q.status : (q.status === 'draft' ? 'incomplete' : q.status)),
       updatedAt: q.updated_at };
   });
   res.json({

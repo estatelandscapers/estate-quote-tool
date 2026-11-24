@@ -59,6 +59,28 @@ new MutationObserver(() => {
   _asRaf = requestAnimationFrame(() => { _asRaf = 0; document.querySelectorAll('textarea').forEach(autosize); });
 }).observe(document.getElementById('app'), { childList: true, subtree: true });
 
+// Close a replaced signed revision as the predecessor of the one that replaced it.
+// `p` = { id, quoteNumber, by: { quoteNumber }, carry: { selections, po, poKept, locked } }
+const methodWord = m => m === 'esign' || !m ? 'e-signed' : m === 'po' ? 'won by PO' : m === 'contract' ? 'contract returned' : 'approved by email';
+function carryLines(c, toNum, fromNum) {
+  c = c || {}; const out = [];
+  if (c.po) out.push(`Purchase order ${c.po.number} and its order history`);
+  if (c.selections) out.push(`${c.selections} selection${c.selections === 1 ? '' : 's'} (how each item is done and who supplies it)`);
+  if (c.poKept) out.push(`Not moved: PO ${c.poKept} stays on ${fromNum}, because ${toNum} already has its own PO`);
+  out.push('Photos and files stay with the job, each still marked with the revision it came in under');
+  return out;
+}
+async function closePredecessor(p, done) {
+  const by = p.by ? p.by.quoteNumber : null;
+  const msg = by
+    ? `Close ${p.quoteNumber} as the predecessor of ${by}?\n\n${by} is the won job. ${p.quoteNumber} already counts for nothing; closing it files it in the record, with its signed contract kept exactly as signed.\n\nMoves to ${by}:\n` + carryLines(p.carry, by, p.quoteNumber).map(x => '  • ' + x).join('\n') + '\n\nThis cannot be undone from the screen.'
+    : `Close ${p.quoteNumber} as superseded?\n\nNo newer revision has been signed, so nothing replaces it: the job leaves Won, Projects, Selections and revenue. The signed contract is kept.`;
+  if (!confirm(msg)) return;
+  const r = await api('/quotes/' + p.id + '/supersede', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+  if (r.error) return toast(r.error);
+  toast(r.by ? `${r.closed} closed — predecessor of ${r.by}${r.carried && r.carried.po ? ' · PO ' + r.carried.po.number + ' moved' : ''}` : `${r.closed} closed as superseded`);
+  if (done) done(r);
+}
 function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 // Downscale a picked image in the browser before it goes near the network.
 // This was CALLED but never defined — every site-plan upload threw silently and
@@ -862,6 +884,9 @@ async function leadsSummary(v) {
   $('#leadBody').innerHTML = `
     <div class="card"><h2>Lead pipeline</h2><div class="sub">Drag a card to move it a step — it holds there until new evidence (a quote, drawings, a discovery call) moves it on. Each column scrolls, searches and sorts on its own. Won needs a signed quote or a PO, from the quote page.</div><div class="rule"></div>
       ${board.lockin && board.lockin.due ? `<button type="button" class="lockalert" id="lockAlert"><b>Critical: lock in ${esc(board.lockin.label.split(' ')[0])}'s site visit times</b><span>${board.lockin.open} of ${board.lockin.total} client${board.lockin.total === 1 ? '' : 's'} still waiting on an arrival window for ${esc(board.lockin.label)}${board.lockin.isToday ? ', which is today' : ''}. Set the route and send them.</span><em>Open →</em></button>` : ''}
+      ${(board.toClose || []).map(p => `<div class="closebar"><div><b>${esc(p.by ? p.by.quoteNumber : '')} is signed — close ${esc(p.quoteNumber)} as its predecessor?</b>
+        <span>${esc(p.client || '')} · ${esc(p.quoteNumber)} (${p.value != null ? money(p.value) : '—'}) was replaced by ${esc(p.by ? p.by.quoteNumber : '')} (${p.by && p.by.value != null ? money(p.by.value) : '—'}, ${p.by ? methodWord(p.by.method) : ''} ${esc(p.by ? sydTime(p.by.signedAt) : '')}). Only ${esc(p.by ? p.by.quoteNumber : '')} counts as won. ${p.carry && (p.carry.po || p.carry.selections) ? 'Closing moves ' + [p.carry.po ? 'PO ' + esc(p.carry.po.number) : '', p.carry.selections ? p.carry.selections + ' selection' + (p.carry.selections === 1 ? '' : 's') : ''].filter(Boolean).join(' and ') + ' across.' : ''}</span></div>
+        <div class="btns"><button class="btn btn-ghost btn-sm" data-cl-open="${p.id}">Open ${esc(p.quoteNumber)}</button>${isAdmin() ? `<button class="btn btn-blue btn-sm" data-cl-close="${p.id}">Close ${esc(p.quoteNumber)}</button>` : '<span class="muted" style="font-size:11px;">An admin closes it</span>'}</div></div>`).join('')}
       <div class="hstrip" id="hotStrip"></div>
       <div class="tstrip" id="todayStrip"></div>
       <div class="boardtools">
@@ -956,11 +981,11 @@ async function leadsSummary(v) {
   const cards = board.cards.map(c => ({ ...c, kind: 'lead' })).concat(board.won.map(w => ({ ...w, kind: 'won' })));
   const dueLabel = c => { if (c.phase === 5) return ''; if (!c.due) return '<span class="d">no date</span>'; const diff = Math.round((new Date(c.due) - new Date(today)) / 864e5);
     return diff < 0 ? `<span class="d over">${-diff}d overdue</span>` : diff === 0 ? '<span class="d today">today</span>' : `<span class="d">in ${diff}d</span>`; };
-  const cardHtml = c => `<div class="lead" draggable="${c.kind === 'lead' ? 'true' : 'false'}" data-id="${esc(c.id || '')}" data-q="${esc(c.quoteId || '')}" data-kind="${c.kind}">
-      <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:var(--warn-soft);color:var(--warn-ink);">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : ''}</div>
+  const cardHtml = c => `<div class="lead ${c.toClose ? 'toclose' : ''}" draggable="${c.kind === 'lead' ? 'true' : 'false'}" data-id="${esc(c.id || '')}" data-q="${esc(c.quoteId || '')}" data-kind="${c.kind}">
+      <div class="nm"><span>${esc(c.name || '—')}${c.small ? ' <span class="chip" style="background:var(--warn-soft);color:var(--warn-ink);">small</span>' : ''}${c.overridden ? ' <span class="chip" title="Moved here by hand — holds until new evidence">pinned</span>' : ''}</span>${c.value != null ? `<span class="val">${money(c.value)}</span>` : c.toClose && c.wasValue != null ? `<span class="val was" title="Counts for nothing — ${esc(c.replacedBy || 'a later revision')} is the won job">${money(c.wasValue)}</span>` : ''}</div>
       <div class="where">${esc(c.suburb || '')}${c.quoteNumber ? ' · quote ' + esc(c.quoteNumber) : ''}${c.ref ? ` · <span class="cref">${esc(c.ref)}</span>` : ''}</div>
       <div class="next">${dueLabel(c)}<span>${esc(c.nextAction || '')}</span></div>
-      <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.est ? estChip(c.est) : ''}${c.files ? `<span class="chip filechip" title="${c.files} photo${c.files === 1 ? '' : 's'} or file${c.files === 1 ? '' : 's'} on this lead">📎 ${c.files}</span>` : ''}${c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}</div></div>`;
+      <div class="chips">${c.source ? `<span class="chip src">${esc(c.source)}</span>` : ''}${c.link ? sigChip(c.link.signal, c.link.why, `data-bh="${esc(c.quoteId)}"`) : ''}${c.est ? estChip(c.est) : ''}${c.files ? `<span class="chip filechip" title="${c.files} photo${c.files === 1 ? '' : 's'} or file${c.files === 1 ? '' : 's'} on this lead">📎 ${c.files}</span>` : ''}${c.revOfWon ? `<span class="chip revchip" title="${esc(c.revOfWon)} is signed and stays the won job. This revision counts for nothing until the client signs it.">revision of won ${esc(c.revOfWon)} · not signed</span>` : ''}${c.toClose ? `<span class="chip closechip">superseded · to close</span>` : c.kind === 'won' ? `<span class="chip won">won · ${c.wonMethod === 'manual' ? (c.wonHow === 'po' ? 'PO' : c.wonHow === 'contract' ? 'contract' : 'email') : 'e-signed'}</span>` : ''}${c.pendingRev ? `<span class="chip revchip" title="Revision ${esc(c.pendingRev)} is with the client. This signed quote stays the job until they sign it.">rev ${esc(c.pendingRev)} out · not signed</span>` : ''}</div></div>`;
   const paint = () => {
     const term = (state.boardSearch || '').toLowerCase(), small = !!state.smallOnly;
     [1, 2, 3, 4, 5].forEach(p => {
@@ -1018,8 +1043,10 @@ async function leadsSummary(v) {
       const o = z.dataset.drop;
       if (o === 'park') return holdCard(c);
       const r = o === 'park' ? await api('/leads/' + c.id + '/park', { method: 'POST' }) : await api('/leads/' + c.id + '/outcome', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ outcome: o }) });
-      toast(r.error || (o === 'park' ? `${c.name} parked` : o === 'nofit' ? `${c.name} marked not a fit — open the lead to send the email` : `${c.name} marked lost`)); leadsSummary(v); });
+      toast(r.error || r.message || (o === 'park' ? `${c.name} parked` : o === 'nofit' ? `${c.name} marked not a fit — open the lead to send the email` : `${c.name} marked lost`)); leadsSummary(v); });
   });
+  $$('[data-cl-open]').forEach(b => b.addEventListener('click', () => { state.tab = 'quotes'; state.quoteId = b.dataset.clOpen; state.leadId = null; state.scrollY = 0; shell(); }));
+  $$('[data-cl-close]').forEach(b => b.addEventListener('click', () => { const p = (board.toClose || []).find(x => x.id === b.dataset.clClose); if (p) closePredecessor(p, () => leadsSummary(v)); }));
   $('#boardSearch').addEventListener('input', e => { state.boardSearch = e.target.value; paint(); });
   $('#smallOnly').addEventListener('change', e => { state.smallOnly = e.target.checked; paint(); });
   $$('[data-csearch]').forEach(b => b.addEventListener('click', () => { const box = $(`.col[data-stage="${b.dataset.csearch}"] .csearch`); box.hidden = !box.hidden; if (!box.hidden) $('input', box).focus(); }));
@@ -2525,7 +2552,7 @@ async function quotesList(v) {
         <td data-l="Furthest" class="${['signature', 'contract'].includes(b.furthest) ? 'qfar-warn' : ''}">${esc(QFAR[b.furthest] || '—')}</td>
         <td class="right" style="white-space:nowrap;">${actions(q)}</td></tr>`; }
     return `<tr class="${isLost ? 'row-lost' : ''}"><td data-l="Quote"><b>${esc(q.quoteNumber)}</b></td><td data-l="Client">${esc(q.client || '—')}</td><td data-l="Tier"><span class="tag tag-tier">${esc(q.customerTier || 'Silver')}</span></td><td data-l="Value" class="right">${q.value ? money(q.value) : '—'}</td>
-      <td data-l="Status"><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
+      <td data-l="Status"><span class="tag tag-${q.status}">${q.status}${q.acceptedPackage ? ' · ' + esc(q.acceptedPackage) : ''}</span>${q.toClose ? ' <span class="tag age-flag" title="Replaced by a later signed revision — open it to close it as the predecessor">to close</span>' : ''}${isLost && q.lostReason ? `<br><span class="muted" style="font-size:10px;">${esc(q.lostReason)}</span>` : ''}</td>
       <td data-l="Age">${q.status === 'accepted' || isLost ? '—' : `<span class="tag ${a[0]}">${a[1](q.ageDays)}</span>`}</td><td data-l="Views" class="right">${q.views}</td>
       <td class="right" style="white-space:nowrap;">${actions(q)}</td></tr>`; };
   $('#qtable').innerHTML = `${tiles}${list.length ? `<div style="overflow-x:auto;"><table class="resp qtbl"><thead><tr>${head}</tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`
@@ -2626,13 +2653,13 @@ async function quoteEditor(v) {
         ${String(q.quoteNumber).includes('.') ? `<span class="muted" style="font-size:12px;font-weight:500;">rev ${esc(String(q.quoteNumber).split('.')[1])}</span>` : ''}
         <span id="qNumMsg" style="font-size:11px;font-weight:600;"></span></h2>
         <div class="sub" id="saveStatus">Auto-saves. Client can only sign — changes create a new revision.</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="dupQ" title="Start a new job from this quote — lines, surcharges, notes and settings copy; client, drawings and signatures do not">Duplicate</button>` : ''}${isAdmin() && q.signedLive && !q.isSample ? `<button class="btn btn-danger" id="supersedeQ" title="Close this accepted quote because a newer revision replaced it">Close — superseded</button>` : ``}${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="backList">← All quotes</button><button class="btn btn-ghost" id="newRev">+ New revision</button>${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="dupQ" title="Start a new job from this quote — lines, surcharges, notes and settings copy; client, drawings and signatures do not">Duplicate</button>` : ''}${isAdmin() && q.signedLive && !q.isSample && !q.pendingRevision ? `<button class="btn btn-danger" id="supersedeQ" title="Close this accepted quote because a newer revision replaced it">Close — superseded</button>` : ``}${isAdmin() && !q.isSample ? `<button class="btn btn-ghost" id="mkSample" title="Copies this quote as a sample — generic client, Cronulla address, never expires, excluded from all totals">Make sample copy</button>` : ``}<a class="btn btn-ghost" href="/api/quotes/${q.id}/signed-preview" target="_blank">Preview signed contract</a>
       ${isAdmin() ? `<button class="btn btn-ghost" id="linkTog">${q.linkOff ? '🔒 Link is OFF — turn on' : 'Turn link off'}</button>` : ''}
-      ${isAdmin() && q.status !== 'accepted' ? (q.lostAt
+      ${isAdmin() && q.status !== 'accepted' && !q.supersede ? (q.lostAt
         ? `<button class="btn btn-ghost" id="reopenQuote">Reopen</button>`
         : `<button class="btn btn-ghost" id="lostQuote">Mark lost</button>`) : ''}
-      ${q.status !== 'accepted' && !q.isSample && !q.lostAt ? '<button class="btn btn-ghost" id="holdQuote" title="Put this job away until a date">⏸ Put on hold</button>' : ''}
-      ${isAdmin() && q.status !== 'accepted' && !q.isSample && !q.lostAt ? `<button class="btn btn-ghost" id="markWon" style="border-color:var(--green);color:var(--green);">✓ Mark won — PO / contract</button>` : ''}
+      ${q.status !== 'accepted' && !q.isSample && !q.lostAt && !q.supersede && !q.wonRevision ? '<button class="btn btn-ghost" id="holdQuote" title="Put this job away until a date">⏸ Put on hold</button>' : ''}
+      ${isAdmin() && q.status !== 'accepted' && !q.isSample && !q.lostAt && !q.supersede ? `<button class="btn btn-ghost" id="markWon" style="border-color:var(--green);color:var(--green);">✓ Mark won — PO / contract</button>` : ''}
       ${isAdmin() ? `<button class="btn btn-blue" id="sendQuote" ${q.surchargesIncomplete || q.lostAt || reviewOpen ? 'disabled title="' + (q.lostAt ? 'This quote is marked lost' : reviewOpen ? 'Confirm the copied-quote review list first' : 'Finish the surcharge settings first') + '" style="opacity:.5;cursor:not-allowed;"' : ''}>${q.sendCount ? 'Resend to client' : 'Send to client'} →</button>` : ''}
       <span class="tag tag-${q.status === 'accepted' ? 'accepted' : 'draft'}">${esc(q.status)}</span></div>
     </div>
@@ -2655,6 +2682,21 @@ async function quoteEditor(v) {
       ${q.sentAt ? `<span class="muted">sent ${esc(sydTime(q.sentAt))} to ${esc(q.sentTo || '')}${q.sentBy ? ' by ' + esc(q.sentBy) : ''}${q.sendCount > 1 ? ` · ${q.sendCount}×` : ''}</span>` : ''}
       ${q.link ? `<span class="muted">reading ${esc(q.link.activeLabel)}${q.link.lastOpened ? ' · last ' + esc(sydTime(q.link.lastOpened)) : ''}</span><span class="signal sig-${q.link.signal}" title="${esc(q.link.signalWhy || '')}">${SIG_LABEL[q.link.signal] || q.link.signal}</span><a href="#" id="openBehaviour" style="font-weight:700;">Behaviour record →</a>` : ''}
     </div>
+    ${q.wonRevision ? `<div class="revbar wait"><div><b>Not signed yet — ${esc(q.wonRevision.quoteNumber)} is still the won job</b>
+      <span>${esc(q.wonRevision.quoteNumber)} (${q.wonRevision.value != null ? money(q.wonRevision.value) + ' ex GST' : '—'}, ${methodWord(q.wonRevision.method)} ${esc(sydTime(q.wonRevision.signedAt))}) stays in Won, Projects and revenue. This revision sits in step 4 · Quote and counts for nothing until the client signs it${isAdmin() ? ' or you mark it won from their PO' : ''}. Once it is signed you will be asked to close ${esc(q.wonRevision.quoteNumber)} as its predecessor.</span></div>
+      <div class="btns"><button class="btn btn-ghost btn-sm" data-goq="${q.wonRevision.id}">Open ${esc(q.wonRevision.quoteNumber)}</button></div></div>` : ''}
+    ${q.pendingRevision ? `<div class="revbar wait"><div><b>Revision ${esc(q.pendingRevision.quoteNumber)} is with the client — not signed</b>
+      <span>This signed quote stays the won job until they sign ${esc(q.pendingRevision.quoteNumber)}. Nothing here changes until then.</span></div>
+      <div class="btns"><button class="btn btn-ghost btn-sm" data-goq="${q.pendingRevision.id}">Open ${esc(q.pendingRevision.quoteNumber)}</button></div></div>` : ''}
+    ${q.supersede && q.supersede.state === 'toClose' ? `<div class="revbar act"><div><b>Replaced by ${esc(q.supersede.by ? q.supersede.by.quoteNumber : 'a later revision')} — close this one as its predecessor</b>
+      <span>${esc(q.supersede.by ? q.supersede.by.quoteNumber : '')} was ${q.supersede.by ? methodWord(q.supersede.by.method) : 'signed'} ${esc(q.supersede.by ? sydTime(q.supersede.by.signedAt) : '')} and is the won job (${q.supersede.by && q.supersede.by.value != null ? money(q.supersede.by.value) + ' ex GST' : '—'}). ${esc(q.quoteNumber)} already counts for nothing. Closing it files it in the record with its signed contract, and moves across: ${carryLines(q.supersede.carry, q.supersede.by ? q.supersede.by.quoteNumber : '', q.quoteNumber).map(esc).join('; ')}.</span></div>
+      <div class="btns">${q.supersede.by ? `<button class="btn btn-ghost btn-sm" data-goq="${q.supersede.by.id}">Open ${esc(q.supersede.by.quoteNumber)}</button>` : ''}${isAdmin() ? `<button class="btn btn-blue btn-sm" id="closePred">Close ${esc(q.quoteNumber)}</button>` : '<span class="muted" style="font-size:11px;">An admin closes it</span>'}</div></div>` : ''}
+    ${q.supersede && q.supersede.state === 'closed' ? `<div class="revbar done"><div><b>Closed — predecessor${q.supersede.by ? ' of ' + esc(q.supersede.by.quoteNumber) : ''}</b>
+      <span>${q.supersede.self.signedAt ? `Was the won job: ${methodWord(q.supersede.self.method)} ${esc(sydTime(q.supersede.self.signedAt))}${q.supersede.self.signedName ? ' by ' + esc(q.supersede.self.signedName) : ''}, ${q.supersede.self.value != null ? money(q.supersede.self.value) + ' ex GST' : ''}. ` : ''}Closed ${esc(sydTime(q.supersede.closedAt))}${q.supersede.closedBy ? ' by ' + esc(q.supersede.closedBy) : ''}. The signed contract is kept as signed and this page is the record${q.supersede.carried && (q.supersede.carried.po || q.supersede.carried.selections) ? ' · moved across: ' + [q.supersede.carried.po ? 'PO ' + esc(q.supersede.carried.po.number) : '', q.supersede.carried.selections ? q.supersede.carried.selections + ' selection' + (q.supersede.carried.selections === 1 ? '' : 's') : ''].filter(Boolean).join(', ') : ''}.</span></div>
+      <div class="btns"><a class="btn btn-ghost btn-sm" href="/api/quotes/${q.id}/signed-preview" target="_blank">Signed contract</a>${q.supersede.by ? `<button class="btn btn-ghost btn-sm" data-goq="${q.supersede.by.id}">Open ${esc(q.supersede.by.quoteNumber)}</button>` : ''}</div></div>` : ''}
+    ${(q.predecessors || []).map(p => `<div class="revbar ${p.state === 'toClose' ? 'act' : 'done'}"><div><b>${p.state === 'toClose' ? `This replaces ${esc(p.quoteNumber)} — close ${esc(p.quoteNumber)} as the predecessor` : `Predecessor: ${esc(p.quoteNumber)}`}</b>
+      <span>${esc(p.quoteNumber)} was ${methodWord(p.method)} ${esc(sydTime(p.signedAt))}${p.signedName ? ' by ' + esc(p.signedName) : ''}${p.value != null ? ', ' + money(p.value) + ' ex GST' : ''}. ${p.state === 'toClose' ? `It no longer counts. Closing it moves across: ${carryLines(p.carry, q.quoteNumber, p.quoteNumber).map(esc).join('; ')}.` : `Closed ${esc(sydTime(p.closedAt))}${p.closedBy ? ' by ' + esc(p.closedBy) : ''}; its signed contract is kept.`}${p.poStale ? ` <b>PO ${esc(p.carried.po.number)} came across and still lists the ${esc(p.quoteNumber)} scope</b> — check Selections for this revision, then open the PO and press "Job changed — new PO revision". Lines already ordered or delivered carry forward.` : ''}</span></div>
+      <div class="btns"><a class="btn btn-ghost btn-sm" href="/api/quotes/${p.id}/signed-preview" target="_blank">${esc(p.quoteNumber)} signed contract</a><button class="btn btn-ghost btn-sm" data-goq="${p.id}">Open ${esc(p.quoteNumber)}</button>${p.poStale ? `<button class="btn btn-ghost btn-sm" data-gopo="${p.carried.po.id}">Open PO</button>` : ''}${p.state === 'toClose' && isAdmin() ? `<button class="btn btn-blue btn-sm" data-closepred="${p.id}">Close ${esc(p.quoteNumber)}</button>` : ''}</div></div>`).join('')}
     ${q.won ? `<div class="emailbar" style="background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok-ink);display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
       <span class="wonbadge">✓ Won · ${q.won.method === 'manual' ? (q.won.how === 'po' ? 'client PO' : q.won.how === 'contract' ? 'contract returned' : 'email approval') : 'e-signed'}</span>
       ${q.won.method === 'manual' ? `<span style="font-size:12px;">${esc(q.won.ref || '')}${q.won.approvedBy ? ' · ' + esc(q.won.approvedBy) : ''} · ${q.won.value != null ? money(q.won.value) + ' ex GST' : ''} · ${esc(sydTime(q.won.at))} · marked by ${esc(q.won.markedBy || '')}${q.won.hasFile ? ` · <a href="/api/quotes/${q.id}/won-file" target="_blank">${esc(q.won.fileName || 'approval document')}</a>` : ''}</span>
@@ -2892,12 +2934,12 @@ async function quoteEditor(v) {
     if (!confirm('Revert this job to quoted? The approval document and the audit line are kept.')) return;
     const r = await api('/quotes/' + q.id + '/unwin', { method: 'POST' }); toast(r.error || 'Reverted to quoted'); reload();
   });
-  const sp = $('#supersedeQ'); if (sp) sp.addEventListener('click', async () => {
-    if (!confirm('Close this accepted quote as superseded? It stops counting as a live job; the signed record is kept.')) return;
-    const r = await api('/quotes/' + q.id + '/supersede', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-    if (r.error) return toast(r.error);
-    toast(r.closed + ' closed as superseded'); route();
-  });
+  const sp = $('#supersedeQ'); if (sp) sp.addEventListener('click', () => closePredecessor({ id: q.id, quoteNumber: q.quoteNumber, by: null }, () => route()));
+  const cp = $('#closePred'); if (cp) cp.addEventListener('click', () => closePredecessor({ id: q.id, quoteNumber: q.quoteNumber, by: q.supersede.by, carry: q.supersede.carry }, () => route()));
+  $$('[data-closepred]').forEach(b => b.addEventListener('click', () => { const p = (q.predecessors || []).find(x => x.id === b.dataset.closepred); if (p) closePredecessor({ id: p.id, quoteNumber: p.quoteNumber, by: { quoteNumber: q.quoteNumber }, carry: p.carry }, () => route()); }));
+  $$('[data-goq]').forEach(b => b.addEventListener('click', () => { state.quoteId = b.dataset.goq; state.scrollY = 0; route(); }));
+  $$('[data-gopo]').forEach(b => b.addEventListener('click', () => { state.tab = 'po'; state.poId = b.dataset.gopo; state.scrollY = 0; shell(); }));
+
   const mk = $('#mkSample'); if (mk) mk.addEventListener('click', async () => {
     if (!confirm('Create a sample quote from this one? It gets a generic client and a Cronulla address, never expires, cannot be accepted, and is left out of every total.')) return;
     const r = await api('/quotes/' + q.id + '/make-sample', { method: 'POST' });
