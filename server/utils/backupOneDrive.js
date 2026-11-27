@@ -81,14 +81,25 @@ async function uploadResumable(localFile, remotePath) {
       const buf = Buffer.alloc(end - start + 1);
       fs.readSync(fd, buf, 0, buf.length, start);
       // The upload URL carries its own auth — deliberately no bearer token here.
-      const r = await fetch(sess.uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Length': String(buf.length), 'Content-Range': `bytes ${start}-${end}/${size}` },
-        body: buf,
-      });
-      if (!r.ok && r.status !== 202) {
-        const t = await r.text().catch(() => '');
-        throw new Error(`chunk ${start}-${end} failed: ${r.status} ${t.slice(0, 200)}`);
+      // OneDrive answers 503/429 now and then when it is busy (27 Nov 2026: one 503 failed
+      // the whole backup). The same piece can be sent again to the same session, so each
+      // piece gets a few tries with a growing pause before the upload is given up.
+      let r = null, lastErr = '';
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          r = await fetch(sess.uploadUrl, {
+            method: 'PUT',
+            headers: { 'Content-Length': String(buf.length), 'Content-Range': `bytes ${start}-${end}/${size}` },
+            body: buf,
+          });
+        } catch (e) { r = null; lastErr = 'network: ' + e.message; }
+        if (r && (r.ok || r.status === 202)) break;
+        const busy = !r || r.status === 429 || r.status >= 500;
+        if (r) { const t = await r.text().catch(() => ''); lastErr = `${r.status} ${t.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)}`; }
+        if (!busy || attempt === 5) throw new Error(`chunk ${start}-${end} failed after ${attempt} tr${attempt === 1 ? 'y' : 'ies'}: ${lastErr}`);
+        const wait = Math.min(60, (r && parseInt(r.headers.get('retry-after') || '', 10)) || 4 * Math.pow(2, attempt - 1));
+        console.log(`[backup] OneDrive busy on chunk ${start}-${end} (${lastErr.slice(0, 40)}); try ${attempt + 1} in ${wait}s`);
+        await new Promise(res => setTimeout(res, wait * 1000));
       }
       if (r.status === 200 || r.status === 201) return await r.json().catch(() => ({}));
     }
@@ -125,7 +136,17 @@ async function runBackup(reason = 'scheduled') {
     const bytes = fs.statSync(local).size;
     const counts = verify(local);
     if (!counts.quotes) throw new Error('snapshot verified empty — no quotes found, refusing to call this a backup');
-    const up = await uploadResumable(local, remote);
+    // If a whole upload still fails, start a fresh one twice more, minutes apart, before
+    // anyone is emailed: a short OneDrive outage should not read as a lost backup.
+    let up = null;
+    for (let round = 1; ; round++) {
+      try { up = await uploadResumable(local, remote); break; }
+      catch (e) {
+        if (round >= (reason === 'scheduled' ? 3 : 1)) throw e;
+        console.log(`[backup] upload ${round} failed (${String(e.message).slice(0, 80)}); starting again in ${round * 5} min`);
+        await new Promise(res => setTimeout(res, round * 5 * 60 * 1000));
+      }
+    }
     const pruneRes = await prune().catch(() => ({ pruned: 0 }));
     const res = { ok: true, name, remote, bytes, counts, reason,
       seconds: Math.round((Date.now() - t0) / 100) / 10,
@@ -135,9 +156,9 @@ async function runBackup(reason = 'scheduled') {
   } catch (e) {
     console.error('[backup] FAILED:', e.message);
     await alert(`Estate Landscapers backup FAILED`,
-      `<p>The daily OneDrive backup did not complete.</p>
+      `<p>The ${reason === 'scheduled' ? 'daily' : reason} OneDrive backup did not complete after several tries over about 15 minutes.</p>
        <p><b>When:</b> ${s.date} ${s.time} (Sydney)<br><b>Error:</b> ${String(e.message).replace(/[<>]/g, '')}</p>
-       <p>The tool is unaffected and still running. Nothing has been deleted.</p>`).catch(() => {});
+       <p>The tool is unaffected and still running. Nothing has been deleted. Earlier backups are still in OneDrive, and the next one runs at its usual time.</p>`).catch(() => {});
     return { ok: false, error: e.message, reason };
   } finally {
     if (local) fs.unlink(local, () => {});
